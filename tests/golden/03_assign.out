@@ -1,0 +1,6 @@
+program
+  item nl
+    simple
+      assign "FOO"
+        word
+          lit "bar"

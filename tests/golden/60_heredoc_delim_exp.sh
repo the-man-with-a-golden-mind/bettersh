@@ -1,0 +1,3 @@
+cat << $X
+body
+$X

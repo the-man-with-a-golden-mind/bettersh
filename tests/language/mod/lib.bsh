@@ -1,0 +1,4 @@
+#!/usr/bin/env bettersh
+fn a() { return 1 }
+fn b() { return 2 }
+fn c() { return 3 }

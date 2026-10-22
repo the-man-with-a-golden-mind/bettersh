@@ -1,0 +1,4 @@
+#!/usr/bin/env bettersh
+let user = { name: "Ada" }
+println(user.name)
+println(user.missing)

@@ -1,0 +1,8 @@
+#!/usr/bin/env bettersh
+let s = 0
+let i = 1
+while i < 5 {
+  let s = s + i
+  let i = i + 1
+}
+println(s)

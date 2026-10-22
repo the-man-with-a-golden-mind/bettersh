@@ -1,0 +1,8 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "echo"
+        word
+          param "HOME"

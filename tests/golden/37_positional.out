@@ -1,0 +1,13 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "echo"
+        word
+          param "1"
+          lit "0"
+        word
+          param "10"
+        word
+          param "01"

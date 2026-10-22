@@ -1,0 +1,640 @@
+#!/usr/bin/env bettersh
+
+import std/ui
+import std/fs
+import std/strings
+
+fn hint_text() {
+  return "i a o  x dd yy p  u  / n N  :w :q"
+}
+
+fn pack(lines, row, col, mode, top, pending, yank, undo, dirty, path, cmd, hint, confirm, request, find, anchor) {
+  return {
+    lines: lines,
+    row: row,
+    col: col,
+    mode: mode,
+    top: top,
+    pending: pending,
+    yank: yank,
+    undo: undo,
+    dirty: dirty,
+    path: path,
+    cmd: cmd,
+    hint: hint,
+    confirm: confirm,
+    request: request,
+    find: find,
+    anchor: anchor
+  }
+}
+
+fn copy_lines(lines) {
+  let out = []
+  for line in lines {
+    let out = out.push(line)
+  }
+  return out
+}
+
+fn replace_at(lines, at, line) {
+  let out = []
+  let i = 0
+  while i < lines.length {
+    if i == at { let out = out.push(line) }
+    if i != at { let out = out.push(lines[i]) }
+    let i = i + 1
+  }
+  return out
+}
+
+fn remove_at(lines, at) {
+  let out = []
+  let i = 0
+  while i < lines.length {
+    if i != at { let out = out.push(lines[i]) }
+    let i = i + 1
+  }
+  return out
+}
+
+fn insert_after(lines, at, line) {
+  let out = []
+  let i = 0
+  while i < lines.length {
+    let out = out.push(lines[i])
+    if i == at { let out = out.push(line) }
+    let i = i + 1
+  }
+  return out
+}
+
+fn split_at(lines, at, left, right) {
+  let out = []
+  let i = 0
+  while i < lines.length {
+    if i == at {
+      let out = out.push(left)
+      let out = out.push(right)
+    }
+    if i != at { let out = out.push(lines[i]) }
+    let i = i + 1
+  }
+  return out
+}
+
+fn join_at(lines, at, merged) {
+  let out = []
+  let i = 0
+  while i < lines.length {
+    if i == at - 1 { let out = out.push(merged) }
+    if i != at - 1 && i != at { let out = out.push(lines[i]) }
+    let i = i + 1
+  }
+  return out
+}
+
+fn split_lines(text) {
+  if text == null { let text = "" }
+  let parts = text.split("\n")
+  if text.length > 0 && text[text.length - 1] == "\n" {
+    let junk = parts.pop()
+  }
+  if parts.length == 0 { return [""] }
+  return parts
+}
+
+fn buffer(text, path) {
+  return pack(split_lines(text), 0, 0, "normal", 0, "", "", [], false, path, "", hint_text(), false, "", "", false)
+}
+
+fn text(buf) {
+  return buf.lines.join("\n")
+}
+
+fn save_text(buf) {
+  return "@{ buf.lines.join("\n") }\n"
+}
+
+fn re(buf, lines, row, col, mode, pending, yank, undo, dirty, cmd, hint, confirm, request, anchor) {
+  return pack(lines, row, col, mode, buf.top, pending, yank, undo, dirty, buf.path, cmd, hint, confirm, request, buf.find, anchor)
+}
+
+fn set_request(buf, request) {
+  return re(buf, buf.lines, buf.row, buf.col, buf.mode, buf.pending, buf.yank, buf.undo, buf.dirty, buf.cmd, buf.hint, false, request, buf.anchor)
+}
+
+fn set_hint(buf, hint) {
+  return re(buf, buf.lines, buf.row, buf.col, buf.mode, buf.pending, buf.yank, buf.undo, buf.dirty, buf.cmd, hint, buf.confirm, buf.request, buf.anchor)
+}
+
+fn set_yank(buf, yank) {
+  return re(buf, buf.lines, buf.row, buf.col, "normal", "", yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
+}
+
+fn set_pending(buf, pending) {
+  return re(buf, buf.lines, buf.row, buf.col, "normal", pending, buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
+}
+
+fn set_cmd(buf, cmd) {
+  return re(buf, buf.lines, buf.row, buf.col, buf.mode, "", buf.yank, buf.undo, buf.dirty, cmd, buf.hint, false, buf.request, buf.anchor)
+}
+
+fn set_find(buf, find) {
+  return pack(buf.lines, buf.row, buf.col, "normal", buf.top, "", buf.yank, buf.undo, buf.dirty, buf.path, "", hint_text(), false, buf.request, find, false)
+}
+
+fn mark_clean(buf) {
+  return re(buf, buf.lines, buf.row, buf.col, buf.mode, "", buf.yank, buf.undo, false, "", hint_text(), false, "", false)
+}
+
+fn snapshot(buf) {
+  let snap = { lines: copy_lines(buf.lines), row: buf.row, col: buf.col, dirty: buf.dirty }
+  let undo = buf.undo.push(snap)
+  if undo.length <= 32 { return undo }
+  let next = []
+  let i = 1
+  while i < undo.length {
+    let next = next.push(undo[i])
+    let i = i + 1
+  }
+  return next
+}
+
+fn change(buf, lines, row, col) {
+  let undo = buf.undo
+  let anchor = false
+  if buf.mode == "insert" && buf.anchor {
+    let anchor = true
+  } else {
+    let undo = snapshot(buf)
+    if buf.mode == "insert" { let anchor = true }
+  }
+  return re(buf, lines, row, col, buf.mode, "", buf.yank, undo, true, "", hint_text(), false, buf.request, anchor)
+}
+
+fn move(buf, row, col) {
+  if buf.lines.length == 0 { return buf }
+  if row < 0 { let row = 0 }
+  if row >= buf.lines.length { let row = buf.lines.length - 1 }
+  let limit = 0
+  if buf.lines[row].length > 0 { let limit = buf.lines[row].length - 1 }
+  if col < 0 { let col = 0 }
+  if col > limit { let col = limit }
+  return re(buf, buf.lines, row, col, "normal", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
+}
+
+fn imove(buf, row, col) {
+  if buf.lines.length == 0 { return buf }
+  if row < 0 { let row = 0 }
+  if row >= buf.lines.length { let row = buf.lines.length - 1 }
+  if col < 0 { let col = 0 }
+  if col > buf.lines[row].length { let col = buf.lines[row].length }
+  return re(buf, buf.lines, row, col, "insert", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
+}
+
+fn enter_insert(buf, row, col) {
+  return re(buf, buf.lines, row, col, "insert", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
+}
+
+fn leave_insert(buf) {
+  let row = buf.row
+  let col = buf.col
+  if row < 0 { let row = 0 }
+  if row >= buf.lines.length { let row = buf.lines.length - 1 }
+  if col > 0 && col >= buf.lines[row].length { let col = buf.lines[row].length - 1 }
+  if col < 0 { let col = 0 }
+  return re(buf, buf.lines, row, col, "normal", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
+}
+
+fn insert_char(buf, ch) {
+  let line = buf.lines[buf.row]
+  let col = buf.col
+  if col < 0 { let col = 0 }
+  if col > line.length { let col = line.length }
+  let next = "@{ strings.slice(line, 0, col) }@{ ch }@{ strings.slice(line, col, line.length) }"
+  return change(buf, replace_at(buf.lines, buf.row, next), buf.row, col + 1)
+}
+
+fn split_line(buf) {
+  let line = buf.lines[buf.row]
+  let col = buf.col
+  if col < 0 { let col = 0 }
+  if col > line.length { let col = line.length }
+  let left = strings.slice(line, 0, col)
+  let right = strings.slice(line, col, line.length)
+  return change(buf, split_at(buf.lines, buf.row, left, right), buf.row + 1, 0)
+}
+
+fn backspace(buf) {
+  if buf.col > 0 {
+    let line = buf.lines[buf.row]
+    let col = buf.col - 1
+    let next = "@{ strings.slice(line, 0, col) }@{ strings.slice(line, buf.col, line.length) }"
+    return change(buf, replace_at(buf.lines, buf.row, next), buf.row, col)
+  }
+  if buf.row == 0 { return buf }
+  let prev = buf.lines[buf.row - 1]
+  let merged = "@{ prev }@{ buf.lines[buf.row] }"
+  return change(buf, join_at(buf.lines, buf.row, merged), buf.row - 1, prev.length)
+}
+
+fn delete_char(buf) {
+  let line = buf.lines[buf.row]
+  if line.length == 0 { return buf }
+  let col = buf.col
+  if col >= line.length {
+    if buf.mode == "insert" { return buf }
+    let col = line.length - 1
+  }
+  let next = "@{ strings.slice(line, 0, col) }@{ strings.slice(line, col + 1, line.length) }"
+  if buf.mode != "insert" && next.length > 0 && col >= next.length { let col = next.length - 1 }
+  if col < 0 { let col = 0 }
+  return change(buf, replace_at(buf.lines, buf.row, next), buf.row, col)
+}
+
+fn delete_line(buf) {
+  let yanked = buf.lines[buf.row]
+  let lines = remove_at(buf.lines, buf.row)
+  if lines.length == 0 { let lines = [""] }
+  let row = buf.row
+  if row >= lines.length { let row = lines.length - 1 }
+  return set_yank(change(buf, lines, row, 0), yanked)
+}
+
+fn paste(buf) {
+  if buf.yank.length == 0 { return buf }
+  return change(buf, insert_after(buf.lines, buf.row, buf.yank), buf.row + 1, 0)
+}
+
+fn open_below(buf) {
+  let buf = change(buf, insert_after(buf.lines, buf.row, ""), buf.row + 1, 0)
+  return re(buf, buf.lines, buf.row, 0, "insert", "", buf.yank, buf.undo, true, "", hint_text(), false, buf.request, true)
+}
+
+fn undo(buf) {
+  if buf.undo.length == 0 { return buf }
+  let snap = buf.undo.pop()
+  let row = snap.row
+  let col = snap.col
+  if row < 0 || snap.lines.length == 0 { let row = 0 }
+  if row >= snap.lines.length { let row = snap.lines.length - 1 }
+  let limit = 0
+  if snap.lines[row].length > 0 { let limit = snap.lines[row].length - 1 }
+  if col < 0 { let col = 0 }
+  if col > limit { let col = limit }
+  return pack(snap.lines, row, col, "normal", 0, "", buf.yank, buf.undo, snap.dirty, buf.path, "", hint_text(), false, "", buf.find, false)
+}
+
+fn find_at(line, pat, from) {
+  if pat.length == 0 { return 0 - 1 }
+  if from < 0 { let from = 0 }
+  let i = from
+  while i + pat.length <= line.length {
+    if strings.slice(line, i, i + pat.length) == pat { return i }
+    let i = i + 1
+  }
+  return 0 - 1
+}
+
+fn search_next(buf, from_col) {
+  let pat = buf.find
+  if pat.length == 0 { return buf }
+  let n = buf.lines.length
+  let step = 0
+  while step < n {
+    let row = buf.row + step
+    if row >= n { let row = row - n }
+    let from = 0
+    if step == 0 { let from = from_col }
+    let at = find_at(buf.lines[row], pat, from)
+    if at >= 0 { return move(buf, row, at) }
+    let step = step + 1
+  }
+  return set_hint(buf, "not found")
+}
+
+fn last_before(line, pat, limit) {
+  let last = 0 - 1
+  let i = 0
+  while i + pat.length <= line.length && i < limit {
+    if strings.slice(line, i, i + pat.length) == pat { let last = i }
+    let i = i + 1
+  }
+  return last
+}
+
+fn search_back(buf) {
+  let pat = buf.find
+  if pat.length == 0 { return buf }
+  let n = buf.lines.length
+  let step = 0
+  while step < n {
+    let row = buf.row - step
+    if row < 0 { let row = row + n }
+    let limit = buf.lines[row].length + 1
+    if step == 0 { let limit = buf.col }
+    let at = last_before(buf.lines[row], pat, limit)
+    if at >= 0 { return move(buf, row, at) }
+    let step = step + 1
+  }
+  return set_hint(buf, "not found")
+}
+
+fn is_digits(text) {
+  if text.length == 0 { return false }
+  let i = 0
+  while i < text.length {
+    let c = text[i]
+    if c < "0" || c > "9" { return false }
+    let i = i + 1
+  }
+  return true
+}
+
+fn to_int(text) {
+  let n = 0
+  let i = 0
+  while i < text.length {
+    let n = n * 10 + "0123456789".index(text[i])
+    let i = i + 1
+  }
+  return n
+}
+
+fn arm_quit(buf) {
+  return re(buf, buf.lines, buf.row, buf.col, "normal", "", buf.yank, buf.undo, buf.dirty, "", "quit without saving? press q again", true, buf.request, false)
+}
+
+fn quit_soft(buf) {
+  if buf.dirty { return arm_quit(buf) }
+  return set_request(buf, "quit")
+}
+
+fn run_command(buf) {
+  let cmd = buf.cmd
+  let buf = set_find(buf, buf.find)
+  if cmd == "w" { return set_request(buf, "save") }
+  if cmd == "wq" { return set_request(buf, "save-quit") }
+  if cmd == "q!" { return set_request(buf, "quit") }
+  if cmd == "q" { return quit_soft(buf) }
+  if is_digits(cmd) { return move(buf, to_int(cmd) - 1, 0) }
+  return set_hint(buf, "unknown command")
+}
+
+fn press_line(buf, key) {
+  if key == "escape" { return set_find(buf, buf.find) }
+  if key == "enter" {
+    if buf.mode == "command" { return run_command(buf) }
+    let pat = buf.cmd
+    let buf = set_find(buf, pat)
+    return search_next(buf, buf.col)
+  }
+  if key == "backspace" {
+    let cmd = buf.cmd
+    if cmd.length > 0 { let cmd = strings.slice(cmd, 0, cmd.length - 1) }
+    return set_cmd(buf, cmd)
+  }
+  if key.length == 1 { return set_cmd(buf, "@{ buf.cmd }@{ key }") }
+  return buf
+}
+
+fn press_insert(buf, key) {
+  if key == "escape" { return leave_insert(buf) }
+  if key == "enter" { return split_line(buf) }
+  if key == "backspace" { return backspace(buf) }
+  if key == "delete" { return delete_char(buf) }
+  if key == "left" { return imove(buf, buf.row, buf.col - 1) }
+  if key == "right" { return imove(buf, buf.row, buf.col + 1) }
+  if key == "up" { return imove(buf, buf.row - 1, buf.col) }
+  if key == "down" { return imove(buf, buf.row + 1, buf.col) }
+  if key.length == 1 { return insert_char(buf, key) }
+  return buf
+}
+
+fn press_normal(buf, key) {
+  if buf.confirm {
+    if key == "q" { return set_request(buf, "quit") }
+    let buf = set_hint(buf, hint_text())
+    let buf = re(buf, buf.lines, buf.row, buf.col, "normal", buf.pending, buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
+  }
+  if buf.pending == "d" || buf.pending == "y" || buf.pending == "g" {
+    let which = buf.pending
+    let buf = set_pending(buf, "")
+    if which == "d" && key == "d" { return delete_line(buf) }
+    if which == "y" && key == "y" { return set_yank(buf, buf.lines[buf.row]) }
+    if which == "g" && key == "g" { return move(buf, 0, 0) }
+    return press_normal(buf, key)
+  }
+  if key == "h" || key == "left" || key == "backspace" { return move(buf, buf.row, buf.col - 1) }
+  if key == "l" || key == "right" { return move(buf, buf.row, buf.col + 1) }
+  if key == "j" || key == "down" || key == "enter" { return move(buf, buf.row + 1, buf.col) }
+  if key == "k" || key == "up" { return move(buf, buf.row - 1, buf.col) }
+  if key == "pageup" { return move(buf, buf.row - 10, buf.col) }
+  if key == "pagedown" { return move(buf, buf.row + 10, buf.col) }
+  if key == "0" || key == "home" { return move(buf, buf.row, 0) }
+  if key == "$" || key == "end" { return move(buf, buf.row, buf.lines[buf.row].length) }
+  if key == "G" { return move(buf, buf.lines.length - 1, 0) }
+  if key == "g" || key == "d" || key == "y" { return set_pending(buf, key) }
+  if key == "x" || key == "delete" { return delete_char(buf) }
+  if key == "p" { return paste(buf) }
+  if key == "u" { return undo(buf) }
+  if key == "i" { return enter_insert(buf, buf.row, buf.col) }
+  if key == "a" {
+    let col = buf.col
+    if col < buf.lines[buf.row].length { let col = col + 1 }
+    return enter_insert(buf, buf.row, col)
+  }
+  if key == "o" { return open_below(buf) }
+  if key == "/" { return set_cmd(re(buf, buf.lines, buf.row, buf.col, "search", "", buf.yank, buf.undo, buf.dirty, "", buf.hint, false, buf.request, false), "") }
+  if key == ":" { return set_cmd(re(buf, buf.lines, buf.row, buf.col, "command", "", buf.yank, buf.undo, buf.dirty, "", buf.hint, false, buf.request, false), "") }
+  if key == "n" { return search_next(buf, buf.col + 1) }
+  if key == "N" { return search_back(buf) }
+  if key == "q" { return quit_soft(buf) }
+  return buf
+}
+
+fn press(buf, key) {
+  if key == "ctrl-c" { return set_request(buf, "quit") }
+  if key == "ctrl-s" { return set_request(buf, "save") }
+  if buf.mode == "insert" { return press_insert(buf, key) }
+  if buf.mode == "command" || buf.mode == "search" { return press_line(buf, key) }
+  return press_normal(buf, key)
+}
+
+fn view_top(buf, view) {
+  let top = buf.top
+  if buf.row < top { let top = buf.row }
+  if view < 1 { let view = 1 }
+  if buf.row >= top + view { let top = buf.row - view + 1 }
+  if top < 0 { let top = 0 }
+  return top
+}
+
+fn digits(n) {
+  let text = "@{ n } "
+  return strings.slice(text, 0, text.length - 1)
+}
+
+fn visible(text) {
+  let n = text.length
+  if n == 0 { return "" }
+  return text.visible()
+}
+
+fn gutter(row, line) {
+  let num = strings.pad_left(digits(row + 1), 4, " ")
+  return "@{ num } @{ visible(line) }"
+}
+
+fn status_line(buf) {
+  let mark = ""
+  if buf.dirty { let mark = "*" }
+  return visible("@{ buf.path }@{ mark }  @{ buf.row + 1 }:@{ buf.col + 1 }  @{ buf.mode }")
+}
+
+fn bottom_line(buf) {
+  if buf.mode == "command" { return visible(":@{ buf.cmd }") }
+  if buf.mode == "search" { return visible("/@{ buf.cmd }") }
+  return buf.hint
+}
+
+fn frame(buf, cols, rows) {
+  if cols < 1 { let cols = 1 }
+  if rows < 2 { let rows = 2 }
+  let view = rows - 2
+  let top = view_top(buf, view)
+  let screen = ui.blank(cols, rows)
+  let i = 0
+  while i < view {
+    let row = top + i
+    if row < buf.lines.length {
+      let screen = ui.put(screen, i, 0, gutter(row, buf.lines[row]))
+    }
+    let i = i + 1
+  }
+  let screen = ui.put(screen, rows - 2, 0, status_line(buf))
+  return ui.paint(ui.put(screen, rows - 1, 0, bottom_line(buf)))
+}
+
+fn esc(seq) {
+  print("@{ chr(27) }[@{ seq }")
+}
+
+fn clip(text, room) {
+  if room < 1 { return "" }
+  if text.length <= room { return text }
+  return strings.slice(text, 0, room)
+}
+
+fn draw(buf, cols, rows) {
+  if cols < 1 { let cols = 1 }
+  if rows < 2 { let rows = 2 }
+  let view = rows - 2
+  let top = view_top(buf, view)
+  let room = cols - 1
+  if room < 1 { let room = 1 }
+  let status = status_line(buf)
+  let bottom = bottom_line(buf)
+  let i = 0
+  while i < rows {
+    esc("@{ i + 1 };1H")
+    let text = ""
+    if i < view {
+      let row = top + i
+      if row < buf.lines.length { let text = gutter(row, buf.lines[row]) }
+    }
+    if i == rows - 2 { let text = status }
+    if i == rows - 1 { let text = bottom }
+    print(clip(text, room))
+    esc("K")
+    let i = i + 1
+  }
+  let crow = buf.row - top
+  if crow < 0 { let crow = 0 }
+  if crow >= view { let crow = view - 1 }
+  let ccol = 5 + buf.col
+  if ccol >= room { let ccol = room - 1 }
+  if ccol < 0 { let ccol = 0 }
+  esc("@{ crow + 1 };@{ ccol + 1 }H")
+  esc("?25h")
+}
+
+fn open(path) {
+  let text = ""
+  if fs.exists(path) { let text = fs.read(path) }
+  return buffer(text, path)
+}
+
+fn commit(buf) {
+  if buf.request != "save" && buf.request != "save-quit" { return buf }
+  let quit = buf.request == "save-quit"
+  term_raw(false)
+  fs.write(buf.path, save_text(buf))
+  let buf = mark_clean(buf)
+  if quit { return set_request(buf, "quit") }
+  term_raw(true)
+  return buf
+}
+
+fn run(path) {
+  if !term_tty() {
+    eprintln("not a terminal")
+    return null
+  }
+  let buf = open(path)
+  term_raw(true)
+  draw(buf, term_cols(), term_rows())
+  let pending = ""
+  let byte = term_read()
+  while byte != null && buf.request != "quit" {
+    let ev = ui.feed(pending, byte)
+    let pending = ev.pending
+    if ev.key != null {
+      let buf = press(buf, ev.key)
+      let buf = commit(buf)
+    }
+    if buf.request != "quit" {
+      if ev.extra != null {
+        let byte = ev.extra
+      } else if pending.length > 0 {
+        let byte = term_poll()
+        if byte == null {
+          let flushed = ui.flush(pending)
+          let pending = ""
+          if flushed.key != null {
+            let buf = press(buf, flushed.key)
+            let buf = commit(buf)
+          }
+          if buf.request != "quit" {
+            draw(buf, term_cols(), term_rows())
+            let byte = term_read()
+          }
+        }
+      } else {
+        draw(buf, term_cols(), term_rows())
+        let byte = term_read()
+      }
+    }
+  }
+  term_raw(false)
+  return null
+}
+
+fn is_editor(name) {
+  if name == null { return false }
+  if name == "edit.bsh" || name == "std/edit.bsh" { return true }
+  return strings.ends(name, "/edit.bsh")
+}
+
+if is_editor(arg(0)) {
+  if arg(1) == null {
+    eprintln("usage: bettersh std/edit.bsh file")
+    exit 1
+  }
+  if !term_tty() {
+    eprintln("not a terminal")
+    exit 1
+  }
+  run(arg(1))
+}

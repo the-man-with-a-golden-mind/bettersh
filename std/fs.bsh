@@ -1,0 +1,17 @@
+#!/usr/bin/env bettersh
+
+fn read(path) {
+  return readfile(path)
+}
+
+fn write(path, text) {
+  return writefile(path, text)
+}
+
+fn exists(path) {
+  return fs_exists(path)
+}
+
+fn remove(path) {
+  return fs_remove(path)
+}

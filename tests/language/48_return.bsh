@@ -1,0 +1,9 @@
+#!/usr/bin/env bettersh
+fn f(n) {
+  if n {
+    return 7
+  }
+  return 8
+}
+println(f(1))
+println(f(0))

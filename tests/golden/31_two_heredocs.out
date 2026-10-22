@@ -1,0 +1,20 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "cat"
+      redir <<
+        target
+          word
+            lit "A"
+        body
+          word
+            lit q "one\n"
+      redir <<
+        target
+          word
+            lit "B"
+        body
+          word
+            lit q "two\n"

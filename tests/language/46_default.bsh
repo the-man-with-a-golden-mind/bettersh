@@ -1,0 +1,12 @@
+#!/usr/bin/env bettersh
+fn greet(name, greeting = "Hello") {
+  println(greeting)
+  println(name)
+}
+greet("Ada")
+greet("Ada", "Hi")
+fn f(a, b = a) { (a + b) }
+println(f(3))
+fn g(a = 1) { println(a) }
+g(null)
+g()

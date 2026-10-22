@@ -1,0 +1,17 @@
+#!/usr/bin/env bettersh
+import std/path
+println(path.base("/a/b/c.txt"))
+println(path.dir("/a/b/c.txt"))
+println(path.ext("/a/b/c.txt"))
+println(path.stem("/a/b/c.txt"))
+println(path.dir("/c.txt"))
+println(path.dir("c.txt"))
+println(path.ext(".bashrc"))
+println(path.ext("archive.tar.gz"))
+println(path.stem("archive.tar.gz"))
+println(path.join("/a/b", "c"))
+println(path.join("/a/", "c"))
+println(path.join("", "c"))
+println(path.is_abs("/a"))
+println(path.is_abs("a"))
+println(path.is_abs(""))

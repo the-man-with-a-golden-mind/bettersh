@@ -1,0 +1,4 @@
+#!/usr/bin/env bettersh
+import "./mod/once.bsh"
+import "./mod/once.bsh"
+println(once.v())

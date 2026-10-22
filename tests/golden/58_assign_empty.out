@@ -1,0 +1,10 @@
+program
+  item nl
+    simple
+      assign "FOO"
+        word
+      argv
+        word
+          lit "echo"
+        word
+          lit "x"

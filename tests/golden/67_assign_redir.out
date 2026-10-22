@@ -1,0 +1,15 @@
+program
+  item nl
+    simple
+      assign "FOO"
+        word
+          lit "bar"
+      argv
+        word
+          lit "echo"
+        word
+          lit "hi"
+      redir >
+        target
+          word
+            lit "out"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bettersh
+let s = "  Hi  "
+println(s.trim())
+println(s.trim().lower())
+println("ababa".replace("a", "x"))
+println("a,b,".split(",").join("|"))
+let a = ["b", "a", "b"]
+println(a.sort().join(","))
+println(a.contains("b"))
+println(a.index("z"))
+println(a.push("c").join("-"))
+let m = { b: 2, a: 1 }
+println(m.has("a"))
+println(m.remove("b"))
+println(m.keys.join(","))

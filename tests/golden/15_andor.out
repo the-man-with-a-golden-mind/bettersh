@@ -1,0 +1,20 @@
+program
+  item nl
+    or
+      and
+        simple
+          argv
+            word
+              lit "true"
+        simple
+          argv
+            word
+              lit "echo"
+            word
+              lit "yes"
+      simple
+        argv
+          word
+            lit "echo"
+          word
+            lit "no"

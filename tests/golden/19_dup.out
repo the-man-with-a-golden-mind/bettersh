@@ -1,0 +1,10 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "cmd"
+      redir >& fd=2
+        target
+          word
+            lit "1"

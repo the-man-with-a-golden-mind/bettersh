@@ -1,0 +1,3 @@
+cat << EO\F
+hi
+EOF

@@ -1,0 +1,11 @@
+#!/usr/bin/env bettersh
+println(false)
+println(!false)
+println(0 || 3)
+println(1 && 0)
+println(null == null)
+println("" == "")
+println(1 == 1.0)
+println(1 < 1.5)
+println("a" < "b")
+println("a" > "b")

@@ -1,0 +1,6 @@
+#!/usr/bin/env bettersh
+
+fn get(url) {
+  let q = url.replace("'", "'\\''")
+  return capture("curl -fsS --proto =http,https --proto-redir =http,https --max-time 20 -- '@{ q }'")
+}

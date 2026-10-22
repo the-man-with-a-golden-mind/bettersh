@@ -1,0 +1,81 @@
+#!/usr/bin/env bettersh
+
+fn abs(n) {
+  if n < 0 { return 0 - n }
+  return n
+}
+
+fn min(a, b) {
+  if a < b { return a }
+  return b
+}
+
+fn max(a, b) {
+  if a > b { return a }
+  return b
+}
+
+fn clamp(n, lo, hi) {
+  if n < lo { return lo }
+  if n > hi { return hi }
+  return n
+}
+
+fn sign(n) {
+  if n > 0 { return 1 }
+  if n < 0 { return 0 - 1 }
+  return 0
+}
+
+fn gcd(a, b) {
+  let a = abs(a)
+  let b = abs(b)
+  while b != 0 {
+    let t = a % b
+    let a = b
+    let b = t
+  }
+  return a
+}
+
+fn lcm(a, b) {
+  if a == 0 || b == 0 { return 0 }
+  return abs(a / gcd(a, b) * b)
+}
+
+fn pow(base, exp) {
+  if exp < 0 { return mathf("pow", base, exp) }
+  let out = 1
+  let i = 0
+  while i < exp {
+    let out = out * base
+    let i = i + 1
+  }
+  return out
+}
+
+fn fact(n) {
+  if n < 0 { return null }
+  let out = 1
+  let i = 2
+  while i <= n {
+    let out = out * i
+    let i = i + 1
+  }
+  return out
+}
+
+fn sqrt(x) { return mathf("sqrt", x) }
+fn sin(x) { return mathf("sin", x) }
+fn cos(x) { return mathf("cos", x) }
+fn tan(x) { return mathf("tan", x) }
+fn asin(x) { return mathf("asin", x) }
+fn acos(x) { return mathf("acos", x) }
+fn atan(x) { return mathf("atan", x) }
+fn atan2(y, x) { return mathf("atan2", y, x) }
+fn floor(x) { return mathf("floor", x) }
+fn ceil(x) { return mathf("ceil", x) }
+fn round(x) { return mathf("round", x) }
+fn log(x) { return mathf("log", x) }
+fn exp(x) { return mathf("exp", x) }
+fn hypot(x, y) { return mathf("hypot", x, y) }

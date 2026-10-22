@@ -1,0 +1,2 @@
+#!/usr/bin/env bettersh
+println(1 / 0)

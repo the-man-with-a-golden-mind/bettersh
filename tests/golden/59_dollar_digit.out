@@ -1,0 +1,10 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "echo"
+        word
+          param "HOME" len
+        word
+          param "10" len

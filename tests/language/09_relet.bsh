@@ -1,0 +1,4 @@
+#!/usr/bin/env bettersh
+let x = 1
+let x = x + 4
+println(x)

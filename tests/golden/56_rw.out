@@ -1,0 +1,10 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "exec"
+      redir <> fd=3
+        target
+          word
+            lit "file"

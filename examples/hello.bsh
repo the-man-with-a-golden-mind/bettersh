@@ -1,0 +1,11 @@
+#!/usr/bin/env bettersh
+
+fn greet(name) {
+  if name.length == 0 {
+    return "hello"
+  }
+  return "hello @{ name }"
+}
+
+println(greet("bettersh"))
+println(greet(""))

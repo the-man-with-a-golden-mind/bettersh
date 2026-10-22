@@ -1,0 +1,62 @@
+#!/usr/bin/env bettersh
+
+fn shout(s) {
+  return "@{ s.upper() }!"
+}
+
+fn slice(s, start, end) {
+  if start < 0 { let start = 0 }
+  if end > s.length { let end = s.length }
+  if start >= end { return "" }
+  return s.slice(start, end)
+}
+
+fn starts(s, prefix) {
+  if prefix.length > s.length { return false }
+  let i = 0
+  while i < prefix.length {
+    if s[i] != prefix[i] { return false }
+    let i = i + 1
+  }
+  return true
+}
+
+fn ends(s, suffix) {
+  if suffix.length > s.length { return false }
+  let base = s.length - suffix.length
+  let i = 0
+  while i < suffix.length {
+    if s[base + i] != suffix[i] { return false }
+    let i = i + 1
+  }
+  return true
+}
+
+fn reverse(s) {
+  let n = s.length
+  if n == 0 { return "" }
+  return s.reverse()
+}
+
+fn repeat(s, n) {
+  return s.repeat(n)
+}
+
+fn pad_left(s, width, ch) {
+  if s.length >= width { return s }
+  return "@{ repeat(ch, width - s.length) }@{ s }"
+}
+
+fn pad_right(s, width, ch) {
+  if s.length >= width { return s }
+  return "@{ s }@{ repeat(ch, width - s.length) }"
+}
+
+fn count(s, part) {
+  if part.length == 0 { return 0 }
+  return s.split(part).length - 1
+}
+
+fn words(s) {
+  return s.trim().split(" ").filter(fn(w) { (w.length > 0) })
+}

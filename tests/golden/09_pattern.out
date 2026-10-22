@@ -1,0 +1,14 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "echo"
+        word
+          param "v" #
+            word
+              lit "pre"
+        word
+          param "v" %%
+            word
+              lit "suf"

@@ -1,0 +1,52 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "echo"
+        word
+          param "x" :-
+            word
+        word
+          param "x" -
+            word
+        word
+          param "x" :=
+            word
+              lit "d"
+        word
+          param "x" =
+            word
+              lit "d"
+        word
+          param "x" :+
+            word
+              lit "e"
+        word
+          param "x" +
+            word
+              lit "e"
+        word
+          param "x" :?
+            word
+              lit "f"
+        word
+          param "x" ?
+            word
+              lit "f"
+        word
+          param "x" #
+            word
+              lit "p"
+        word
+          param "x" ##
+            word
+              lit "p"
+        word
+          param "x" %
+            word
+              lit "p"
+        word
+          param "x" %%
+            word
+              lit "p"

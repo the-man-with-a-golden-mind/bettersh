@@ -1,0 +1,14 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "cat"
+      redir << noexpand
+        target
+          word
+            lit "EO"
+            lit q "F"
+        body
+          word
+            lit q "hi\n"

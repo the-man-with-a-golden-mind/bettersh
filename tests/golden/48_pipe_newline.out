@@ -1,0 +1,17 @@
+program
+  item nl
+    pipe
+      simple
+        argv
+          word
+            lit "echo"
+          word
+            lit "a"
+      simple
+        argv
+          word
+            lit "tr"
+          word
+            lit "a"
+          word
+            lit "b"

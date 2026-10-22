@@ -1,0 +1,16 @@
+#!/usr/bin/env bettersh
+
+fn bucket(n) {
+  case n {
+    0: return "none"
+    1..9: return "few"
+    10..: return "many"
+    *: return "other"
+  }
+}
+
+let n = 0
+while n < 12 {
+  println("@{ n } @{ bucket(n) }")
+  let n = n + 1
+}

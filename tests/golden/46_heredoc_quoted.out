@@ -1,0 +1,13 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "cat"
+      redir << noexpand
+        target
+          word
+            lit q "EOF"
+        body
+          word
+            lit q "$HOME\n"

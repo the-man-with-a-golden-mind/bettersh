@@ -1,0 +1,8 @@
+program
+  item nl
+    pipe
+      bang
+      simple
+        argv
+          word
+            lit "false"

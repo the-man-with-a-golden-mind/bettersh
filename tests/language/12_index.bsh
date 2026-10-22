@@ -1,0 +1,4 @@
+#!/usr/bin/env bettersh
+let a = ["a", "b"]
+println(a[0])
+println("hi"[1])

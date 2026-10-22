@@ -1,0 +1,12 @@
+export A=1
+echo "[$A]"
+x='a b'
+export B=$x
+echo "[$B]"
+echo C=1
+echo D=$x
+export E="~"
+echo "[$E]"
+echo F=~
+export 1bad
+echo after

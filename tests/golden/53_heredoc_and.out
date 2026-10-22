@@ -1,0 +1,20 @@
+program
+  item nl
+    and
+      simple
+        argv
+          word
+            lit "cat"
+        redir <<
+          target
+            word
+              lit "EOF"
+          body
+            word
+              lit q "body\n"
+      simple
+        argv
+          word
+            lit "echo"
+          word
+            lit "x"

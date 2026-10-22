@@ -1,0 +1,11 @@
+#!/usr/bin/env bettersh
+import std/strings
+import std/math
+import std/path
+println(strings.shout("yo"))
+println(strings.reverse("abc"))
+println(math.gcd(12, 18))
+println(math.sqrt(4))
+println(math.floor(3.7))
+println(path.join("a", "b"))
+println(path.base("/a/b/c.txt"))

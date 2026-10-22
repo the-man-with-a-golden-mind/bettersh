@@ -1,0 +1,11 @@
+#!/usr/bin/env bettersh
+let a = 1
+let b = 2
+let c = a + b
+let d = c * 4
+let e = d - 1
+let msg = "n=@{ e }"
+let xs = ["a", "b"]
+let ys = xs.map(fn(x) { x.upper() })
+println(msg)
+println(ys.join("-"))

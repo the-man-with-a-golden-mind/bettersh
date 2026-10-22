@@ -1,0 +1,15 @@
+c.txt
+/a/b
+txt
+c
+/
+
+
+gz
+archive.tar
+/a/b/c
+/a/c
+c
+true
+false
+false

@@ -1,0 +1,23 @@
+#!/usr/bin/env bettersh
+
+import std/proc
+
+fn spawn(cmd) {
+  return proc.spawn(cmd)
+}
+
+fn await(id) {
+  return proc.await(id)
+}
+
+fn gather(cmds) {
+  let ids = []
+  for c in cmds {
+    let ids = ids.push(proc.spawn(c))
+  }
+  let out = []
+  for id in ids {
+    let out = out.push(proc.await(id))
+  }
+  return out
+}

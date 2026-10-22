@@ -1,0 +1,42 @@
+> 0000  CONST_INT      1
+> 0009  STORE_LOCAL    0 a
+> 0012  CONST_INT      2
+> 0021  STORE_LOCAL    1 b
+> 0024  LOAD_LOCAL     0 a
+> 0027  LOAD_LOCAL     1 b
+> 0030  ADD           
+> 0031  STORE_LOCAL    2 c
+> 0034  LOAD_LOCAL     2 c
+> 0037  CONST_INT      4
+> 0046  MUL           
+> 0047  STORE_LOCAL    3 d
+> 0050  LOAD_LOCAL     3 d
+> 0053  CONST_INT      1
+> 0062  SUB           
+> 0063  STORE_LOCAL    4 e
+> 0066  CONST          "n="
+> 0069  LOAD_LOCAL     4 e
+> 0072  CAT           
+> 0073  STORE_LOCAL    5 msg
+> 0076  CONST          "a"
+> 0079  CONST          "b"
+> 0082  ARRAY          2
+> 0085  STORE_LOCAL    6 xs
+> 0088  LOAD_LOCAL     6 xs
+> 0091  MAKE_FN        0
+> 0094  METHOD         map 1
+> 0000  LOAD_LOCAL     0 x
+> 0003  METHOD         upper 0
+> 0007  RETURN        
+> 0000  LOAD_LOCAL     0 x
+> 0003  METHOD         upper 0
+> 0007  RETURN        
+> 0098  STORE_LOCAL    7 ys
+> 0101  LOAD_LOCAL     5 msg
+> 0104  BUILTIN        println 1
+> 0107  POP           
+> 0108  LOAD_LOCAL     7 ys
+> 0111  CONST          "-"
+> 0114  METHOD         join 1
+> 0118  BUILTIN        println 1
+> 0121  POP           

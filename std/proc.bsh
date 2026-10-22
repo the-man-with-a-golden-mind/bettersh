@@ -1,0 +1,13 @@
+#!/usr/bin/env bettersh
+
+fn run(cmd) {
+  return capture(cmd)
+}
+
+fn spawn(cmd) {
+  return proc_spawn(cmd)
+}
+
+fn await(id) {
+  return proc_await(id)
+}

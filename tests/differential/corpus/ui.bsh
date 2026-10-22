@@ -1,0 +1,5 @@
+#!/usr/bin/env bettersh
+import std/ui
+let s = ui.blank(6, 3)
+let s = ui.box(s, 0, 0, 3, 6, "")
+println(ui.paint(s))

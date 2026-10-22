@@ -1,0 +1,13 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "cat"
+      redir <<
+        target
+          word
+            param "X"
+        body
+          word
+            lit q "body\n"

@@ -1,0 +1,3 @@
+#!/usr/bin/env bettersh
+println("once")
+fn v() { return 7 }

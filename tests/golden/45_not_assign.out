@@ -1,0 +1,16 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "echo"
+        word
+          lit "A"
+          lit q "="
+          lit "b"
+        word
+          lit "1FOO=bar"
+        word
+          lit "FOO"
+          lit q "="
+          lit "bar"

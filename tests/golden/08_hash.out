@@ -1,0 +1,19 @@
+program
+  item nl
+    simple
+      argv
+        word
+          lit "echo"
+        word
+          param "#"
+        word
+          param "#" len
+        word
+          param "HOME" len
+        word
+          param "#" :-
+            word
+              lit "z"
+        word
+          param "#" ##
+            word

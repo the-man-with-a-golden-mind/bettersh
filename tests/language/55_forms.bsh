@@ -1,0 +1,6 @@
+#!/usr/bin/env bettersh
+import "./mod/lib.bsh" as pack
+import { a, b } from "./mod/lib.bsh"
+println(pack.c())
+println(a())
+println(b())

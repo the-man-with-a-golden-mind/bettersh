@@ -1,0 +1,2 @@
+# Empty. stderr is compared after a mktemp suffix is rewritten to tmp.X.
+# A path added here is not a pass. Remove it when that file's stderr matches.

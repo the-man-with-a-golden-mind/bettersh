@@ -1,0 +1,4 @@
+(false)
+echo $?
+{ false; }
+echo $?

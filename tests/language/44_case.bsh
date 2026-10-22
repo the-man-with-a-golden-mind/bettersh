@@ -1,0 +1,14 @@
+#!/usr/bin/env bettersh
+fn bucket(n) {
+  case n {
+    0: return 0
+    1..99: return 1
+    100..:
+      return 2
+    *: return 3
+  }
+}
+println(bucket(0))
+println(bucket(5))
+println(bucket(100))
+println(bucket(0 - 1))

@@ -1,0 +1,6 @@
+#!/usr/bin/env bettersh
+let s = 0
+for n in [1, 2, 3, 4] {
+  let s = s + n
+}
+println(s)

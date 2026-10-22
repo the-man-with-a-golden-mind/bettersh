@@ -1,0 +1,4 @@
+#!/usr/bin/env bettersh
+import std/io
+io.writeln("io-ok")
+println(io.lines("a\nb").join(","))

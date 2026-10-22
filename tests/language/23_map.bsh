@@ -1,0 +1,3 @@
+#!/usr/bin/env bettersh
+let user = { name: "Ada" }
+echo @{ user }

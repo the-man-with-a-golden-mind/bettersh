@@ -1,0 +1,5 @@
+/bettersh
+*.o
+*.dSYM
+/tests/value_test
+/tests/verify_test

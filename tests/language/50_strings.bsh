@@ -1,0 +1,32 @@
+#!/usr/bin/env bettersh
+import std/strings
+println(strings.shout("hi"))
+println(strings.slice("abcdef", 1, 4))
+println(strings.slice("ab", 5, 9))
+println(strings.slice("ab", -3, 1))
+println(strings.starts("hello", "he"))
+println(strings.starts("hello", ""))
+println(strings.starts("hi", "hello"))
+println(strings.ends("hello", "lo"))
+println(strings.ends("hello", ""))
+println(strings.ends("hi", "hello"))
+println(strings.reverse("abc"))
+println(strings.reverse(""))
+println(strings.repeat("ab", 3))
+println(strings.repeat("ab", 0))
+println(strings.pad_left("42", 5, "0"))
+println(strings.pad_left("12345", 3, "0"))
+println(strings.pad_right("42", 5, "."))
+println(strings.pad_left("x", 4, "ab"))
+println(strings.pad_right("", 2, "z"))
+println(strings.count("a-b-a", "-"))
+println(strings.count("aaa", ""))
+println(strings.count("aaa", "aa"))
+println(strings.words("  one   two three ").join(","))
+println(strings.starts("", ""))
+println(strings.ends("", ""))
+let a = "hi"
+let b = a
+let a = "@{ a }!"
+println(a)
+println(b)

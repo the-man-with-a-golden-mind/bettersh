@@ -1,0 +1,9 @@
+program
+  item nl
+    simple
+      assign "FOO"
+        word
+          lit q "a b"
+      argv
+        word
+          lit "cmd"

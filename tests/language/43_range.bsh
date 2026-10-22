@@ -1,0 +1,12 @@
+#!/usr/bin/env bettersh
+let s = 0
+for i in 1..5 {
+  let s = s + i
+}
+println(s)
+let n = 9
+for i in 3..1 {
+  println(i)
+}
+println(n)
+println(i)

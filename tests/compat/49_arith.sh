@@ -1,0 +1,23 @@
+echo $((nope+1))
+a=
+echo $((a+2))
+echo $((0x10+1))
+echo $((010+1))
+a=3
+echo $((a+=2))
+echo $a
+echo $((1?5:9))
+echo $((0?5:9))
+echo $((1<<3))
+echo $((32>>2))
+echo $((5|2))
+echo $((5&2))
+echo $((5^1))
+echo $((~0))
+echo $((2<3))
+echo $((2>3))
+echo $((2==2))
+echo $((2!=3))
+echo $((1&&2))
+echo $((0||3))
+echo $((0&&nosuch))

@@ -1,0 +1,15 @@
+program
+  item semi
+    simple
+      argv
+        word
+          lit "echo"
+        word
+          lit "a"
+  item nl
+    simple
+      argv
+        word
+          lit "echo"
+        word
+          lit "b"

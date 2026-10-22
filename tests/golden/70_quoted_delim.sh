@@ -1,0 +1,3 @@
+cat <<"EOF"
+$HOME
+EOF

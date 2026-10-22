@@ -1,0 +1,21 @@
+#!/usr/bin/env bettersh
+
+fn write(text) {
+  print(text)
+}
+
+fn writeln(text) {
+  println(text)
+}
+
+fn error(text) {
+  eprintln(text)
+}
+
+fn read() {
+  return readln()
+}
+
+fn lines(text) {
+  return text.split("\n")
+}

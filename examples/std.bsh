@@ -1,0 +1,12 @@
+#!/usr/bin/env bettersh
+
+import std/strings
+import std/math
+
+let raw = "  BetterSH  "
+let title = strings.shout(raw.trim())
+println(title)
+println(strings.reverse("shell"))
+println(math.gcd(12, 18))
+println(math.pow(2, 10))
+println(math.hypot(3, 4))

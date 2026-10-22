@@ -1,0 +1,2 @@
+#!/usr/bin/env bettersh
+if 1 { echo hi }

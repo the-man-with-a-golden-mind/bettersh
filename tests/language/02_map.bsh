@@ -1,0 +1,2 @@
+#!/usr/bin/env bettersh
+let f = ["a","b"]; println(f.map(fn(x) { x.upper() }).join("-"))

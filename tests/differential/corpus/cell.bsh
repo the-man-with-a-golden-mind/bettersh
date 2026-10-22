@@ -1,0 +1,12 @@
+#!/usr/bin/env bettersh
+let n = 1
+fn reader() { return n }
+let n = 4
+println(reader())
+fn wrap() {
+  let n = 1
+  fn inner() { let n = 8; return n }
+  println(inner())
+  println(n)
+}
+wrap()

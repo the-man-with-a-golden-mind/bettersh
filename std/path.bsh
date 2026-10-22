@@ -1,0 +1,66 @@
+#!/usr/bin/env bettersh
+
+fn slice(p, start, end) {
+  if start < 0 { let start = 0 }
+  if end > p.length { let end = p.length }
+  if start >= end { return "" }
+  let out = ""
+  let i = start
+  while i < end {
+    let out = "@{ out }@{ p[i] }"
+    let i = i + 1
+  }
+  return out
+}
+
+fn base(p) {
+  let i = p.length
+  while i > 0 {
+    let i = i - 1
+    if p[i] == "/" { return slice(p, i + 1, p.length) }
+  }
+  return p
+}
+
+fn dir(p) {
+  let i = p.length
+  while i > 0 {
+    let i = i - 1
+    if p[i] == "/" {
+      if i == 0 { return "/" }
+      return slice(p, 0, i)
+    }
+  }
+  return ""
+}
+
+fn ext(p) {
+  let name = base(p)
+  let i = name.length
+  while i > 0 {
+    let i = i - 1
+    if name[i] == "." {
+      if i == 0 { return "" }
+      return slice(name, i + 1, name.length)
+    }
+  }
+  return ""
+}
+
+fn stem(p) {
+  let name = base(p)
+  let e = ext(name)
+  if e.length == 0 { return name }
+  return slice(name, 0, name.length - e.length - 1)
+}
+
+fn join(a, b) {
+  if a.length == 0 { return b }
+  if a[a.length - 1] == "/" { return "@{ a }@{ b }" }
+  return "@{ a }/@{ b }"
+}
+
+fn is_abs(p) {
+  if p.length == 0 { return false }
+  return p[0] == "/"
+}
