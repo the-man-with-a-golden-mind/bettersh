@@ -306,7 +306,7 @@ int scan_word(Lexer *lx, int mode, int strip_tabs, Word **out) {
     }
 
     if (scan.in_dquote) {
-        lx_error(lx, scan.dquote_line, scan.dquote_col, "unterminated quote");
+        lx_error(lx, lx->line, lx->col, "unterminated quote");
         fail_scan(&scan);
         return -1;
     }

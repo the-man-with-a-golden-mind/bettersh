@@ -11,7 +11,7 @@ if ! command -v dash >/dev/null 2>&1; then
 fi
 
 cat >"$d/drive.py" << 'PY'
-import os, pty, select, sys, time
+import os, pty, select, signal, sys, time
 
 def run(argv, payload, timeout, env):
     pid, fd = pty.fork()
@@ -110,6 +110,72 @@ def stripped(body):
             line = line[2:]
         found.append(line.strip())
     return found
+
+def paced(argv, steps, timeout, env, gap):
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ.update(env)
+        os.execv(argv[0], argv)
+        os._exit(127)
+    data = b""
+    step = 0
+    sent = 0
+    status = None
+    next_send = time.time() + gap
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline:
+            payload = steps[step] if step < len(steps) else b""
+            write_set = [fd] if step < len(steps) and time.time() >= next_send else []
+            ready, writable, _ = select.select([fd], write_set, [], 0.05)
+            if fd in ready:
+                try:
+                    chunk = os.read(fd, 4096)
+                except OSError:
+                    chunk = b""
+                if chunk:
+                    data += chunk
+                else:
+                    _, st = os.waitpid(pid, 0)
+                    status = st
+                    break
+            if writable and sent < len(payload):
+                try:
+                    n = os.write(fd, payload[sent:sent + 64])
+                except OSError:
+                    n = 0
+                if n <= 0:
+                    break
+                sent += n
+                if sent >= len(payload):
+                    step += 1
+                    sent = 0
+                    next_send = time.time() + gap
+            wpid, st = os.waitpid(pid, os.WNOHANG)
+            if wpid == pid:
+                status = st
+                while True:
+                    ready, _, _ = select.select([fd], [], [], 0.05)
+                    if not ready:
+                        break
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    data += chunk
+                break
+        else:
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+            os.waitpid(pid, 0)
+            status = None
+    finally:
+        os.close(fd)
+    return status, data
 
 def both(payload, timeout, env, bin, dash):
     kept = {}
@@ -292,6 +358,19 @@ exit
             show("fc-e", st, data)
             return 1
         return 0
+    if kind == "stop":
+        steps = [b"sleep 30\n", b"\x1a", b"exit 4\n", b"exit 4\n"]
+        for name, argv in ((bin, [bin, "-i"]), (dash, [dash, "-i"])):
+            st, data = paced(argv, steps, 8, env, 0.4)
+            body = text(data)
+            code = exited(st)
+            warns = body.count("You have stopped jobs.")
+            stop_mark = signal.strsignal(signal.SIGTSTP)
+            if code != 4 or warns != 1 or not stop_mark or stop_mark not in body:
+                show(name, st, data)
+                sys.stderr.write("code=%s warns=%s\n" % (code, warns))
+                return 1
+        return 0
     if kind == "notty":
         payload = b"printf 'FLAGS:%s\\n' \"$-\"\njobs %99\necho j:$?\nexit\n"
         bodies = both(payload, 6, env, bin, dash)
@@ -328,7 +407,7 @@ printf 'echo EDITED\n' > "$1"
 EOF
 chmod +x "$d/ed.sh"
 dash_bin=$(command -v dash)
-for kind in prompt jobs vi fc jerr jlive eof fce; do
+for kind in prompt jobs vi fc jerr jlive eof fce stop; do
     if ! python3 "$d/drive.py" "$kind" "$bin" "$dash_bin" "$d/ed.sh"; then
         printf 'FAIL interact %s\n' "$kind" >&2
         fail=1

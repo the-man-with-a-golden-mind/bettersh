@@ -21,7 +21,7 @@ int scan_single(Scan *scan) {
     while (1) {
         int c = peekc(lx);
         if (c < 0) {
-            return lx_error(lx, line, col, "unterminated quote");
+            return lx_error(lx, lx->line, lx->col, "unterminated quote");
         }
         if (c == '\'') {
             nextc(lx);
@@ -108,6 +108,29 @@ static int scan_param_word(Lexer *lx, Word **out) {
     return scan_word(lx, MODE_PARAM, 0, out);
 }
 
+/* A newline eaten while reading the name or the ':' is not a new line yet.
+   The following text is. A later '}' is Bad substitution. EOF is Missing '}'. */
+static void eat_nl_quiet(Lexer *lx) {
+    if (peekc(lx) == '\n') {
+        lx->pos++;
+        lx->col = 1;
+    }
+}
+
+static int bad_or_missing(Lexer *lx, int saved_line, int saved_col, int quiet_nl) {
+    Word *junk = NULL;
+    if (quiet_nl) {
+        eat_nl_quiet(lx);
+    }
+    if (scan_param_word(lx, &junk) < 0) {
+        return -1;
+    }
+    if (peekc(lx) == '}') {
+        return lx_error(lx, saved_line, saved_col, "bad substitution");
+    }
+    return lx_error(lx, lx->line, lx->col, "missing '}'");
+}
+
 static int read_param_op(Scan *scan, ParamOp *op, Word **nested) {
     Lexer *lx = scan->lx;
     skip_bnl(lx);
@@ -128,8 +151,20 @@ static int read_param_op(Scan *scan, ParamOp *op, Word **nested) {
             which = P_COLON_PLUS;
         } else if (n == '?') {
             which = P_COLON_QUEST;
+        } else if (n == '}') {
+            nextc(lx);
+            nextc(lx);
+            *op = P_COLON_CONCAT;
+            return scan_param_word(lx, nested);
         } else {
-            return lx_error(lx, lx->line, lx->col, "bad substitution");
+            int saved_line = lx->line;
+            int saved_col = lx->col;
+            nextc(lx);
+            int quiet = peekc(lx) == '\n';
+            if (!quiet && peekc(lx) >= 0) {
+                nextc(lx);
+            }
+            return bad_or_missing(lx, saved_line, saved_col, quiet);
         }
         nextc(lx);
         nextc(lx);
@@ -162,7 +197,7 @@ static int read_param_op(Scan *scan, ParamOp *op, Word **nested) {
         }
         return scan_param_word(lx, nested);
     }
-    return lx_error(lx, lx->line, lx->col, "bad substitution");
+    return bad_or_missing(lx, lx->line, lx->col, c == '\n');
 }
 
 static void push_param(Scan *scan, int line, int col, char *name, ParamOp op, Word *nested) {
@@ -202,8 +237,8 @@ static int scan_brace(Scan *scan, int line, int col) {
     Lexer *lx = scan->lx;
     nextc(lx);
     skip_bnl(lx);
-    if (peekc(lx) < 0) {
-        return lx_error(lx, line, col, "bad substitution");
+    if (peekc(lx) < 0 || peekc(lx) == '\n') {
+        return bad_or_missing(lx, line, col, peekc(lx) == '\n');
     }
     int is_len = 0;
     if (peekc(lx) == '#' && looks_like_length(lx)) {
@@ -220,7 +255,7 @@ static int scan_brace(Scan *scan, int line, int col) {
     if (is_len) {
         skip_bnl(lx);
         if (peekc(lx) != '}') {
-            return lx_error(lx, line, col, "bad substitution");
+            return lx_error(lx, lx->line, lx->col, "missing '}'");
         }
         nextc(lx);
         op = P_LEN;
@@ -230,7 +265,7 @@ static int scan_brace(Scan *scan, int line, int col) {
         }
         skip_bnl(lx);
         if (peekc(lx) != '}') {
-            return lx_error(lx, line, col, "missing '}'");
+            return lx_error(lx, lx->line, lx->col, "missing '}'");
         }
         nextc(lx);
     }

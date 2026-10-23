@@ -32,6 +32,12 @@ static const struct Lim table[] = {
     {"process", RLIMIT_NPROC, 1, 'p'},
     {"nofiles", RLIMIT_NOFILE, 1, 'n'},
     {"vmemory(kbytes)", RLIMIT_AS, 1024, 'v'},
+#ifdef RLIMIT_LOCKS
+    {"locks", RLIMIT_LOCKS, 1, 'w'},
+#endif
+#ifdef RLIMIT_RTPRIO
+    {"rtprio", RLIMIT_RTPRIO, 1, 'r'},
+#endif
 };
 
 static const struct Lim *find_lim(char flag) {

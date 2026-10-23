@@ -29,13 +29,31 @@ static int is_name(const char *text) {
 int cmd_unset(EvalCtx *ctx, int argc, char **argv) {
     int funcs = 0;
     int i = 1;
-    if (i < argc && strcmp(argv[i], "-f") == 0) {
-        funcs = 1;
-        i++;
-    } else if (i < argc && strcmp(argv[i], "-v") == 0) {
+    while (i < argc && argv[i][0] == '-' && argv[i][1] != '\0') {
+        const char *p;
+        if (argv[i][1] == '-' && argv[i][2] == '\0') {
+            i++;
+            break;
+        }
+        for (p = argv[i] + 1; *p; p++) {
+            if (*p == 'f') {
+                funcs = 1;
+            } else if (*p == 'v') {
+                funcs = 0;
+            } else {
+                shell_err(ctx, 0, "unset: Illegal option -%c", *p);
+                shell_abort(ctx, 2);
+                return 2;
+            }
+        }
         i++;
     }
     for (; i < argc; i++) {
+        if (!funcs && !is_name(argv[i])) {
+            shell_err(ctx, 0, "unset: %s: bad variable name", argv[i]);
+            shell_abort(ctx, 2);
+            return 2;
+        }
         if (funcs) {
             for (uint32_t f = 0; f < ctx->nfuncs; f++) {
                 if (strcmp(ctx->funcs[f].name, argv[i]) == 0) {
@@ -49,6 +67,8 @@ int cmd_unset(EvalCtx *ctx, int argc, char **argv) {
             shell_err(ctx, 0, "unset: %s: is read only", argv[i]);
             shell_abort(ctx, 2);
             return 2;
+        } else if (strcmp(argv[i], "LINENO") == 0) {
+            ctx->lineno_user = 1;
         }
     }
     return 0;
@@ -69,12 +89,50 @@ static void list_marked(EvalCtx *ctx, int want_export) {
     }
 }
 
+/* Dash's nextopt("p:"): -p takes one argument and ignores it.
+   Any other letter aborts. Names begin at the returned index. */
+static int mark_opts(EvalCtx *ctx, int argc, char **argv, const char *cmd) {
+    int i = 1;
+    while (i < argc) {
+        const char *opt = argv[i];
+        const char *p;
+        if (opt[0] != '-' || opt[1] == '\0') {
+            break;
+        }
+        if (opt[1] == '-' && opt[2] == '\0') {
+            return i + 1;
+        }
+        p = opt + 1;
+        while (*p) {
+            if (*p != 'p') {
+                shell_err(ctx, 0, "%s: Illegal option -%c", cmd, *p);
+                shell_abort(ctx, 2);
+                return -1;
+            }
+            p++;
+            if (*p) {
+                break;
+            }
+            if (i + 1 < argc) {
+                i++;
+            }
+            break;
+        }
+        i++;
+    }
+    return i;
+}
+
 int cmd_export(EvalCtx *ctx, int argc, char **argv) {
-    if (argc < 2 || (argc == 2 && strcmp(argv[1], "-p") == 0)) {
+    int i = mark_opts(ctx, argc, argv, "export");
+    if (i < 0) {
+        return 2;
+    }
+    if (i >= argc) {
         list_marked(ctx, 1);
         return 0;
     }
-    for (int i = 1; i < argc; i++) {
+    for (; i < argc; i++) {
         char *eq = strchr(argv[i], '=');
         if (eq) {
             *eq = '\0';
@@ -114,7 +172,14 @@ int cmd_shift(EvalCtx *ctx, int argc, char **argv) {
         char *end = NULL;
         errno = 0;
         n = strtol(argv[1], &end, 10);
-        if (!argv[1][0] || !end || *end || errno == ERANGE || n < 0 || n > 2147483647L) {
+        if (end) {
+            while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\v' || *end == '\f' ||
+                   *end == '\r') {
+                end++;
+            }
+        }
+        if (!argv[1][0] || !end || end == argv[1] || *end || errno == ERANGE || n < 0 ||
+            n > 2147483647L) {
             shell_err(ctx, 0, "shift: Illegal number: %s", argv[1]);
             shell_abort(ctx, 2);
             return 2;
@@ -148,28 +213,36 @@ int cmd_shift(EvalCtx *ctx, int argc, char **argv) {
     return 0;
 }
 
-static void show_opt(const char *name, int on) {
-    printf("%s %s\n", name, on ? "on" : "off");
+static void show_opt(const char *name, int on, int plus) {
+    if (plus) {
+        printf("set %co %s\n", on ? '-' : '+', name);
+        return;
+    }
+    printf("%-16s%s\n", name, on ? "on" : "off");
 }
 
-static void list_options(const EvalCtx *ctx) {
-    show_opt("errexit", ctx->errexit);
-    show_opt("nounset", ctx->nounset);
-    show_opt("pipefail", ctx->pipefail);
-    show_opt("xtrace", ctx->xtrace);
-    show_opt("noclobber", ctx->noclobber);
-    show_opt("noglob", ctx->noglob);
-    show_opt("noexec", ctx->noexec);
-    show_opt("verbose", ctx->verbose);
-    show_opt("allexport", ctx->allexport);
-    show_opt("ignoreeof", ctx->ignoreeof);
-    show_opt("monitor", ctx->monitor);
-    show_opt("nolog", ctx->nolog);
-    show_opt("notify", ctx->notify);
-    show_opt("vi", ctx->vi);
-    show_opt("emacs", ctx->emacs);
-    show_opt("interactive", ctx->interactive);
-    show_opt("stdin", ctx->stdin_mode);
+static void list_options(const EvalCtx *ctx, int plus) {
+    if (!plus) {
+        printf("Current option settings\n");
+    }
+    show_opt("errexit", ctx->errexit, plus);
+    show_opt("noglob", ctx->noglob, plus);
+    show_opt("ignoreeof", ctx->ignoreeof, plus);
+    show_opt("interactive", ctx->interactive, plus);
+    show_opt("monitor", ctx->monitor, plus);
+    show_opt("noexec", ctx->noexec, plus);
+    show_opt("stdin", ctx->stdin_mode, plus);
+    show_opt("xtrace", ctx->xtrace, plus);
+    show_opt("verbose", ctx->verbose, plus);
+    show_opt("vi", ctx->vi, plus);
+    show_opt("emacs", ctx->emacs, plus);
+    show_opt("noclobber", ctx->noclobber, plus);
+    show_opt("allexport", ctx->allexport, plus);
+    show_opt("notify", ctx->notify, plus);
+    show_opt("nounset", ctx->nounset, plus);
+    show_opt("nolog", ctx->nolog, plus);
+    show_opt("debug", ctx->debug, plus);
+    show_opt("pipefail", ctx->pipefail, plus);
 }
 
 static int set_named(EvalCtx *ctx, const char *opt, int on) {
@@ -198,6 +271,8 @@ static int set_named(EvalCtx *ctx, const char *opt, int on) {
         ctx->ignoreeof = on;
     } else if (strcmp(opt, "nolog") == 0) {
         ctx->nolog = on;
+    } else if (strcmp(opt, "debug") == 0) {
+        ctx->debug = on;
     } else if (strcmp(opt, "notify") == 0) {
         ctx->notify = on;
     } else if (strcmp(opt, "vi") == 0) {
@@ -292,7 +367,7 @@ int cmd_set(EvalCtx *ctx, int argc, char **argv) {
             if (argv[i][2] == '\0') {
                 i++;
                 if (i >= argc) {
-                    list_options(ctx);
+                    list_options(ctx, !on);
                     return 0;
                 }
                 opt = argv[i++];
@@ -319,14 +394,28 @@ int cmd_set(EvalCtx *ctx, int argc, char **argv) {
 }
 
 int cmd_readonly(EvalCtx *ctx, int argc, char **argv) {
-    if (argc < 2 || (argc == 2 && strcmp(argv[1], "-p") == 0)) {
+    int i = mark_opts(ctx, argc, argv, "readonly");
+    if (i < 0) {
+        return 2;
+    }
+    if (i >= argc) {
         list_marked(ctx, 0);
         return 0;
     }
-    for (int i = 1; i < argc; i++) {
+    for (; i < argc; i++) {
         char *eq = strchr(argv[i], '=');
         if (eq) {
             *eq = '\0';
+        }
+        if (!is_name(argv[i])) {
+            shell_err(ctx, 0, "readonly: %s: bad variable name", argv[i]);
+            if (eq) {
+                *eq = '=';
+            }
+            shell_abort(ctx, 2);
+            return 2;
+        }
+        if (eq) {
             if (env_set(&ctx->env, argv[i], eq + 1) < 0) {
                 shell_err(ctx, 0, "readonly: %s: is read only", argv[i]);
                 *eq = '=';

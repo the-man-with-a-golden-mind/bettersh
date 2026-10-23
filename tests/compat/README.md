@@ -1,6 +1,6 @@
 # Compatibility regressions
 
-These 78 scripts were written in this repository. They are not the Open Group shell test suite, and they have no upstream provenance.
+These 120 scripts were written in this repository. They are not the Open Group shell test suite, and they have no upstream provenance.
 
 `tests/run.sh` runs each one under dash and bettersh. Stdout and the exit status must match. stderr must match too, except for the files named in `stderr-only.list`. A new stderr mismatch fails the run. A listed file whose stderr starts matching fails until its name is removed from the list.
 

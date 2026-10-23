@@ -191,6 +191,9 @@ int interact_run(int argc, char **argv, char **envp, const ShellStart *start) {
             if (!(ctx.nolog && is_func_only(root))) {
                 hist_add(&ctx, acc);
             }
+            if (ctx.job_warning > 0) {
+                ctx.job_warning--;
+            }
             eval_node(&ctx, root, 1);
             break;
         }

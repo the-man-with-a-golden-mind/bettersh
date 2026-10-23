@@ -97,18 +97,58 @@ static int file_cmp(const char *op, const char *left, const char *right) {
     return 0;
 }
 
-static int cmp_values(const char *op, const char *left, const char *right) {
+static int test_number(const char *text, long *out) {
+    char *end = NULL;
+    long v;
+    errno = 0;
+    if (!text) {
+        return -1;
+    }
+    v = strtol(text, &end, 10);
+    if (end == text) {
+        return -1;
+    }
+    while (end && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\v' || *end == '\f' ||
+                   *end == '\r')) {
+        end++;
+    }
+    if (!end || *end || errno == ERANGE) {
+        return -1;
+    }
+    *out = v;
+    return 0;
+}
+
+static int cmp_values(const char *op, const char *left, const char *right, int *err,
+                      const char **bad) {
     if (strcmp(op, "=") == 0) {
         return strcmp(left, right) == 0 ? 0 : 1;
     }
     if (strcmp(op, "!=") == 0) {
         return strcmp(left, right) != 0 ? 0 : 1;
     }
+    /* Byte order, the same order strcmp uses. Equal strings are false. */
+    if (strcmp(op, "<") == 0) {
+        return strcmp(left, right) < 0 ? 0 : 1;
+    }
+    if (strcmp(op, ">") == 0) {
+        return strcmp(left, right) > 0 ? 0 : 1;
+    }
     if (strcmp(op, "-ef") == 0 || strcmp(op, "-nt") == 0 || strcmp(op, "-ot") == 0) {
         return file_cmp(op, left, right);
     }
-    long l = strtol(left, NULL, 10);
-    long r = strtol(right, NULL, 10);
+    long l = 0;
+    long r = 0;
+    if (test_number(left, &l) < 0) {
+        *err = 4;
+        *bad = left;
+        return 1;
+    }
+    if (test_number(right, &r) < 0) {
+        *err = 4;
+        *bad = right;
+        return 1;
+    }
     if (strcmp(op, "-eq") == 0) {
         return l == r ? 0 : 1;
     }
@@ -138,19 +178,21 @@ static int is_unary(const char *op) {
 }
 
 static int is_binary(const char *op) {
-    return strcmp(op, "=") == 0 || strcmp(op, "!=") == 0 || strcmp(op, "-eq") == 0 ||
-           strcmp(op, "-ne") == 0 || strcmp(op, "-lt") == 0 || strcmp(op, "-le") == 0 ||
-           strcmp(op, "-gt") == 0 || strcmp(op, "-ge") == 0 || strcmp(op, "-ef") == 0 ||
-           strcmp(op, "-nt") == 0 || strcmp(op, "-ot") == 0;
+    return strcmp(op, "=") == 0 || strcmp(op, "!=") == 0 || strcmp(op, "<") == 0 ||
+           strcmp(op, ">") == 0 || strcmp(op, "-eq") == 0 || strcmp(op, "-ne") == 0 ||
+           strcmp(op, "-lt") == 0 || strcmp(op, "-le") == 0 || strcmp(op, "-gt") == 0 ||
+           strcmp(op, "-ge") == 0 || strcmp(op, "-ef") == 0 || strcmp(op, "-nt") == 0 ||
+           strcmp(op, "-ot") == 0;
 }
 
-static int eval_primary(char **a, int i, int n, int *used, int *err) {
+static int eval_primary(char **a, int i, int n, int *used, int *err, const char **miss) {
     if (i >= n) {
         *err = 1;
         return 1;
     }
-    if (strcmp(a[i], "!") == 0) {
-        int inner = eval_primary(a, i + 1, n, used, err);
+    /* A lone "!" is a non-empty string. Negation needs an operand. */
+    if (strcmp(a[i], "!") == 0 && i + 1 < n) {
+        int inner = eval_primary(a, i + 1, n, used, err, miss);
         *used += 1;
         return inner == 0 ? 1 : 0;
     }
@@ -168,9 +210,12 @@ static int eval_primary(char **a, int i, int n, int *used, int *err) {
             }
         }
         if (j >= n) {
-            *err = 1;
-            return 1;
-        }
+            /* `( = (` is a string compare. A bare open parenthesis is not. */
+            if (!(i + 2 < n && is_binary(a[i + 1]))) {
+                *err = 2;
+                return 1;
+            }
+        } else {
         int dummy = 0;
         int st = 1;
         int k = i + 1;
@@ -187,11 +232,12 @@ static int eval_primary(char **a, int i, int n, int *used, int *err) {
                 st = file_test(a[k], a[k + 1]);
             }
         } else if (j - k == 3 && is_binary(a[k + 1])) {
-            st = cmp_values(a[k + 1], a[k], a[k + 2]);
+            st = cmp_values(a[k + 1], a[k], a[k + 2], err, miss);
         }
         (void)dummy;
         *used = j - i + 1;
         return st;
+        }
     }
     if (is_unary(a[i]) && i + 1 < n) {
         *used = 2;
@@ -207,9 +253,14 @@ static int eval_primary(char **a, int i, int n, int *used, int *err) {
         }
         return st;
     }
-    if (i + 2 < n && is_binary(a[i + 1])) {
+    if (i + 1 < n && is_binary(a[i + 1])) {
+        if (i + 2 >= n) {
+            *miss = a[i + 1];
+            *err = 3;
+            return 1;
+        }
         *used = 3;
-        return cmp_values(a[i + 1], a[i], a[i + 2]);
+        return cmp_values(a[i + 1], a[i], a[i + 2], err, miss);
     }
     *used = 1;
     return a[i][0] ? 0 : 1;
@@ -235,13 +286,27 @@ int cmd_test(EvalCtx *ctx, int argc, char **argv) {
     int first = 1;
     int acc = 1;
     int op_or = 0;
+    const char *miss = NULL;
+    const char *who = bracket ? "[" : "test";
     while (index < end) {
         if (!first && index < end && (strcmp(argv[index], "-a") == 0 || strcmp(argv[index], "-o") == 0)) {
             op_or = strcmp(argv[index], "-o") == 0;
             index++;
         }
         int used = 0;
-        int st = eval_primary(argv, index, end, &used, &err);
+        int st = eval_primary(argv, index, end, &used, &err, &miss);
+        if (err == 2) {
+            shell_err(ctx, 0, "%s: closing paren expected", who);
+            return 2;
+        }
+        if (err == 3) {
+            shell_err(ctx, 0, "%s: %s: argument expected", who, miss ? miss : "");
+            return 2;
+        }
+        if (err == 4) {
+            shell_err(ctx, 0, "%s: Illegal number: %s", who, miss ? miss : "");
+            return 2;
+        }
         if (err || used <= 0) {
             shell_err(ctx, 0, "test: bad expression");
             return 2;
@@ -257,7 +322,7 @@ int cmd_test(EvalCtx *ctx, int argc, char **argv) {
         }
         status = acc;
         if (index < end && strcmp(argv[index], "-a") != 0 && strcmp(argv[index], "-o") != 0) {
-            shell_err(ctx, 0, "test: unexpected %s", argv[index]);
+            shell_err(ctx, 0, "%s: %s: unexpected operator", who, argv[index - 1]);
             return 2;
         }
     }

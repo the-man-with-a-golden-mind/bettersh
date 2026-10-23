@@ -19,5 +19,12 @@ int shjob_builtin_jobs(EvalCtx *ctx, int argc, char **argv);
 int shjob_builtin_bg(EvalCtx *ctx, int argc, char **argv);
 int shjob_builtin_fg(EvalCtx *ctx, int argc, char **argv);
 int shjob_builtin_wait(EvalCtx *ctx, int argc, char **argv);
+/* status 0 is a real exit. shjob_noted_wait returns -1 when pid was never collected.
+   quiet 1 marks the signal text suppressed, as a bare wait does. */
+void shjob_note_child(EvalCtx *ctx, pid_t pid, int raw, int quiet);
+int shjob_noted_wait(const EvalCtx *ctx, pid_t pid);
+/* Wait for one pid. Returns its status, or -1 when this shell never collected it. */
+int shjob_wait_one(EvalCtx *ctx, pid_t pid);
+void shjob_free_waits(EvalCtx *ctx);
 
 #endif

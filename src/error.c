@@ -47,12 +47,28 @@ static void sh_diag_text(const char *in, char *out, size_t n) {
         snprintf(out, n, "Bad substitution");
         return;
     }
+    if (strcmp(in, "missing '}'") == 0) {
+        snprintf(out, n, "Syntax error: Missing '}'");
+        return;
+    }
+    if (strcmp(in, "unterminated quote") == 0) {
+        snprintf(out, n, "Syntax error: Unterminated quoted string");
+        return;
+    }
     if (strncmp(in, exp, elen) == 0) {
         snprintf(out, n, "Syntax error: end of file unexpected (expecting \"%s\")", in + elen);
         return;
     }
     if (strcmp(in, "unexpected end of file") == 0) {
         snprintf(out, n, "Syntax error: end of file unexpected");
+        return;
+    }
+    if (strcmp(in, "unexpected \"newline\"") == 0) {
+        snprintf(out, n, "Syntax error: newline unexpected");
+        return;
+    }
+    if (strncmp(in, "unexpected \"", 12) == 0 && in[strlen(in) - 1] == '"') {
+        snprintf(out, n, "Syntax error: %s unexpected", in + 11);
         return;
     }
     snprintf(out, n, "%s", in);

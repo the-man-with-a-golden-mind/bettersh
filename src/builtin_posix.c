@@ -13,9 +13,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* umask, getopts, alias, and background jobs.
-   Monitor mode lives in shjob.c. Without it, bg and fg do not touch the terminal. */
-
 static void grow_add(char **data, size_t *len, size_t *cap, const char *text, size_t n) {
     if (n > SIZE_MAX - *len - 1) {
         fprintf(stderr, "bettersh: out of memory\n");
@@ -213,8 +210,20 @@ int cmd_umask(EvalCtx *ctx, int argc, char **argv) {
     int i = 1;
     unsigned cur;
     mode_t now;
-    if (i < argc && strcmp(argv[i], "-S") == 0) {
-        symbolic = 1;
+    while (i < argc && argv[i][0] == '-' && argv[i][1] != '\0') {
+        const char *p;
+        if (argv[i][1] == '-' && argv[i][2] == '\0') {
+            i++;
+            break;
+        }
+        for (p = argv[i] + 1; *p; p++) {
+            if (*p == 'S') {
+                symbolic = 1;
+            } else {
+                shell_err(ctx, 0, "umask: Illegal option -%c", *p);
+                return 2;
+            }
+        }
         i++;
     }
     now = umask(0);
@@ -227,10 +236,6 @@ int cmd_umask(EvalCtx *ctx, int argc, char **argv) {
             printf("%04o\n", cur);
         }
         return 0;
-    }
-    if (i + 1 < argc) {
-        shell_err(ctx, 0, "umask: too many arguments");
-        return 2;
     }
     if (all_digits(argv[i])) {
         unsigned next = 0;
@@ -346,7 +351,7 @@ int cmd_getopts(EvalCtx *ctx, int argc, char **argv) {
                 } else {
                     fprintf(stderr, "Illegal option -%c\n", ch);
                     env_set(&ctx->env, name, "?");
-                    env_set(&ctx->env, "OPTARG", "");
+                    env_unset(&ctx->env, "OPTARG");
                 }
                 opt_set_ind(ctx, ind);
                 return 0;
@@ -376,7 +381,7 @@ int cmd_getopts(EvalCtx *ctx, int argc, char **argv) {
             } else {
                 fprintf(stderr, "No arg for -%c option\n", ch);
                 env_set(&ctx->env, name, "?");
-                env_set(&ctx->env, "OPTARG", "");
+                env_unset(&ctx->env, "OPTARG");
             }
             opt_set_ind(ctx, ind);
             return 0;
@@ -443,25 +448,20 @@ int cmd_alias(EvalCtx *ctx, int argc, char **argv) {
     }
     for (int i = 1; i < argc; i++) {
         char *eq = strchr(argv[i], '=');
-        if (!eq) {
-            Alias *found = alias_find(ctx, argv[i]);
-            if (!found) {
-                fprintf(stderr, "alias: %s not found\n", argv[i]);
-                rc = 1;
-            } else {
-                alias_print(found->name, found->value, 0);
-            }
-            continue;
-        }
-        *eq = '\0';
-        if (argv[i][0] == '\0') {
-            fprintf(stderr, "alias: invalid name\n");
+        /* A leading "=" is a name to look up, not an assignment. */
+        if (eq && eq != argv[i]) {
+            *eq = '\0';
+            alias_define(ctx, argv[i], eq + 1);
             *eq = '=';
-            rc = 1;
             continue;
         }
-        alias_define(ctx, argv[i], eq + 1);
-        *eq = '=';
+        Alias *found = alias_find(ctx, argv[i]);
+        if (!found) {
+            fprintf(stderr, "alias: %s not found\n", argv[i]);
+            rc = 1;
+        } else {
+            alias_print(found->name, found->value, 0);
+        }
     }
     return rc;
 }
@@ -478,17 +478,35 @@ static void alias_remove_at(EvalCtx *ctx, uint32_t index) {
 
 int cmd_unalias(EvalCtx *ctx, int argc, char **argv) {
     int rc = 0;
-    if (argc < 2) {
-        shell_err(ctx, 0, "unalias: usage: unalias [-a] name...");
-        return 2;
+    int all = 0;
+    int i = 1;
+    while (i < argc && argv[i][0] == '-' && argv[i][1] != '\0') {
+        const char *p;
+        if (argv[i][1] == '-' && argv[i][2] == '\0') {
+            i++;
+            break;
+        }
+        for (p = argv[i] + 1; *p; p++) {
+            if (*p == 'a') {
+                all = 1;
+            } else {
+                shell_err(ctx, 0, "unalias: Illegal option -%c", *p);
+                return 2;
+            }
+        }
+        i++;
     }
-    if (strcmp(argv[1], "-a") == 0) {
+    if (all) {
         while (ctx->nalias > 0) {
             alias_remove_at(ctx, 0);
         }
+        /* Names after -a are not looked up, including names after --. */
         return 0;
     }
-    for (int i = 1; i < argc; i++) {
+    if (i >= argc) {
+        return 0;
+    }
+    for (; i < argc; i++) {
         int found = 0;
         for (uint32_t a = 0; a < ctx->nalias; a++) {
             if (strcmp(ctx->aliases[a].name, argv[i]) == 0) {
@@ -823,7 +841,6 @@ int alias_expand(EvalCtx *ctx, Node *node, int chk, int *status) {
     free(buf.data);
     return 1;
 }
-
 static char *join_spells(Word **argv, uint32_t n) {
     size_t len = 0;
     size_t used = 0;
@@ -850,7 +867,6 @@ static char *join_spells(Word **argv, uint32_t n) {
     buf[used] = '\0';
     return buf;
 }
-
 static const Node *job_leaf(const Node *node) {
     if (!node) {
         return NULL;
@@ -874,7 +890,6 @@ void job_add(EvalCtx *ctx, pid_t pid, Node *node) {
     }
     shjob_add(ctx, pid, text);
 }
-
 pid_t job_pid(EvalCtx *ctx, const char *spec) {
     char *end = NULL;
     long id;
@@ -910,20 +925,21 @@ pid_t job_pid(EvalCtx *ctx, const char *spec) {
     }
     return 0;
 }
-
 int cmd_jobs(EvalCtx *ctx, int argc, char **argv) {
     uint32_t i = 0;
-    if (ctx->monitor) {
+    if (ctx->monitor || argc > 1) {
         return shjob_builtin_jobs(ctx, argc, argv);
     }
-    (void)argc;
-    (void)argv;
     while (i < ctx->njobs) {
         int w = 0;
         pid_t got = waitpid(ctx->jobs[i].pid, &w, WNOHANG);
         int drop = 0;
         const char *state = "Running";
-        if (got == ctx->jobs[i].pid || (got < 0 && errno == ECHILD)) {
+        if (got == ctx->jobs[i].pid) {
+            shjob_note_child(ctx, got, w, 0);
+            state = "Done";
+            drop = 1;
+        } else if (got < 0 && errno == ECHILD) {
             state = "Done";
             drop = 1;
         }
@@ -940,7 +956,6 @@ int cmd_jobs(EvalCtx *ctx, int argc, char **argv) {
     }
     return 0;
 }
-
 static int cmd_no_monitor(EvalCtx *ctx, const char *name) {
     if (ctx->njobs == 0) {
         shell_err(ctx, 0, "%s: No current job", name);
@@ -949,7 +964,6 @@ static int cmd_no_monitor(EvalCtx *ctx, const char *name) {
     }
     return 2;
 }
-
 int cmd_bg(EvalCtx *ctx, int argc, char **argv) {
     if (ctx->monitor) {
         return shjob_builtin_bg(ctx, argc, argv);
@@ -957,7 +971,6 @@ int cmd_bg(EvalCtx *ctx, int argc, char **argv) {
     (void)argc;
     return cmd_no_monitor(ctx, argv[0]);
 }
-
 int cmd_fg(EvalCtx *ctx, int argc, char **argv) {
     if (ctx->monitor) {
         return shjob_builtin_fg(ctx, argc, argv);
@@ -965,7 +978,6 @@ int cmd_fg(EvalCtx *ctx, int argc, char **argv) {
     (void)argc;
     return cmd_no_monitor(ctx, argv[0]);
 }
-
 void shell_state_free(EvalCtx *ctx) {
     for (uint32_t i = 0; i < ctx->nalias; i++) {
         free(ctx->aliases[i].name);
@@ -982,4 +994,5 @@ void shell_state_free(EvalCtx *ctx) {
     ctx->jobs = NULL;
     ctx->njobs = 0;
     ctx->cjobs = 0;
+    shjob_free_waits(ctx);
 }

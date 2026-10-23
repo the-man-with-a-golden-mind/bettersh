@@ -76,7 +76,15 @@ static int parse_redirect(Parser *parser, PtrBuf *redirs) {
     RedirOp op = redir_op(kind);
     consume(parser);
     if (peek_kind(parser) != TK_WORD) {
-        error_here(parser, "expected redirection target");
+        TokenKind next = peek_kind(parser);
+        /* Here-strings are not dash. A missing word stays the old diagnostic. */
+        if (op == REDIR_HERESTR) {
+            error_here(parser, "expected redirection target");
+        } else if (is_redir_kind(next) || next == TK_IO_NUMBER) {
+            error_here(parser, "Syntax error: redirection unexpected");
+        } else {
+            unexpected(parser);
+        }
         return -1;
     }
     Word *word = parser->tok.word;
@@ -191,6 +199,12 @@ static int parse_redir_suffix(Parser *parser, Redirect ***out, uint32_t *n) {
     return 0;
 }
 
+static void note_end(Node *node, int end_line) {
+    if (node && end_line > node->line) {
+        node->end_line = end_line;
+    }
+}
+
 static int require_items(Parser *parser, Node *list, const char *kw) {
     if (!list) {
         return -1;
@@ -211,10 +225,15 @@ static Node *parse_brace(Parser *parser) {
     int col = parser->tok.col;
     consume(parser);
     Node *body = parse_list(parser, STOP_RBRACE);
-    if (!body || take_kw(parser, "}") < 0) {
+    if (!body) {
+        return NULL;
+    }
+    int end_line = parser->tok.line;
+    if (take_kw(parser, "}") < 0) {
         return NULL;
     }
     Node *node = node_new(parser, NODE_BRACE, line, col);
+    note_end(node, end_line);
     node->u.group.body = body;
     if (parse_redir_suffix(parser, &node->u.group.redirs, &node->u.group.nredirs) < 0) {
         return NULL;
@@ -234,8 +253,10 @@ static Node *parse_subshell(Parser *parser) {
         unexpected(parser);
         return NULL;
     }
+    int end_line = parser->tok.line;
     consume(parser);
     Node *node = node_new(parser, NODE_SUBSHELL, line, col);
+    note_end(node, end_line);
     node->u.group.body = body;
     if (parse_redir_suffix(parser, &node->u.group.redirs, &node->u.group.nredirs) < 0) {
         return NULL;
@@ -285,9 +306,11 @@ static Node *parse_if(Parser *parser) {
         }
         *slot = els;
     }
+    int end_line = parser->tok.line;
     if (take_kw(parser, "fi") < 0) {
         return NULL;
     }
+    note_end(node, end_line);
     if (parse_redir_suffix(parser, &node->u.ifc.redirs, &node->u.ifc.nredirs) < 0) {
         return NULL;
     }
@@ -303,10 +326,15 @@ static Node *parse_while(Parser *parser, int until) {
         return NULL;
     }
     Node *body = parse_list(parser, STOP_DONE);
-    if (!body || take_kw(parser, "done") < 0) {
+    if (!body) {
+        return NULL;
+    }
+    int end_line = parser->tok.line;
+    if (take_kw(parser, "done") < 0) {
         return NULL;
     }
     Node *node = node_new(parser, NODE_WHILE, line, col);
+    note_end(node, end_line);
     node->u.loop.cond = cond;
     node->u.loop.body = body;
     node->u.loop.until = until;
@@ -321,7 +349,7 @@ static Node *parse_for(Parser *parser) {
     int col = parser->tok.col;
     consume(parser);
     if (peek_kind(parser) != TK_WORD || !word_is_name(parser->tok.word)) {
-        unexpected(parser);
+        error_here(parser, "Syntax error: Bad for loop variable");
         return NULL;
     }
     const char *text = NULL;
@@ -354,10 +382,15 @@ static Node *parse_for(Parser *parser) {
         return NULL;
     }
     Node *body = parse_list(parser, STOP_DONE);
-    if (!body || take_kw(parser, "done") < 0) {
+    if (!body) {
+        return NULL;
+    }
+    int end_line = parser->tok.line;
+    if (take_kw(parser, "done") < 0) {
         return NULL;
     }
     Node *node = node_new(parser, NODE_FOR, line, col);
+    note_end(node, end_line);
     node->u.forloop.name = name;
     node->u.forloop.words = words;
     node->u.forloop.nwords = nwords;
@@ -374,7 +407,11 @@ static Node *parse_case(Parser *parser) {
     int col = parser->tok.col;
     consume(parser);
     if (peek_kind(parser) != TK_WORD) {
-        unexpected(parser);
+        if (peek_kind(parser) == TK_NEWLINE) {
+            error_here(parser, "Syntax error: newline unexpected (expecting word)");
+        } else {
+            unexpected(parser);
+        }
         return NULL;
     }
     Word *subject = parser->tok.word;
@@ -441,10 +478,12 @@ static Node *parse_case(Parser *parser) {
         arms[narms].body = body;
         narms++;
     }
+    int end_line = parser->tok.line;
     if (take_kw(parser, "esac") < 0) {
         return NULL;
     }
     Node *node = node_new(parser, NODE_CASE, line, col);
+    note_end(node, end_line);
     node->u.cas.word = subject;
     node->u.cas.arms = arms;
     node->u.cas.narms = narms;
@@ -527,5 +566,6 @@ static Node *parse_function(Parser *parser, Word *nameword) {
     Node *node = node_new(parser, NODE_FUNC, line, col);
     node->u.func.name = name;
     node->u.func.body = body;
+    note_end(node, body->end_line > body->line ? body->end_line : body->line);
     return node;
 }

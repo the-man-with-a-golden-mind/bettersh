@@ -58,6 +58,8 @@ static const char *param_op_spell(ParamOp op) {
         return "%";
     case P_PCT_PCT:
         return "%%";
+    case P_COLON_CONCAT:
+        return ":}";
     case P_LEN:
     case P_NONE:
         return "";

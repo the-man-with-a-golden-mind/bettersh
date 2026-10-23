@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Caught signals set a flag. The handler does not run the trap action. */
@@ -145,6 +146,9 @@ static const struct SigName sig_table[] = {
 #ifdef SIGUSR2
     {SIGUSR2, "USR2"},
 #endif
+#ifdef SIGPWR
+    {SIGPWR, "PWR"},
+#endif
 };
 
 const char *sig_name(int sig) {
@@ -158,6 +162,69 @@ const char *sig_name(int sig) {
         }
     }
     return NULL;
+}
+
+/* kill -l lists every signal through the last named one, or SIGRTMAX.
+   A slot with no short name is the decimal number. Dash does that for
+   Linux 16, 32, and 33. Real-time names split at the midpoint. */
+static int rt_label(int sig, char *buf, size_t n) {
+#if defined(SIGRTMIN) && defined(SIGRTMAX)
+    int lo = SIGRTMIN;
+    int hi = SIGRTMAX;
+    int span;
+    if (lo <= 0 || hi < lo || sig < lo || sig > hi) {
+        return 0;
+    }
+    if (sig == lo) {
+        snprintf(buf, n, "RTMIN");
+        return 1;
+    }
+    if (sig == hi) {
+        snprintf(buf, n, "RTMAX");
+        return 1;
+    }
+    span = hi - lo;
+    if (sig <= lo + span / 2) {
+        snprintf(buf, n, "RTMIN+%d", sig - lo);
+    } else {
+        snprintf(buf, n, "RTMAX-%d", hi - sig);
+    }
+    return 1;
+#else
+    (void)sig;
+    (void)buf;
+    (void)n;
+    return 0;
+#endif
+}
+
+void sig_print_list(void) {
+    int last = 0;
+    int sig;
+    size_t i;
+    size_t n = sizeof sig_table / sizeof sig_table[0];
+    for (i = 0; i < n; i++) {
+        if (sig_table[i].sig > last) {
+            last = sig_table[i].sig;
+        }
+    }
+#if defined(SIGRTMAX)
+    if (SIGRTMAX > last) {
+        last = SIGRTMAX;
+    }
+#endif
+    for (sig = 0; sig <= last; sig++) {
+        const char *name = sig_name(sig);
+        char buf[32];
+        if (!name && rt_label(sig, buf, sizeof buf)) {
+            name = buf;
+        }
+        if (!name) {
+            snprintf(buf, sizeof buf, "%d", sig);
+            name = buf;
+        }
+        printf("%s\n", name);
+    }
 }
 
 static int name_eq(const char *a, const char *b) {
@@ -410,6 +477,16 @@ void child_exit(EvalCtx *ctx, int status) {
     shell_exit(status);
 }
 
+/* PWD is trusted only when it names this process's directory. */
+static int pwd_is_here(const char *path) {
+    struct stat want;
+    struct stat have;
+    if (!path || path[0] != '/' || stat(path, &want) != 0 || stat(".", &have) != 0) {
+        return 0;
+    }
+    return want.st_ino == have.st_ino && want.st_dev == have.st_dev;
+}
+
 void eval_begin(EvalCtx *ctx, Arena *arena, const char *filename, int argc, char **argv, char **envp,
                 const char *src, size_t src_len) {
     memset(ctx, 0, sizeof *ctx);
@@ -427,6 +504,25 @@ void eval_begin(EvalCtx *ctx, Arena *arena, const char *filename, int argc, char
         env_set_pos(&ctx->env, argc - 1, argv + 1);
     }
     ctx->shell_pid = getpid();
+    {
+        const char *pwd = NULL;
+        const char *ps4 = NULL;
+        const char *ppid = NULL;
+        char now[4096];
+        char buf[32];
+        if (!env_get(&ctx->env, "PWD", &pwd) || !pwd_is_here(pwd)) {
+            if (getcwd(now, sizeof now)) {
+                env_set(&ctx->env, "PWD", now);
+            }
+        }
+        if (!env_get(&ctx->env, "PS4", &ps4)) {
+            env_set(&ctx->env, "PS4", "+ ");
+        }
+        if (!env_get(&ctx->env, "PPID", &ppid)) {
+            snprintf(buf, sizeof buf, "%ld", (long)getppid());
+            env_set(&ctx->env, "PPID", buf);
+        }
+    }
     clear_pending();
     signal(SIGPIPE, SIG_IGN);
 }
@@ -488,6 +584,8 @@ void shell_apply_start(EvalCtx *ctx, const ShellStart *start) {
     ctx->notify = start->notify;
     ctx->ignoreeof = start->ignoreeof;
     ctx->nolog = start->nolog;
+    ctx->debug = start->debug;
+    ctx->src_quiet = start->src_quiet;
     ctx->vi = start->vi;
     ctx->emacs = start->emacs;
     if (start->vi) {

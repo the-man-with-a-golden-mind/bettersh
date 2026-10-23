@@ -46,7 +46,10 @@ void shell_err(EvalCtx *ctx, int line, const char *fmt, ...) {
 
 void shell_abort(EvalCtx *ctx, int status) {
     ctx->status = status & 255;
-    ctx->exit_req = 1;
+    /* `command` suppresses the special-builtin abort. set -e still applies. */
+    if (!ctx->plain_cmd) {
+        ctx->exit_req = 1;
+    }
 }
 
 int fatal(EvalCtx *ctx, int line, const char *fmt, ...) {
@@ -90,10 +93,11 @@ int func_index(EvalCtx *ctx, const char *name) {
     return -1;
 }
 
-static void func_define(EvalCtx *ctx, const char *name, Node *body) {
+static void func_define(EvalCtx *ctx, const char *name, Node *body, int line) {
     int index = func_index(ctx, name);
     if (index >= 0) {
         ctx->funcs[index].body = body;
+        ctx->funcs[index].line = line;
         return;
     }
     if (ctx->nfuncs >= ctx->cfuncs) {
@@ -103,10 +107,11 @@ static void func_define(EvalCtx *ctx, const char *name, Node *body) {
     }
     ctx->funcs[ctx->nfuncs].name = dup_c(name);
     ctx->funcs[ctx->nfuncs].body = body;
+    ctx->funcs[ctx->nfuncs].line = line;
     ctx->nfuncs++;
 }
 
-static int call_func(EvalCtx *ctx, Node *body, int argc, char **argv) {
+static int call_func(EvalCtx *ctx, Node *body, int argc, char **argv, int line) {
     char **old = ctx->env.pos;
     uint32_t nold = ctx->env.npos;
     uint32_t cold = ctx->env.cpos;
@@ -134,7 +139,13 @@ static int call_func(EvalCtx *ctx, Node *body, int argc, char **argv) {
     ctx->cont_n = 0;
     alias_suspend(ctx, &held, &nheld);
     local_push(ctx);
+    int saved_in = ctx->in_func;
+    int saved_base = ctx->lineno_base;
+    ctx->in_func = 1;
+    ctx->lineno_base = line > 0 ? line : 1;
     int st = eval_node(ctx, body, 1);
+    ctx->in_func = saved_in;
+    ctx->lineno_base = saved_base;
     local_pop(ctx);
     alias_resume(ctx, held, nheld);
     ctx->loop_depth = saved_depth;
@@ -160,7 +171,8 @@ static int call_func(EvalCtx *ctx, Node *body, int argc, char **argv) {
 }
 
 static void verbose_through(EvalCtx *ctx, int line) {
-    if (!ctx->verbose || ctx->in_trap || !ctx->src || line <= 0 || line <= ctx->verbose_line) {
+    if (!ctx->verbose || ctx->src_quiet || ctx->in_trap || !ctx->src || line <= 0 ||
+        line <= ctx->verbose_line) {
         return;
     }
     const char *s = ctx->src;
@@ -226,6 +238,42 @@ static void job_in_child(EvalCtx *ctx, pid_t pgid) {
     }
 }
 
+static void trace_simple(EvalCtx *ctx, char **aname, char **aval, int nassign, char **argv,
+                         int argc) {
+    const char *ps4 = NULL;
+    int i;
+    if (!ctx->xtrace || (nassign <= 0 && argc <= 0)) {
+        return;
+    }
+    if (!env_get(&ctx->env, "PS4", &ps4) || !ps4) {
+        ps4 = "";
+    }
+    /* Expand at trace time. A stored $(...) must not be expanded again
+       while this line is printed, and a bad expansion leaves the raw text. */
+    {
+        char *prefix = expand_ps4(ctx, ps4);
+        fputs(prefix ? prefix : ps4, stderr);
+        free(prefix);
+    }
+    for (i = 0; i < nassign; i++) {
+        if (i > 0) {
+            fputc(' ', stderr);
+        }
+        fputs(aname[i] ? aname[i] : "", stderr);
+        fputc('=', stderr);
+        if (aval[i]) {
+            fputs(aval[i], stderr);
+        }
+    }
+    for (i = 0; i < argc; i++) {
+        if (nassign > 0 || i > 0) {
+            fputc(' ', stderr);
+        }
+        fputs(argv[i] ? argv[i] : "", stderr);
+    }
+    fputc('\n', stderr);
+}
+
 static char **argv_term(int argc, char **argv) {
     char **av = xmalloc((size_t)(argc + 1) * sizeof(char *));
     for (int i = 0; i < argc; i++) {
@@ -239,17 +287,10 @@ int launch(EvalCtx *ctx, int argc, char **argv) {
     if (argc < 1) {
         return 0;
     }
-    if (ctx->xtrace) {
-        fputs("+", stderr);
-        for (int i = 0; i < argc; i++) {
-            fprintf(stderr, " %s", argv[i]);
-        }
-        fputc('\n', stderr);
-    }
     if (!ctx->skip_func) {
         int index = func_index(ctx, argv[0]);
         if (index >= 0) {
-            return call_func(ctx, ctx->funcs[index].body, argc, argv);
+            return call_func(ctx, ctx->funcs[index].body, argc, argv, ctx->funcs[index].line);
         }
     }
     int found = 0;
@@ -259,7 +300,7 @@ int launch(EvalCtx *ctx, int argc, char **argv) {
     const char *path_env = NULL;
     env_get(&ctx->env, "PATH", &path_env);
     char *path = NULL;
-    if (!strchr(argv[0], '/')) {
+    if (!strchr(argv[0], '/') && !ctx->skip_hash) {
         char *cached = hash_find(ctx, argv[0]);
         if (cached && access(cached, X_OK) == 0) {
             path = dup_c(cached);
@@ -272,6 +313,12 @@ int launch(EvalCtx *ctx, int argc, char **argv) {
         }
     }
     if (!path) {
+        /* A slash name that exists is not executable: a directory or a
+           file without execute permission. Dash reports that and continues. */
+        if (strchr(argv[0], '/') && access(argv[0], F_OK) == 0) {
+            shell_err(ctx, 0, "%s: Permission denied", argv[0]);
+            return 126;
+        }
         shell_err(ctx, 0, "%s: not found", argv[0]);
         return 127;
     }
@@ -325,6 +372,7 @@ int launch(EvalCtx *ctx, int argc, char **argv) {
         }
         break;
     }
+    wait_show_signal(status);
     return wait_status(status);
 }
 
@@ -385,8 +433,12 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
     }
     for (int i = 0; i < nassign; i++) {
         Word *word = node->u.simple.assigns[i];
+        int old_glob = ctx->noglob;
         aname[i] = dup_c(word->assign_name ? word->assign_name : "");
+        /* The value is expanded. It is not pathname-expanded. */
+        ctx->noglob = 1;
         aval[i] = expand_flat(ctx, word);
+        ctx->noglob = old_glob;
         if (!aval[i]) {
             fields_free(&args);
             for (int j = 0; j <= i; j++) {
@@ -422,6 +474,13 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
         }
     }
     int keep = args.n == 0 || (args.n > 0 && builtin_special(args.v[0]));
+    if (keep) {
+        for (int i = 0; i < nassign; i++) {
+            if (strcmp(aname[i], "LINENO") == 0) {
+                ctx->lineno_user = 1;
+            }
+        }
+    }
     if (ctx->allexport && keep) {
         for (int i = 0; i < nassign; i++) {
             env_export(&ctx->env, aname[i], 1);
@@ -429,6 +488,7 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
     }
     SavedFd *saved = NULL;
     int nsaved = 0;
+    trace_simple(ctx, aname, aval, nassign, args.v, (int)args.n);
     if (apply_redirs(ctx, node->u.simple.redirs, node->u.simple.nredirs, &saved, &nsaved) < 0) {
         fields_free(&args);
         if (!keep) {
@@ -471,16 +531,22 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
             const char *path_env = NULL;
             env_get(&ctx->env, "PATH", &path_env);
             char *path = path_lookup(args.v[1], path_env);
+            if (!path && strchr(args.v[1], '/') && access(args.v[1], F_OK) == 0) {
+                path = dup_c(args.v[1]);
+            }
             char **envp = env_build(&ctx->env, aname, aval, nassign);
             if (!path) {
-                shell_err(ctx, node->line, "%s: not found", args.v[1]);
+                shell_err(ctx, node->line, "exec: %s: not found", args.v[1]);
                 status = 127;
+                shell_abort(ctx, 127);
             } else {
                 char **av = argv_term(args.n - 1, args.v + 1);
                 execve(path, av, envp);
                 free(av);
-                shell_err(ctx, node->line, "%s: %s", args.v[1], strerror(errno));
-                status = errno == ENOENT ? 127 : 126;
+                int err = errno;
+                shell_err(ctx, node->line, "exec: %s: %s", args.v[1], strerror(err));
+                status = err == ENOENT ? 127 : 126;
+                shell_abort(ctx, status);
                 free(path);
             }
             for (char **item = envp; item && *item; item++) {
@@ -492,6 +558,12 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
         status = ctx->cmdsub_ran ? ctx->cmdsub_status : 0;
     } else {
         status = launch(ctx, (int)args.n, args.v);
+    }
+    if (stdout_failed() && args.n > 0) {
+        shell_err(ctx, node->line, "%s: %s: I/O error", args.v[0], args.v[0]);
+        if (status == 0) {
+            status = 1;
+        }
     }
     if (!is_exec) {
         restore_fds(saved, nsaved);
@@ -610,6 +682,7 @@ static int eval_pipeline(EvalCtx *ctx, Node *node, int chk) {
             }
             break;
         }
+        wait_show_signal(w);
         int st = wait_status(w);
         if (st != 0) {
             failed = st;
@@ -650,9 +723,18 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
         shjob_reap(ctx, 1);
     }
     if (node->line > 0) {
+        int shown = node->line;
         ctx->cur_line = node->line;
+        if (ctx->in_func && ctx->lineno_base > 0 && node->line >= ctx->lineno_base) {
+            shown = node->line - ctx->lineno_base + 1;
+        }
+        if (!ctx->lineno_user) {
+            char buf[32];
+            snprintf(buf, sizeof buf, "%d", shown);
+            env_set(&ctx->env, "LINENO", buf);
+        }
     }
-    verbose_through(ctx, node->line);
+    verbose_through(ctx, node->end_line > node->line ? node->end_line : node->line);
     traps_run(ctx);
     if (ctx->exit_req || ctx->noexec) {
         return ctx->status;
@@ -755,6 +837,7 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
             }
             break;
         }
+        wait_show_signal(w);
         int st = wait_status(w);
         note(ctx, st, chk);
         return st;
@@ -772,8 +855,11 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
             st = with_redirs(ctx, node->u.ifc.redirs, node->u.ifc.nredirs, NULL, chk);
         }
         if (!branch) {
-            note(ctx, cond == 0 ? 0 : cond, 0);
-            return cond == 0 ? 0 : 0;
+            /* No else, or an empty then: the status is 0 unless a redirect failed. */
+            if (st == 0) {
+                note(ctx, 0, 0);
+            }
+            return st;
         }
         return st;
     }
@@ -899,7 +985,7 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
         return st;
     }
     case NODE_FUNC:
-        func_define(ctx, node->u.func.name, node->u.func.body);
+        func_define(ctx, node->u.func.name, node->u.func.body, node->line);
         note(ctx, 0, 0);
         return 0;
     }

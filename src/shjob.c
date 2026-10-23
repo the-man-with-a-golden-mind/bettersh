@@ -18,6 +18,87 @@
 
 static volatile sig_atomic_t got_chld;
 
+void shjob_note_child(EvalCtx *ctx, pid_t pid, int raw, int quiet) {
+    uint32_t i;
+    uint32_t cap;
+    int status;
+    int sig;
+    if (pid <= 0) {
+        return;
+    }
+    status = wait_status(raw);
+    sig = WIFSIGNALED(raw) ? WTERMSIG(raw) : 0;
+    for (i = 0; i < ctx->nwaited; i++) {
+        if (ctx->waited[i].pid == pid) {
+            ctx->waited[i].status = status;
+            ctx->waited[i].sig = sig;
+            if (quiet) {
+                ctx->waited[i].told = 1;
+            }
+            return;
+        }
+    }
+    if (ctx->nwaited == ctx->cwaited) {
+        cap = ctx->cwaited ? ctx->cwaited * 2 : 8;
+        ctx->waited = xrealloc(ctx->waited, cap * sizeof *ctx->waited);
+        ctx->cwaited = cap;
+    }
+    ctx->waited[ctx->nwaited].pid = pid;
+    ctx->waited[ctx->nwaited].status = status;
+    ctx->waited[ctx->nwaited].sig = sig;
+    ctx->waited[ctx->nwaited].told = quiet ? 1 : 0;
+    ctx->nwaited++;
+}
+
+static void tell_noted(EvalCtx *ctx, pid_t pid) {
+    uint32_t i;
+    for (i = 0; i < ctx->nwaited; i++) {
+        if (ctx->waited[i].pid != pid) {
+            continue;
+        }
+        if (!ctx->waited[i].told) {
+            wait_show_sig(ctx->waited[i].sig);
+            ctx->waited[i].told = 1;
+        }
+        return;
+    }
+}
+
+int shjob_noted_wait(const EvalCtx *ctx, pid_t pid) {
+    uint32_t i;
+    for (i = 0; i < ctx->nwaited; i++) {
+        if (ctx->waited[i].pid == pid) {
+            return ctx->waited[i].status;
+        }
+    }
+    return -1;
+}
+
+int shjob_wait_one(EvalCtx *ctx, pid_t pid) {
+    int w = 0;
+    int noted;
+    if (waitpid(pid, &w, 0) < 0) {
+        noted = shjob_noted_wait(ctx, pid);
+        if (noted >= 0) {
+            tell_noted(ctx, pid);
+            ctx->status = noted;
+            return noted;
+        }
+        return -1;
+    }
+    shjob_note_child(ctx, pid, w, 0);
+    tell_noted(ctx, pid);
+    ctx->status = shjob_noted_wait(ctx, pid);
+    return ctx->status;
+}
+
+void shjob_free_waits(EvalCtx *ctx) {
+    free(ctx->waited);
+    ctx->waited = NULL;
+    ctx->nwaited = 0;
+    ctx->cwaited = 0;
+}
+
 static void on_chld(int sig) {
     (void)sig;
     got_chld = 1;
@@ -232,6 +313,7 @@ int shjob_wait_fg(EvalCtx *ctx, pid_t pgid, const pid_t *pids, int n, int *stopp
             if (!seen[i] && pids[i] == pid) {
                 seen[i] = 1;
                 sts[i] = wait_status(w);
+                wait_show_signal(w);
                 left--;
             }
         }
@@ -267,7 +349,13 @@ static char mark_of(const EvalCtx *ctx, int index) {
 
 static void state_text(const BgJob *job, char *buf, size_t n) {
     if (job->stopped) {
-        snprintf(buf, n, "Suspended (signal): %d", job->sig);
+        /* strsignal matches dash: "Suspended: N" here, "Stopped" on Linux. */
+        const char *text = strsignal(job->sig);
+        if (text && text[0]) {
+            snprintf(buf, n, "%s", text);
+        } else {
+            snprintf(buf, n, "Signal %d", job->sig);
+        }
         return;
     }
     if (job->done && job->sig > 0) {
@@ -381,6 +469,7 @@ static void reap_one(EvalCtx *ctx, uint32_t index, int print) {
             job->status = WEXITSTATUS(w);
         }
         job->notified = 0;
+        shjob_note_child(ctx, pid, w, 0);
         note_change(ctx, index, print);
     }
 }
@@ -584,8 +673,16 @@ int shjob_builtin_fg(EvalCtx *ctx, int argc, char **argv) {
 }
 
 int shjob_builtin_wait(EvalCtx *ctx, int argc, char **argv) {
-    int i;
-    if (argc < 2) {
+    int i = 1;
+    while (i < argc && argv[i][0] == '-' && argv[i][1] != '\0') {
+        if (argv[i][1] == '-' && argv[i][2] == '\0') {
+            i++;
+            break;
+        }
+        shell_err(ctx, 0, "wait: Illegal option -%c", argv[i][1]);
+        return 2;
+    }
+    if (i >= argc) {
         for (;;) {
             uint32_t j;
             int w = 0;
@@ -619,6 +716,7 @@ int shjob_builtin_wait(EvalCtx *ctx, int argc, char **argv) {
                     ctx->jobs[found].status = WEXITSTATUS(w);
                 }
                 ctx->jobs[found].notified = 0;
+                shjob_note_child(ctx, pid, w, 1);
             } else {
                 continue;
             }
@@ -629,22 +727,29 @@ int shjob_builtin_wait(EvalCtx *ctx, int argc, char **argv) {
         }
         return 0;
     }
-    for (i = 1; i < argc; i++) {
+    for (; i < argc; i++) {
         int index = 0;
-        int w = 0;
         pid_t pid;
         if (argv[i][0] == '%') {
-            if (current_job(ctx, argv[i], &index) != 0) {
-                return 127;
+            int kind = current_job(ctx, argv[i], &index);
+            if (kind != 0) {
+                return job_miss(ctx, "wait", argv[i], kind);
             }
             pid = ctx->jobs[index].pid;
         } else {
-            pid = (pid_t)strtol(argv[i], NULL, 10);
+            char *end = NULL;
+            long n;
+            errno = 0;
+            n = strtol(argv[i], &end, 10);
+            if (!argv[i][0] || end == argv[i] || !end || *end || errno == ERANGE) {
+                shell_err(ctx, 0, "wait: Illegal number: %s", argv[i]);
+                return 2;
+            }
+            pid = (pid_t)n;
         }
-        if (waitpid(pid, &w, 0) < 0) {
+        if (shjob_wait_one(ctx, pid) < 0) {
             return 127;
         }
-        ctx->status = wait_status(w);
     }
     return ctx->status;
 }

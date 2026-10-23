@@ -22,19 +22,68 @@ static int cmd_false(EvalCtx *ctx, int argc, char **argv) {
     return 1;
 }
 
+/* A leading 0 introduces up to three more octal digits. Any other octal
+   digit takes itself and up to two more. \0101 is 'A'. \1011 is 'A' then 1. */
+static int echo_octal(const char *s, size_t *k) {
+    int val = 0;
+    int left = 3;
+    if (s[*k] != '0') {
+        val = s[*k] - '0';
+        left = 2;
+    }
+    while (left > 0 && s[*k + 1] >= '0' && s[*k + 1] <= '7') {
+        (*k)++;
+        val = val * 8 + (s[*k] - '0');
+        left--;
+    }
+    return val;
+}
+
 static int cmd_echo(EvalCtx *ctx, int argc, char **argv) {
-    (void)ctx;
     int start = 1;
     int nl = 1;
+    (void)ctx;
     if (argc > 1 && strcmp(argv[1], "-n") == 0) {
         nl = 0;
         start = 2;
     }
     for (int i = start; i < argc; i++) {
+        const char *s = argv[i] ? argv[i] : "";
         if (i > start) {
             fputc(' ', stdout);
         }
-        fputs(argv[i], stdout);
+        for (size_t k = 0; s[k] != '\0'; k++) {
+            char e;
+            if (s[k] != '\\' || s[k + 1] == '\0') {
+                fputc(s[k], stdout);
+                continue;
+            }
+            e = s[++k];
+            if (e == 'a') {
+                fputc('\a', stdout);
+            } else if (e == 'b') {
+                fputc('\b', stdout);
+            } else if (e == 'c') {
+                return 0;
+            } else if (e == 'f') {
+                fputc('\f', stdout);
+            } else if (e == 'n') {
+                fputc('\n', stdout);
+            } else if (e == 'r') {
+                fputc('\r', stdout);
+            } else if (e == 't') {
+                fputc('\t', stdout);
+            } else if (e == 'v') {
+                fputc('\v', stdout);
+            } else if (e == '\\') {
+                fputc('\\', stdout);
+            } else if (e >= '0' && e <= '7') {
+                fputc(echo_octal(s, &k), stdout);
+            } else {
+                fputc('\\', stdout);
+                fputc(e, stdout);
+            }
+        }
     }
     if (nl) {
         fputc('\n', stdout);
@@ -42,12 +91,56 @@ static int cmd_echo(EvalCtx *ctx, int argc, char **argv) {
     return 0;
 }
 
+static int job_stopped(const EvalCtx *ctx) {
+    uint32_t i;
+    for (i = 0; i < ctx->njobs; i++) {
+        if (ctx->jobs[i].stopped && !ctx->jobs[i].done) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A leading sign and spaces are allowed. A negative value, trailing junk,
+   or a value past INT_MAX is not. Trailing ASCII space is ignored. */
+static int shell_number(EvalCtx *ctx, const char *what, const char *text, int *out) {
+    char *end = NULL;
+    long value;
+    errno = 0;
+    if (!text) {
+        text = "";
+    }
+    value = strtol(text, &end, 10);
+    if (end) {
+        while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\v' || *end == '\f' ||
+               *end == '\r') {
+            end++;
+        }
+    }
+    if (!text[0] || !end || end == text || *end || errno == ERANGE || value < 0 ||
+        value > 2147483647L) {
+        shell_err(ctx, 0, "%s: Illegal number: %s", what, text);
+        shell_abort(ctx, 2);
+        return -1;
+    }
+    *out = (int)value;
+    return 0;
+}
+
 static int cmd_exit(EvalCtx *ctx, int argc, char **argv) {
     int code = ctx->status;
     if (argc > 1) {
-        code = (int)strtol(argv[1], NULL, 10);
+        if (shell_number(ctx, "exit", argv[1], &code) < 0) {
+            return 2;
+        }
+        code &= 255;
     }
-    code &= 255;
+    if (ctx->interactive && ctx->job_warning == 0 && job_stopped(ctx)) {
+        fprintf(stderr, "You have stopped jobs.\n");
+        ctx->job_warning = 2;
+        ctx->status = 0;
+        return 0;
+    }
     ctx->status = code;
     ctx->exit_req = 1;
     return code;
@@ -56,17 +149,21 @@ static int cmd_exit(EvalCtx *ctx, int argc, char **argv) {
 static int cmd_return(EvalCtx *ctx, int argc, char **argv) {
     int code = ctx->status;
     if (argc > 1) {
-        code = (int)strtol(argv[1], NULL, 10);
+        if (shell_number(ctx, "return", argv[1], &code) < 0) {
+            return 2;
+        }
     }
-    code &= 255;
-    if (ctx->func_depth <= 0) {
-        /* Outside a function, dash exits with that status and prints nothing. */
-        shell_abort(ctx, code);
-        return code;
+    /* Outside a function and outside `.`, dash exits and prints nothing.
+       The status is kept whole inside a function, so return 256 leaves $?. */
+    if (ctx->func_depth <= 0 && ctx->dot_depth <= 0) {
+        /* This is the builtin leaving, including under `command return`. */
+        ctx->status = code & 255;
+        ctx->exit_req = 1;
+        return ctx->status;
     }
     ctx->status = code;
     ctx->returning = 1;
-    return ctx->status;
+    return code;
 }
 
 static int loop_count(EvalCtx *ctx, int argc, char **argv, const char *what) {

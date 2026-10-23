@@ -53,6 +53,27 @@ void commit_fds(SavedFd *list, int n) {
     free(list);
 }
 
+#if defined(__GLIBC__)
+#include <stdio_ext.h>
+static void drop_stdout(void) {
+    __fpurge(stdout);
+}
+#else
+void fpurge(FILE *);
+static void drop_stdout(void) {
+    fpurge(stdout);
+}
+#endif
+
+int stdout_failed(void) {
+    if (fflush(stdout) == 0 && !ferror(stdout)) {
+        return 0;
+    }
+    drop_stdout();
+    clearerr(stdout);
+    return 1;
+}
+
 static int redir_default(const Redirect *redir) {
     if (redir->fd >= 0) {
         return redir->fd;

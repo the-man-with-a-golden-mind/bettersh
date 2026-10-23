@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /* Word expansion.
@@ -32,9 +33,11 @@ static void sbuf_free(Sbuf *buf) {
     memset(buf, 0, sizeof(*buf));
 }
 
-static void sbuf_add(Sbuf *buf, const char *text, size_t n, int quoted) {
+/* 0 literal, 1 quoted, 2 unquoted expansion. Only 2 is field-split.
+   A literal colon stays one word when IFS is colon. */
+static void sbuf_add(Sbuf *buf, const char *text, size_t n, int mask) {
     if (n == 0) {
-        if (quoted) {
+        if (mask == 1) {
             buf->sawq = 1;
         }
         return;
@@ -50,13 +53,17 @@ static void sbuf_add(Sbuf *buf, const char *text, size_t n, int quoted) {
     }
     for (size_t i = 0; i < n; i++) {
         buf->data[buf->len] = text[i];
-        buf->mask[buf->len] = (unsigned char)(quoted ? 1 : 0);
+        buf->mask[buf->len] = (unsigned char)mask;
         buf->len++;
     }
     buf->data[buf->len] = '\0';
-    if (quoted) {
+    if (mask == 1) {
         buf->sawq = 1;
     }
+}
+
+static int exp_mask(int quoted) {
+    return quoted ? 1 : 2;
 }
 
 void fields_push(Fields *fields, char *text) {
@@ -146,7 +153,7 @@ static char *glob_pattern(const Sbuf *buf) {
     size_t n = 0;
     for (size_t i = 0; i < buf->len; i++) {
         unsigned char c = (unsigned char)buf->data[i];
-        int quote = buf->mask[i];
+        int quote = buf->mask[i] == 1;
         if (quote && (c == '*' || c == '?' || c == '[' || c == ']' || c == '\\')) {
             pat[n++] = '\\';
         }
@@ -158,14 +165,19 @@ static char *glob_pattern(const Sbuf *buf) {
 
 static int has_meta(const Sbuf *buf) {
     for (size_t i = 0; i < buf->len; i++) {
-        if (!buf->mask[i] && (buf->data[i] == '*' || buf->data[i] == '?' || buf->data[i] == '[')) {
+        if (buf->mask[i] != 1 && (buf->data[i] == '*' || buf->data[i] == '?' || buf->data[i] == '[')) {
             return 1;
         }
     }
     return 0;
 }
 
-static void push_sbuf(EvalCtx *ctx, const Sbuf *buf, Fields *out, int doglob) {
+static void push_sbuf(EvalCtx *ctx, const Sbuf *buf, Fields *out, int doglob, int quote_meta) {
+    /* Quoted pattern characters are literal for fnmatch. \* is one star. */
+    if (quote_meta) {
+        fields_push(out, glob_pattern(buf));
+        return;
+    }
     /* A pattern in ${parameter#word} or case is not a pathname. */
     if (doglob && !ctx->noglob && has_meta(buf)) {
         char *pat = glob_pattern(buf);
@@ -185,12 +197,12 @@ static void push_sbuf(EvalCtx *ctx, const Sbuf *buf, Fields *out, int doglob) {
     fields_push(out, dup_n(buf->data ? buf->data : "", buf->len));
 }
 
-static void split_sbuf(EvalCtx *ctx, Sbuf *buf, int dosplit, int doglob, Fields *out) {
+static void split_sbuf(EvalCtx *ctx, Sbuf *buf, int dosplit, int doglob, int quote_meta, Fields *out) {
     if (!dosplit) {
         if (buf->len == 0 && !buf->sawq) {
             return;
         }
-        push_sbuf(ctx, buf, out, doglob);
+        push_sbuf(ctx, buf, out, doglob, quote_meta);
         return;
     }
     const char *ifs = ifs_of(ctx);
@@ -205,27 +217,28 @@ static void split_sbuf(EvalCtx *ctx, Sbuf *buf, int dosplit, int doglob, Fields 
     int started = 0;
     for (size_t i = 0; i < buf->len; i++) {
         char c = buf->data[i];
-        int quoted = buf->mask[i];
-        if (!quoted && ifs_ws(ifs, c)) {
+        int mask = buf->mask[i];
+        /* Literals and quoted text stay, even when they are IFS characters. */
+        if (mask == 2 && ifs_ws(ifs, c)) {
             if (started) {
-                push_sbuf(ctx, &cur, out, doglob);
+                push_sbuf(ctx, &cur, out, doglob, quote_meta);
                 sbuf_free(&cur);
                 started = 0;
             }
             continue;
         }
-        if (!quoted && ifs_has(ifs, c)) {
-            push_sbuf(ctx, &cur, out, doglob);
+        if (mask == 2 && ifs_has(ifs, c)) {
+            push_sbuf(ctx, &cur, out, doglob, quote_meta);
             sbuf_free(&cur);
             started = 0;
             continue;
         }
         char ch = c;
-        sbuf_add(&cur, &ch, 1, quoted);
+        sbuf_add(&cur, &ch, 1, mask);
         started = 1;
     }
     if (started) {
-        push_sbuf(ctx, &cur, out, doglob);
+        push_sbuf(ctx, &cur, out, doglob, quote_meta);
     }
     sbuf_free(&cur);
 }
@@ -387,6 +400,7 @@ char *capture_node(EvalCtx *ctx, Node *node) {
     if (waitpid(pid, &raw, 0) < 0) {
         ctx->cmdsub_status = 1;
     } else {
+        wait_show_signal(raw);
         ctx->cmdsub_status = wait_status(raw);
     }
     ctx->cmdsub_ran = 1;
@@ -435,12 +449,13 @@ char *expand_flat(EvalCtx *ctx, const Word *word) {
     return text;
 }
 
-static int expand_fields(EvalCtx *ctx, const Word *word, int dosplit, int doglob, Fields *out);
+static int expand_fields(EvalCtx *ctx, const Word *word, int dosplit, int doglob, int quote_meta,
+                         Fields *out);
 
 char *pattern_of(EvalCtx *ctx, const Word *word) {
     Fields fields;
     memset(&fields, 0, sizeof fields);
-    if (!word || expand_fields(ctx, word, 0, 0, &fields) < 0) {
+    if (!word || expand_fields(ctx, word, 0, 0, 1, &fields) < 0) {
         fields_free(&fields);
         return NULL;
     }
@@ -497,9 +512,9 @@ static void join_star(EvalCtx *ctx, Sbuf *cur, int quoted) {
     char join = (char)ifs_join_char(ctx, &empty);
     for (uint32_t i = 0; i < ctx->env.npos; i++) {
         if (i > 0 && !empty) {
-            sbuf_add(cur, &join, 1, quoted);
+            sbuf_add(cur, &join, 1, exp_mask(quoted));
         }
-        sbuf_add(cur, ctx->env.pos[i], strlen(ctx->env.pos[i]), quoted);
+        sbuf_add(cur, ctx->env.pos[i], strlen(ctx->env.pos[i]), exp_mask(quoted));
     }
 }
 
@@ -516,9 +531,12 @@ static int add_param(EvalCtx *ctx, const WordPart *part, Sbuf *cur, Sbuf **list,
             }
             return 0;
         }
-        /* "$*" and unquoted $* are joined by the first IFS character.
-           "$@" and unquoted $@ are one field per positional parameter. */
-        if (star) {
+        /* "$*" joins on the first IFS character. An empty IFS joins with
+           nothing. Unquoted $* with an empty IFS stays one field per parameter,
+           as does $@. */
+        int empty_ifs = 0;
+        ifs_join_char(ctx, &empty_ifs);
+        if (star && (quoted || !empty_ifs)) {
             join_star(ctx, cur, quoted);
             return 0;
         }
@@ -533,13 +551,29 @@ static int add_param(EvalCtx *ctx, const WordPart *part, Sbuf *cur, Sbuf **list,
                 memset(cur, 0, sizeof(*cur));
                 (*nlist)++;
             }
-            sbuf_add(cur, ctx->env.pos[i], strlen(ctx->env.pos[i]), quoted);
+            sbuf_add(cur, ctx->env.pos[i], strlen(ctx->env.pos[i]), exp_mask(quoted));
         }
         return 0;
     }
     const char *value = "";
     int isset = 0;
     lookup_param(ctx, name, &value, &isset, part->line);
+    if (part->op == P_COLON_CONCAT) {
+        /* Unset and null both count. The joined text is one field and is not globbed. */
+        if (ctx->nounset && (!isset || !value || value[0] == '\0')) {
+            return fatal(ctx, part->line, "%s: parameter not set", name);
+        }
+        char *alt = pattern_of(ctx, part->nested);
+        if (!alt) {
+            return -1;
+        }
+        if (isset && value) {
+            sbuf_add(cur, value, strlen(value), 1);
+        }
+        sbuf_add(cur, alt, strlen(alt), 1);
+        free(alt);
+        return 0;
+    }
     int use_alt = 0;
     int assign = 0;
     int error_unset = 0;
@@ -568,7 +602,9 @@ static int add_param(EvalCtx *ctx, const WordPart *part, Sbuf *cur, Sbuf **list,
             free(msg);
             return -1;
         }
-        fatal(ctx, part->line, "%s: %s", name, msg && msg[0] ? msg : "parameter not set");
+        fatal(ctx, part->line, "%s: %s", name,
+              msg && msg[0] ? msg : (part->op == P_COLON_QUEST ? "parameter not set or null"
+                                                                : "parameter not set"));
         free(msg);
         return -1;
     }
@@ -578,11 +614,20 @@ static int add_param(EvalCtx *ctx, const WordPart *part, Sbuf *cur, Sbuf **list,
         }
         char num[32];
         if (strcmp(name, "@") == 0 || strcmp(name, "*") == 0) {
-            snprintf(num, sizeof num, "%u", ctx->env.npos);
+            int empty_ifs = 0;
+            ifs_join_char(ctx, &empty_ifs);
+            size_t n = 0;
+            for (uint32_t i = 0; i < ctx->env.npos; i++) {
+                if (i > 0 && !empty_ifs) {
+                    n++;
+                }
+                n += strlen(ctx->env.pos[i]);
+            }
+            snprintf(num, sizeof num, "%u", (unsigned)n);
         } else {
             snprintf(num, sizeof num, "%u", (unsigned)strlen(value));
         }
-        sbuf_add(cur, num, strlen(num), quoted);
+        sbuf_add(cur, num, strlen(num), exp_mask(quoted));
         return 0;
     }
     if ((part->op == P_HASH || part->op == P_HASH_HASH || part->op == P_PCT || part->op == P_PCT_PCT) &&
@@ -600,7 +645,7 @@ static int add_param(EvalCtx *ctx, const WordPart *part, Sbuf *cur, Sbuf **list,
                 return fatal(ctx, part->line, "%s: readonly", name);
             }
         }
-        sbuf_add(cur, alt, strlen(alt), quoted);
+        sbuf_add(cur, alt, strlen(alt), exp_mask(quoted));
         free(alt);
         return 0;
     }
@@ -616,31 +661,32 @@ static int add_param(EvalCtx *ctx, const WordPart *part, Sbuf *cur, Sbuf **list,
         int longest = part->op == P_HASH_HASH || part->op == P_PCT_PCT;
         if (match_affix(pat, saved, prefix, longest, &cut)) {
             if (prefix) {
-                sbuf_add(cur, saved + cut, strlen(saved + cut), quoted);
+                sbuf_add(cur, saved + cut, strlen(saved + cut), exp_mask(quoted));
             } else {
-                sbuf_add(cur, saved, strlen(saved) - cut, quoted);
+                sbuf_add(cur, saved, strlen(saved) - cut, exp_mask(quoted));
             }
         } else {
-            sbuf_add(cur, saved, strlen(saved), quoted);
+            sbuf_add(cur, saved, strlen(saved), exp_mask(quoted));
         }
         free(saved);
         free(pat);
         return 0;
     }
     if (!use_alt) {
-        sbuf_add(cur, value, strlen(value), quoted);
+        sbuf_add(cur, value, strlen(value), exp_mask(quoted));
     }
     return 0;
 }
 
-static int expand_fields(EvalCtx *ctx, const Word *word, int dosplit, int doglob, Fields *out) {
+static int expand_fields(EvalCtx *ctx, const Word *word, int dosplit, int doglob, int quote_meta,
+                         Fields *out) {
     Sbuf *list = NULL;
     uint32_t nlist = 0;
     uint32_t clist = 0;
     Sbuf cur;
     memset(&cur, 0, sizeof cur);
     if (!word) {
-        split_sbuf(ctx, &cur, dosplit, doglob, out);
+        split_sbuf(ctx, &cur, dosplit, doglob, quote_meta, out);
         return ctx->exit_req ? -1 : 0;
     }
     for (uint32_t i = 0; i < word->nparts; i++) {
@@ -657,14 +703,14 @@ static int expand_fields(EvalCtx *ctx, const Word *word, int dosplit, int doglob
             }
         } else if (part->kind == PART_CMDSUB) {
             char *text = capture_node(ctx, part->child);
-            sbuf_add(&cur, text, strlen(text), part->quoted);
+            sbuf_add(&cur, text, strlen(text), exp_mask(part->quoted));
             free(text);
         } else if (part->kind == PART_ARITH) {
             char *text = eval_arith(ctx, part->text, part->line);
             if (!text) {
                 break;
             }
-            sbuf_add(&cur, text, strlen(text), part->quoted);
+            sbuf_add(&cur, text, strlen(text), exp_mask(part->quoted));
             free(text);
         }
     }
@@ -672,15 +718,15 @@ static int expand_fields(EvalCtx *ctx, const Word *word, int dosplit, int doglob
         tilde_sbuf(ctx, &cur);
     }
     for (uint32_t i = 0; i < nlist; i++) {
-        split_sbuf(ctx, &list[i], dosplit, doglob, out);
+        split_sbuf(ctx, &list[i], dosplit, doglob, quote_meta, out);
         sbuf_free(&list[i]);
     }
     free(list);
-    split_sbuf(ctx, &cur, dosplit, doglob, out);
+    split_sbuf(ctx, &cur, dosplit, doglob, quote_meta, out);
     sbuf_free(&cur);
     return ctx->exit_req ? -1 : 0;
 }
 
 int expand_word(EvalCtx *ctx, const Word *word, int dosplit, Fields *out) {
-    return expand_fields(ctx, word, dosplit, 1, out);
+    return expand_fields(ctx, word, dosplit, 1, 0, out);
 }

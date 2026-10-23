@@ -316,7 +316,16 @@ int lexer_take_heredoc(Lexer *lx, const char *delim, int strip_tabs, int expand,
     }
 
     if (!found) {
-        return lx_error(lx, err_line, err_col, "unterminated here-document");
+        /* A prompt still wants the delimiter. A real EOF takes the rest of
+           the script as the body, which is what dash does. */
+        if (lx->partial_ok) {
+            return lx_error(lx, err_line, err_col, "unterminated here-document");
+        }
+        body_end = hard;
+        after = hard;
+        after_line = line;
+        after_col = col;
+        found = 1;
     }
 
     size_t saved_limit = lx->limit;

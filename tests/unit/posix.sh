@@ -315,10 +315,59 @@ EOF
 bs=$?
 "$bin" --interp "$d/t.sh" >"$d/iout" 2>"$d/ierr"
 is=$?
-printf '%s\n' 'allexport on' 'allexport off' >"$d/want"
+printf '%-16s%s\n' allexport on >"$d/want"
+printf '%-16s%s\n' allexport off >>"$d/want"
 if [ "$bs" != 0 ] || [ "$is" != 0 ] || ! cmp -s "$d/want" "$d/bout" || ! cmp -s "$d/want" "$d/iout" || [ -s "$d/berr" ] || [ -s "$d/ierr" ]; then
     printf 'FAIL set -o allexport\n' >&2
     cat "$d/bout" "$d/iout" "$d/berr" >&2
+    fail=1
+fi
+
+# Dash's columns, in dash's order. pipefail is the one extra line.
+optlist() {
+    name=$1
+    body=$2
+    plus=$3
+    printf '%s\n' "$body" >"$d/t.sh"
+    dash "$d/t.sh" >"$d/do" 2>"$d/de"; ds=$?
+    "$bin" "$d/t.sh" >"$d/bo" 2>"$d/be"; bs=$?
+    "$bin" --interp "$d/t.sh" >"$d/io" 2>"$d/ie"; is=$?
+    if [ "$plus" = 1 ]; then
+        printf 'set +o pipefail\n' >"$d/extra"
+    else
+        printf '%-16s%s\n' pipefail off >"$d/extra"
+    fi
+    grep -vxF -f "$d/do" "$d/bo" >"$d/bx" || true
+    grep -vxF -f "$d/do" "$d/io" >"$d/ix" || true
+    if [ "$ds" != 0 ] || [ "$bs" != 0 ] || [ "$is" != 0 ] || [ -s "$d/de" ] || [ -s "$d/be" ] ||
+        [ -s "$d/ie" ] || ! cmp -s "$d/extra" "$d/bx" || ! cmp -s "$d/extra" "$d/ix"; then
+        printf 'FAIL set -o %s\n' "$name" >&2
+        diff -u "$d/extra" "$d/bx" >&2
+        diff -u "$d/extra" "$d/ix" >&2
+        fail=1
+    fi
+}
+optlist columns 'set -o' 0
+optlist plus 'set +o' 1
+optlist errexit 'set -e; set +o' 1
+optlist debug 'set -o debug; set -o' 0
+printf '%-16s%s\n' pipefail on >"$d/pon"
+"$bin" -c 'set -o pipefail; set -o' | grep '^pipefail ' >"$d/pgot"
+"$bin" --interp -c 'set -o pipefail; set -o' | grep '^pipefail ' >"$d/pigot"
+if ! cmp -s "$d/pon" "$d/pgot" || ! cmp -s "$d/pon" "$d/pigot"; then
+    printf 'FAIL set -o pipefail line\n' >&2
+    fail=1
+fi
+abs=$(CDPATH= cd -- "$(dirname "$bin")" && pwd)/$(basename "$bin")
+rm -f "$d/trace"
+(
+    cd "$d" || exit 1
+    dash -c 'set -o debug; set +o debug; set -o' | grep '^debug ' >"$d/dd"
+    "$abs" -c 'set -o debug; set +o debug; set -o' | grep '^debug ' >"$d/bd"
+)
+if [ -e "$d/trace" ] || ! cmp -s "$d/dd" "$d/bd"; then
+    printf 'FAIL set -o debug\n' >&2
+    cat "$d/dd" "$d/bd" >&2
     fail=1
 fi
 

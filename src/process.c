@@ -2,6 +2,8 @@
 
 #include "arena.h"
 
+#include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -16,6 +18,26 @@ int wait_status(int status) {
         return 128 + WTERMSIG(status);
     }
     return 1;
+}
+
+void wait_show_sig(int sig) {
+    const char *text;
+    if (sig <= 0 || sig == SIGINT || sig == SIGPIPE) {
+        return;
+    }
+    text = strsignal(sig);
+    if (text && text[0]) {
+        fprintf(stderr, "%s\n", text);
+    } else {
+        fprintf(stderr, "Signal %d\n", sig);
+    }
+}
+
+void wait_show_signal(int status) {
+    if (!WIFSIGNALED(status)) {
+        return;
+    }
+    wait_show_sig(WTERMSIG(status));
 }
 
 static int is_exec(const char *path) {

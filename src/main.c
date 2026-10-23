@@ -201,6 +201,8 @@ static int apply_oname(ShellStart *st, int *monitor_set, int *interactive_set, i
         st->ignoreeof = on;
     } else if (strcmp(name, "nolog") == 0) {
         st->nolog = on;
+    } else if (strcmp(name, "debug") == 0) {
+        st->debug = on;
     } else if (strcmp(name, "vi") == 0) {
         st->vi = on;
         if (on) {
@@ -485,6 +487,7 @@ int main(int argc, char **argv) {
         if (!inv.monitor_set && inv.start.interactive) {
             inv.start.monitor = 1;
         }
+        inv.start.src_quiet = 1;
         return run_text(errname, src, n, nac, av, argv[0], 0, 0, inv.trace_bc, inv.do_interp, &inv.start, 0);
     }
     if (inv.sflag || inv.rest >= argc) {

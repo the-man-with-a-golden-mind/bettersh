@@ -395,6 +395,8 @@ static int eval_shell(Interp *ip, const MNode *node) {
         vm.shell_on = 1;
     }
     vm_exec_span(&vm, node->off, node->len, holes, vals, (uint16_t)n);
+    free(vm.stack);
+    vm.stack = NULL;
     if (vm.shell_on) {
         ip->shell = vm.shell;
         ip->shell_on = 1;

@@ -1,4 +1,5 @@
 #include "builtin_priv.h"
+#include "eval_priv.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -100,6 +101,53 @@ static char *logical_path(const char *base, const char *dest) {
     return out;
 }
 
+/* A relative operand that does not start with '.' is looked up in CDPATH.
+   An empty component is the current directory and is not printed.
+   On a hit, *used is the path that chdir accepted. The caller frees it. */
+static int cdpath_search(EvalCtx *ctx, const char *dest, char **used, int *printed) {
+    const char *cdpath = NULL;
+    const char *cursor;
+    *used = NULL;
+    *printed = 0;
+    if (!dest || dest[0] == '/' || dest[0] == '.') {
+        return 0;
+    }
+    if (!env_get(&ctx->env, "CDPATH", &cdpath) || !cdpath) {
+        return 0;
+    }
+    cursor = cdpath;
+    for (;;) {
+        const char *colon = strchr(cursor, ':');
+        size_t dlen = colon ? (size_t)(colon - cursor) : strlen(cursor);
+        char *try;
+        if (dlen == 0) {
+            try = dup_c(dest);
+        } else {
+            size_t m = strlen(dest);
+            int slash = cursor[dlen - 1] != '/';
+            try = xmalloc(dlen + m + 2);
+            memcpy(try, cursor, dlen);
+            if (slash) {
+                try[dlen] = '/';
+                memcpy(try + dlen + 1, dest, m + 1);
+            } else {
+                memcpy(try + dlen, dest, m + 1);
+            }
+        }
+        if (chdir(try) == 0) {
+            *used = try;
+            *printed = dlen > 0;
+            return 1;
+        }
+        free(try);
+        if (!colon) {
+            break;
+        }
+        cursor = colon + 1;
+    }
+    return 0;
+}
+
 int cmd_cd(EvalCtx *ctx, int argc, char **argv) {
     int physical = 0;
     int argi = 1;
@@ -164,17 +212,31 @@ int cmd_cd(EvalCtx *ctx, int argc, char **argv) {
             memcpy(old_copy, buf, strlen(buf) + 1);
         }
     }
-    char *logical = physical ? NULL : logical_path(pwd, dest);
-    const char *go = logical ? logical : dest;
-    if (chdir(go) != 0) {
-        if (!(logical && strcmp(logical, dest) != 0 && chdir(dest) == 0)) {
-            shell_err(ctx, 0, "cd: can't cd to %s", dest);
-            free(logical);
-            free(old_copy);
-            return 2;
+    char *hit = NULL;
+    int from_cdpath = 0;
+    int explicit = argi < argc && strcmp(argv[argi], "-") != 0;
+    char *logical = NULL;
+    if (explicit && cdpath_search(ctx, dest, &hit, &from_cdpath)) {
+        if (from_cdpath) {
+            print_dest = 1;
         }
-        free(logical);
-        logical = NULL;
+        if (!physical) {
+            logical = logical_path(pwd, hit);
+        }
+    } else {
+        logical = physical ? NULL : logical_path(pwd, dest);
+        const char *go = logical ? logical : dest;
+        if (chdir(go) != 0) {
+            if (!(logical && strcmp(logical, dest) != 0 && chdir(dest) == 0)) {
+                shell_err(ctx, 0, "cd: can't cd to %s", dest);
+                free(logical);
+                free(hit);
+                free(old_copy);
+                return 2;
+            }
+            free(logical);
+            logical = NULL;
+        }
     }
     if (logical && same_dir(logical)) {
         env_set(&ctx->env, "PWD", logical);
@@ -194,6 +256,7 @@ int cmd_cd(EvalCtx *ctx, int argc, char **argv) {
         env_set(&ctx->env, "OLDPWD", old_copy);
     }
     free(logical);
+    free(hit);
     free(old_copy);
     return 0;
 }
@@ -201,10 +264,19 @@ int cmd_cd(EvalCtx *ctx, int argc, char **argv) {
 int cmd_pwd(EvalCtx *ctx, int argc, char **argv) {
     int physical = 0;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-P") == 0) {
-            physical = 1;
-        } else if (strcmp(argv[i], "-L") == 0) {
-            physical = 0;
+        const char *opt = argv[i];
+        if (opt[0] != '-' || opt[1] == '\0' || (opt[1] == '-' && opt[2] == '\0')) {
+            break;
+        }
+        for (const char *p = opt + 1; *p; p++) {
+            if (*p == 'L') {
+                physical = 0;
+            } else if (*p == 'P') {
+                physical = 1;
+            } else {
+                shell_err(ctx, 0, "pwd: Illegal option -%c", *p);
+                return 2;
+            }
         }
     }
     if (!physical) {

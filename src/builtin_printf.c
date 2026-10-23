@@ -106,13 +106,20 @@ static char *expand_b(const char *text, size_t *out_n, int *stopped) {
                 break;
             }
             if (*s >= '0' && *s <= '7') {
+                /* Same rule as echo. A leading 0 introduces up to three
+                   octal digits and is not one of them. \0101 is 'A'. */
                 int value = 0;
-                int k = 0;
-                while (k < 3 && *s >= '0' && *s <= '7') {
-                    value = value * 8 + (*s - '0');
-                    s++;
-                    k++;
+                int left = 3;
+                if (*s != '0') {
+                    value = *s - '0';
+                    left = 2;
                 }
+                while (left > 0 && s[1] >= '0' && s[1] <= '7') {
+                    s++;
+                    value = value * 8 + (*s - '0');
+                    left--;
+                }
+                s++;
                 ch = (char)value;
             } else {
                 ch = *s++;
@@ -158,6 +165,36 @@ static int bad_number(EvalCtx *ctx, const char *arg) {
     }
     shell_err(ctx, 0, "printf: %s: expected numeric value", arg);
     return 0;
+}
+
+/* Leading 0 is octal and 0x is hex. A leading quote is that character.
+   *bad stays set when the argument is not a finished number. */
+static long long load_int(EvalCtx *ctx, const char *arg, int *bad) {
+    char *end = NULL;
+    long long value;
+    if (!arg || !arg[0]) {
+        return 0;
+    }
+    if (arg[0] == '\'' || arg[0] == '"') {
+        return (unsigned char)arg[1];
+    }
+    errno = 0;
+    value = strtoll(arg, &end, 0);
+    if (!end || end == arg) {
+        shell_err(ctx, 0, "printf: %s: expected numeric value", arg);
+        *bad = 1;
+        return 0;
+    }
+    if (errno == ERANGE) {
+        shell_err(ctx, 0, "printf: %s: Result too large", arg);
+        *bad = 1;
+        return value;
+    }
+    if (*end) {
+        shell_err(ctx, 0, "printf: %s: not completely converted", arg);
+        *bad = 1;
+    }
+    return value;
 }
 
 static void print_num(char spec, int minus, int plus, int space, int hash, int zero, int width, int prec,
@@ -233,7 +270,7 @@ static void print_num(char spec, int minus, int plus, int space, int hash, int z
 }
 
 /* 1 = consumed an argument, 0 = none, -1 = \c, -2 = invalid directive. */
-static int printf_format(EvalCtx *ctx, const char *fmt, int *argi, int argc, char **argv) {
+static int printf_format(EvalCtx *ctx, const char *fmt, int *argi, int argc, char **argv, int *bad) {
     const char *p = fmt;
     int consumed = 0;
     while (*p) {
@@ -363,24 +400,8 @@ static int printf_format(EvalCtx *ctx, const char *fmt, int *argi, int argc, cha
             print_num(spec, minus, plus, space, hash, zero, width, prec, 1, 0, 0, value);
             continue;
         }
-        char *end = NULL;
-        long long sval = 0;
-        unsigned long long uval = 0;
-        if (spec == 'd' || spec == 'i') {
-            if (arg[0]) {
-                sval = strtoll(arg, &end, 10);
-                if (!end || *end || end == arg) {
-                    bad_number(ctx, arg);
-                    sval = 0;
-                }
-            }
-        } else if (arg[0]) {
-            uval = strtoull(arg, &end, 10);
-            if (!end || *end || end == arg) {
-                bad_number(ctx, arg);
-                uval = 0;
-            }
-        }
+        long long sval = load_int(ctx, arg, bad);
+        unsigned long long uval = (unsigned long long)sval;
         print_num(spec, minus, plus, space, hash, zero, width, prec, 0, sval, uval, 0.0);
     }
     return consumed ? 1 : 0;
@@ -388,12 +409,14 @@ static int printf_format(EvalCtx *ctx, const char *fmt, int *argi, int argc, cha
 
 int cmd_printf(EvalCtx *ctx, int argc, char **argv) {
     if (argc < 2) {
+        shell_err(ctx, 0, "printf: usage: printf format [arg ...]");
         return 2;
     }
     int argi = 2;
     int guard = 0;
+    int bad = 0;
     for (;;) {
-        int rc = printf_format(ctx, argv[1], &argi, argc, argv);
+        int rc = printf_format(ctx, argv[1], &argi, argc, argv, &bad);
         if (rc == -2) {
             return 2;
         }
@@ -401,5 +424,5 @@ int cmd_printf(EvalCtx *ctx, int argc, char **argv) {
             break;
         }
     }
-    return 0;
+    return bad ? 1 : 0;
 }

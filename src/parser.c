@@ -129,6 +129,10 @@ void error_here(Parser *parser, const char *msg) {
     if (parser->has_tok && kind != TK_ERROR) {
         line = parser->tok.line;
         col = parser->tok.col;
+        /* Dash reports a syntax error on the line after the newline token. */
+        if (kind == TK_NEWLINE && strncmp(msg, "Syntax error:", 13) == 0) {
+            line++;
+        }
     }
     error_at(parser, line, col, msg);
 }
@@ -201,10 +205,14 @@ void unexpected(Parser *parser) {
         return;
     }
     const char *name = tok_name(kind);
+    int line = parser->tok.line;
     if (kind == TK_WORD && parser->tok.word && parser->tok.word->spell && parser->tok.word->spell[0]) {
         name = parser->tok.word->spell;
     }
-    diag_set(parser->diag, parser->filename, parser->tok.line, parser->tok.col, "unexpected \"%s\"", name);
+    if (kind == TK_NEWLINE) {
+        line++;
+    }
+    diag_set(parser->diag, parser->filename, line, parser->tok.col, "unexpected \"%s\"", name);
 }
 
 int word_is_plain_lit(const Word *word, const char **text) {

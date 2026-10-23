@@ -31,6 +31,10 @@ char *expand_flat(EvalCtx *ctx, const Word *word);
 char *pattern_of(EvalCtx *ctx, const Word *word);
 int expand_word(EvalCtx *ctx, const Word *word, int dosplit, Fields *out);
 char *eval_arith(EvalCtx *ctx, const char *text, int line);
+/* PS4 at trace time. Expands $ ` $( $(( without splitting or globbing.
+   NULL means the error was printed and the caller should use the raw value.
+   A failure does not abort the script. */
+char *expand_ps4(EvalCtx *ctx, const char *text);
 
 typedef struct SavedFd {
     int fd;
@@ -40,6 +44,8 @@ typedef struct SavedFd {
 int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **saved, int *nsaved);
 void restore_fds(SavedFd *list, int n);
 void commit_fds(SavedFd *list, int n);
+/* 1 when a write to stdout failed. Any pending text is discarded. */
+int stdout_failed(void);
 
 int func_index(EvalCtx *ctx, const char *name);
 

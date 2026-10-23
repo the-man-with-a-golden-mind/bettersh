@@ -28,7 +28,9 @@ typedef enum ParamOp {
     P_HASH,
     P_HASH_HASH,
     P_PCT,
-    P_PCT_PCT
+    P_PCT_PCT,
+    /* ${name:}word} — the value, or empty when unset or null, then word. */
+    P_COLON_CONCAT
 } ParamOp;
 
 typedef enum NodeKind {
@@ -119,6 +121,9 @@ struct Node {
     NodeKind kind;
     int line;
     int col;
+    /* Last source line of a compound, so set -v can print through fi/done/esac
+       before the body runs. 0 means the same line as line. */
+    int end_line;
     union {
         struct {
             Item *items;

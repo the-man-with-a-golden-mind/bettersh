@@ -365,8 +365,10 @@ fi
 
 printf '%s\n' '#!/usr/bin/env bettersh' 'import std/http' 'http.get("file:///etc/passwd")' >"$d/fileurl.bsh"
 both 'file url' "$d/fileurl.bsh" || true
+# macOS curl says Protocol "file" disabled. Ubuntu curl says
+# Protocol "file" not supported or disabled in libcurl.
 if [ "$st" -ne 2 ] || [ -s "$d/vo" ] || ! grep -q 'command failed' "$d/ve" ||
-    ! grep -q 'Protocol "file" disabled' "$d/ve"; then
+    ! grep -E -q 'Protocol "file" (disabled|not supported or disabled)' "$d/ve"; then
     bad 'file url'
     cat "$d/vo" >&2
     cat "$d/ve" >&2

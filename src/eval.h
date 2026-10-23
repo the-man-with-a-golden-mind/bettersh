@@ -13,6 +13,8 @@
 typedef struct FuncDef {
     char *name;
     Node *body;
+    /* File line of the function name. LINENO inside the body is relative. */
+    int line;
 } FuncDef;
 
 typedef struct HashEnt {
@@ -37,6 +39,16 @@ typedef struct BgJob {
     int sig;
     int notified;
 } BgJob;
+
+/* Status of a child this shell has already collected. */
+typedef struct WaitNote {
+    pid_t pid;
+    int status;
+    /* Terminating signal, or 0 when the child exited. */
+    int sig;
+    /* 1 after the signal text was printed, or after a bare wait suppressed it. */
+    int told;
+} WaitNote;
 
 typedef struct LocalSave {
     char *name;
@@ -64,11 +76,14 @@ typedef struct ShellStart {
     int notify;
     int ignoreeof;
     int nolog;
+    int debug;
     int vi;
     int emacs;
     int interactive;
     int stdin_mode;
     int monitor;
+    /* The -c string is not echoed by set -v. A sourced file still is. */
+    int src_quiet;
 } ShellStart;
 
 typedef struct EvalCtx {
@@ -89,6 +104,7 @@ typedef struct EvalCtx {
     int allexport;
     int ignoreeof;
     int nolog;
+    int debug;
     int notify;
     int vi;
     int emacs;
@@ -101,18 +117,36 @@ typedef struct EvalCtx {
     int job_minus;
     int cur_line;
     int verbose_line;
+    /* Set while ctx->src is the -c command string. */
+    int src_quiet;
     int in_trap;
     int cmdsub_ran;
     int cmdsub_status;
     int exit_req;
+    /* Set to 2 when an interactive exit warns about a stopped job.
+       Decremented before each later interactive command. The next exit
+       leaves while this is still non-zero. */
+    int job_warning;
     int returning;
     int break_n;
     int cont_n;
     int func_depth;
+    /* Files read with `.`. return stops the innermost one, not the caller. */
+    int dot_depth;
     int loop_depth;
     int no_tilde;
     int forked;
     int skip_func;
+    /* command -p looks up the default path and ignores the hash. */
+    int skip_hash;
+    /* `command` ran this builtin. A special-builtin error does not abort. */
+    int plain_cmd;
+    /* Set once the script assigns or unsets LINENO. Until then each
+       command stores its line number there. */
+    int lineno_user;
+    /* Inside a function, LINENO counts from the function's first line. */
+    int in_func;
+    int lineno_base;
     pid_t shell_pid;
     pid_t last_bg;
     FuncDef *funcs;
@@ -143,6 +177,10 @@ typedef struct EvalCtx {
     /* Set by arith_get when a value is not an integer. Empty means no error. */
     char arith_msg[192];
     char scratch[32];
+    /* Outlives the job slot. jobs may drop a reaped job before wait. */
+    WaitNote *waited;
+    uint32_t nwaited;
+    uint32_t cwaited;
 } EvalCtx;
 
 int eval_node(EvalCtx *ctx, Node *node, int chk);
@@ -172,6 +210,7 @@ void verbose_flush(EvalCtx *ctx);
 /* for_trap: "0" and "EXIT" set *is_exit. Returns the signal, or -1. */
 int sig_lookup(const char *text, int for_trap, int *is_exit);
 const char *sig_name(int sig);
+void sig_print_list(void);
 int trap_set(EvalCtx *ctx, int sig, int is_exit, const char *action);
 void trap_list(EvalCtx *ctx);
 

@@ -15,20 +15,48 @@
    eval and dot parse a program and hand the tree to eval_node.
    dot's source buffer is malloc'd and freed before the function returns. */
 
+static const char *const shell_keywords[] = {
+    "!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi",
+    "for", "if", "in", "then", "until", "while", NULL
+};
+
+static int shell_keyword(const char *name) {
+    for (int i = 0; shell_keywords[i]; i++) {
+        if (strcmp(name, shell_keywords[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int cmd_command(EvalCtx *ctx, int argc, char **argv) {
     int query = 0;
     int verbose = 0;
+    int defpath = 0;
     int i = 1;
-    if (i < argc && strcmp(argv[i], "-V") == 0) {
-        query = 1;
-        verbose = 1;
-        i++;
-    } else if (i < argc && strcmp(argv[i], "-v") == 0) {
-        query = 1;
+    while (i < argc && argv[i][0] == '-' && argv[i][1] != '\0') {
+        if (strcmp(argv[i], "--") == 0) {
+            i++;
+            break;
+        }
+        for (const char *s = argv[i] + 1; *s; s++) {
+            if (*s == 'p') {
+                defpath = 1;
+            } else if (*s == 'v') {
+                query = 1;
+                verbose = 0;
+            } else if (*s == 'V') {
+                query = 1;
+                verbose = 1;
+            } else {
+                shell_err(ctx, 0, "command: Illegal option -%c", *s);
+                return 2;
+            }
+        }
         i++;
     }
     if (i >= argc) {
-        return query ? 1 : 0;
+        return 0;
     }
     if (query) {
         const char *name = argv[i];
@@ -42,6 +70,14 @@ int cmd_command(EvalCtx *ctx, int argc, char **argv) {
                 fputc('=', stdout);
                 shell_quote(avalue);
                 fputc('\n', stdout);
+            }
+            return 0;
+        }
+        if (shell_keyword(name)) {
+            if (verbose) {
+                printf("%s is a shell keyword\n", name);
+            } else {
+                printf("%s\n", name);
             }
             return 0;
         }
@@ -71,14 +107,17 @@ int cmd_command(EvalCtx *ctx, int argc, char **argv) {
             return 127;
         }
         const char *path = NULL;
-        env_get(&ctx->env, "PATH", &path);
+        if (defpath) {
+            path = "/usr/bin:/bin";
+        } else {
+            env_get(&ctx->env, "PATH", &path);
+        }
         char *found = path_lookup(name, path);
         if (!found) {
             if (verbose) {
                 printf("%s: not found\n", name);
-                return 127;
             }
-            return 1;
+            return 127;
         }
         if (verbose) {
             printf("%s is %s\n", name, found);
@@ -89,9 +128,32 @@ int cmd_command(EvalCtx *ctx, int argc, char **argv) {
         return 0;
     }
     int prev = ctx->skip_func;
+    int prev_plain = ctx->plain_cmd;
+    char *saved_path = NULL;
+    int had_path = 0;
+    const char *old_path = NULL;
     ctx->skip_func = 1;
+    ctx->plain_cmd = 1;
+    if (defpath) {
+        had_path = env_get(&ctx->env, "PATH", &old_path);
+        if (had_path && old_path) {
+            saved_path = dup_c(old_path);
+        }
+        env_set(&ctx->env, "PATH", "/usr/bin:/bin");
+        ctx->skip_hash = 1;
+    }
     int st = launch(ctx, argc - i, argv + i);
     ctx->skip_func = prev;
+    ctx->plain_cmd = prev_plain;
+    if (defpath) {
+        ctx->skip_hash = 0;
+        if (had_path) {
+            env_set(&ctx->env, "PATH", saved_path ? saved_path : "");
+        } else {
+            env_unset(&ctx->env, "PATH");
+        }
+        free(saved_path);
+    }
     return st;
 }
 
@@ -106,20 +168,24 @@ int cmd_type(EvalCtx *ctx, int argc, char **argv) {
             printf("%s is an alias for %s\n", argv[i], avalue);
             continue;
         }
+        if (shell_keyword(argv[i])) {
+            printf("%s is a shell keyword\n", argv[i]);
+            continue;
+        }
         if (builtin_is(argv[i])) {
             printf("%s is a shell builtin\n", argv[i]);
             continue;
         }
         if (func_index(ctx, argv[i]) >= 0) {
-            printf("%s is a function\n", argv[i]);
+            printf("%s is a shell function\n", argv[i]);
             continue;
         }
         const char *path = NULL;
         env_get(&ctx->env, "PATH", &path);
         char *found = path_lookup(argv[i], path);
         if (!found) {
-            shell_err(ctx, 0, "type: %s: not found", argv[i]);
-            rc = 1;
+            printf("%s: not found\n", argv[i]);
+            rc = 127;
             continue;
         }
         printf("%s is %s\n", argv[i], found);
@@ -195,7 +261,9 @@ int cmd_eval(EvalCtx *ctx, int argc, char **argv) {
     if (rc != 0) {
         diag_print_sh(&diag, stderr, "eval");
         ctx->status = 2;
-        ctx->exit_req = 1;
+        if (!ctx->plain_cmd) {
+            ctx->exit_req = 1;
+        }
         return 2;
     }
     return eval_node(ctx, root, 1);
@@ -276,22 +344,34 @@ int cmd_dot(EvalCtx *ctx, int argc, char **argv) {
         diag_print_sh(&diag, stderr, NULL);
         free(buf);
         free(owned);
-        ctx->exit_req = 1;
         ctx->status = 2;
+        if (!ctx->plain_cmd) {
+            ctx->exit_req = 1;
+        }
         return 2;
     }
     const char *old_src = ctx->src;
     size_t old_len = ctx->src_len;
     int old_line = ctx->verbose_line;
+    int old_quiet = ctx->src_quiet;
     int was_verbose = ctx->verbose;
     int dot_line = ctx->cur_line;
     ctx->src = buf;
     ctx->src_len = n;
+    ctx->src_quiet = 0;
     ctx->verbose_line = 0;
+    ctx->dot_depth++;
     int st = eval_node(ctx, root, 1);
+    ctx->dot_depth--;
+    /* return ends this file. The caller, including a function, continues. */
+    if (ctx->returning) {
+        ctx->returning = 0;
+        st = ctx->status;
+    }
     verbose_flush(ctx);
     ctx->src = old_src;
     ctx->src_len = old_len;
+    ctx->src_quiet = old_quiet;
     if (!was_verbose && ctx->verbose) {
         ctx->verbose_line = dot_line;
     } else {

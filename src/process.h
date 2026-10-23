@@ -6,5 +6,8 @@ char *path_lookup(const char *name, const char *path);
 
 /* Turn a waitpid status into a shell status. */
 int wait_status(int status);
+/* Signal text for a signaled child. SIGINT and SIGPIPE stay quiet. */
+void wait_show_signal(int status);
+void wait_show_sig(int sig);
 
 #endif
