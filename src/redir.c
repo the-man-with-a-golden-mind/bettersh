@@ -130,7 +130,8 @@ static void redir_open_err(EvalCtx *ctx, int line, const char *target, int creat
     }
 }
 
-int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **saved, int *nsaved) {
+int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **saved, int *nsaved,
+                 int line) {
     fflush(NULL);
     int cap = 0;
     for (uint32_t i = 0; i < nredirs; i++) {
@@ -154,6 +155,7 @@ int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **sa
             free(target);
             return -1;
         }
+        int at = line > 0 ? line : redir->line;
         int opened = -1;
         if (redir->op == REDIR_HERE || redir->op == REDIR_HERE_DASH || redir->op == REDIR_HERESTR) {
             size_t n = strlen(target);
@@ -167,7 +169,7 @@ int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **sa
             free(body);
             if (opened < 0) {
                 free(target);
-                shell_err(ctx, redir->line, "redirection: cannot create temporary file");
+                shell_err(ctx, at, "redirection: cannot create temporary file");
                 ctx->status = 2;
                 return -1;
             }
@@ -180,13 +182,13 @@ int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **sa
             char *end = NULL;
             long src = strtol(target, &end, 10);
             if (!end || *end) {
-                shell_err(ctx, redir->line, "%s: Bad file descriptor", target);
+                shell_err(ctx, at, "%s: Bad file descriptor", target);
                 free(target);
                 ctx->status = 2;
                 return -1;
             }
             if (dup2((int)src, fd) < 0) {
-                shell_err(ctx, redir->line, "%s: Bad file descriptor", target);
+                shell_err(ctx, at, "%s: Bad file descriptor", target);
                 free(target);
                 ctx->status = 2;
                 return -1;
@@ -207,7 +209,7 @@ int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **sa
             opened = open(target, O_RDWR | O_CREAT, 0666);
         }
         if (opened < 0) {
-            redir_open_err(ctx, redir->line, target, redir->op != REDIR_IN);
+            redir_open_err(ctx, at, target, redir->op != REDIR_IN);
             free(target);
             ctx->status = 2;
             return -1;
@@ -216,7 +218,7 @@ int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **sa
         if (opened != fd) {
             if (dup2(opened, fd) < 0) {
                 close(opened);
-                shell_err(ctx, redir->line, "dup: %s", strerror(errno));
+                shell_err(ctx, at, "dup: %s", strerror(errno));
                 ctx->status = 2;
                 return -1;
             }

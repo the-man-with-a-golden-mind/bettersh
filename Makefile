@@ -14,7 +14,7 @@ SRC = src/main.c src/arena.c src/error.c src/ast.c \
       src/builtins.c src/builtin_printf.c src/builtin_test.c src/builtin_cd.c \
       src/builtin_var.c src/builtin_proc.c src/builtin_cmd.c src/builtin_posix.c \
       src/builtin_fc.c src/builtin_limit.c \
-      src/eval.c src/eval_sh.c src/expand.c src/arith_text.c src/redir.c src/hash.c \
+      src/eval.c src/eval_sh.c src/eval_flow.c src/expand.c src/arith_text.c src/redir.c src/hash.c \
       src/chunk.c src/mod_scan.c src/mod_expr.c src/mod_parse.c \
       src/compiler.c src/compile_expr.c src/compile_flow.c src/verify.c src/disasm.c \
       src/vm.c src/vm_ops.c src/vm_method.c src/vm_exec.c src/interp.c src/interp_expr.c \

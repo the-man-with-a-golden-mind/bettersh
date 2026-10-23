@@ -52,13 +52,13 @@ The shebang selects the mode. `bettersh` or `env bettersh` is the modern languag
 
 ## Dash, and what the tests actually are
 
-`tests/compat/` is 120 scripts written in this repository. It is not the Open Group shell suite, and it was not imported from one. `tests/run.sh` runs each script with dash and with bettersh.
+`tests/compat/` is 124 scripts written in this repository. It is not the Open Group shell suite, and it was not imported from one. `tests/run.sh` runs each script with dash and with bettersh.
 
 Stdout, the exit status, and stderr have to match. A `tmp.` mktemp suffix in stderr is rewritten to `tmp.X` on both sides before the compare, because each shell creates its own temporary directory. `tests/compat/stderr-only.list` is empty. A name added there is counted as `stderr-only`, not as a pass. A listed file whose stderr starts matching fails until the name is removed.
 
 `tests/unit/compat_gaps.sh` locks cd, a missing command, nounset, and division by zero against dash, including stderr. Unset or empty `HOME` makes `cd` succeed and stay put. Unset or empty `OLDPWD` makes `cd -` succeed and print the current directory.
 
-Other checks in `make test`: parser goldens, modern-language goldens, unit scripts, and 1,000 generated scripts compared between `--interp` and the VM.
+Other checks in `make test`: parser goldens, modern-language goldens on the VM and on `--interp`, unit scripts, and 1,000 generated scripts compared between `--interp` and the VM.
 
 ## Claims this tree does not support
 

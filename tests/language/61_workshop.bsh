@@ -1,0 +1,157 @@
+#!/usr/bin/env bettersh
+import std/math as m
+import std/strings
+import std/path
+
+fn bucket(n) {
+  case n {
+    0: return "none"
+    1..9: return "few"
+    10..: return "many"
+    *: return "other"
+  }
+}
+
+fn adder(n) {
+  fn(x) { (x + n) }
+}
+
+fn greet(name, greeting = "Hello") {
+  return "@{ greeting } @{ name }"
+}
+
+fn mark() {
+  echo marked
+  return 1
+}
+
+fn clamp_score(n) {
+  if n < 0 { return 0 }
+  if n > 100 { return 100 }
+  return n
+}
+
+println(bucket(0))
+println(bucket(4))
+println(bucket(12))
+println(bucket(0 - 1))
+println(adder(10)(3))
+println(greet("Ada"))
+println(greet("Ada", "Hi"))
+println(0 && mark())
+println(1 || mark())
+println(1 && mark())
+
+let rows = [
+  { name: " ada ", score: 91, tags: ["posix", "vm"] },
+  { name: "bea", score: 70, tags: ["sh"] },
+  { name: "cam", score: 108, tags: [] }
+]
+let total = 0
+let names = []
+for row in rows {
+  let score = clamp_score(row.score)
+  let total = total + score
+  let clean = row.name.trim().lower()
+  let names = names.push(clean)
+}
+println(names.join(","))
+println(total)
+let passed = rows.filter(fn(row) { (clamp_score(row.score) >= 80) })
+println(passed.map(fn(row) { row.name.trim().lower() }).join(","))
+let best = rows.reduce(fn(acc, row) {
+  if row.score > acc.score { return row }
+  return acc
+})
+println("@{ best.name.trim() } @{ best.score }")
+
+let i = 0
+let fns = []
+while i < 3 {
+  let i = i + 1
+  let fns = fns.push(fn() { return i })
+}
+println(fns[0]())
+println(fns[2]())
+
+let s = 0
+for n in 1..4 {
+  let s = s + n
+}
+println(s)
+
+let raw = "  AbC-def  "
+println(raw.trim().lower().replace("abc", "zz").split("-").join("/"))
+println("a,b,".split(",").join("|"))
+println("hi".contains("h"))
+println("hi".index("z"))
+println("ab".slice(0, 1).repeat(3))
+println("abc".reverse())
+println("A\nB\tC".visible())
+
+let nums = [3, 1, 2]
+println(nums.sort().join(","))
+println(nums.contains(1))
+println(nums.index(9))
+println(nums.push(4).join(","))
+println(nums.pop())
+println(nums.join(","))
+println(nums.slice(0, 2))
+
+let meta = { title: "sh", year: 2026 }
+println(meta.keys.join(","))
+println(meta.values.join(","))
+println(meta.has("year"))
+println(meta.remove("title"))
+println(meta.keys.join(","))
+println(meta.year)
+
+fn twice(x) { return x * 2 }
+let box = { length: twice, name: "box" }
+println(box.length(4))
+println(box.name)
+
+println(true)
+println(false)
+println(null)
+println(1.5 + 2.25)
+println(1 == 1.0)
+println(!0)
+println(0 - 3)
+println(m.gcd(12, 18))
+println(m.sqrt(4))
+println(m.floor(3.7))
+println(strings.shout("yo"))
+println(strings.words(" one  two ").join(","))
+println(path.join("a", "b"))
+println(path.base("/a/b/c.txt"))
+println(chr(65))
+println(ord("Z"))
+
+setenv("BSH_WORKSHOP", "on")
+println(getenv("BSH_WORKSHOP"))
+if fs_exists("/tmp/bsh-lang-workshop") {
+  fs_remove("/tmp/bsh-lang-workshop")
+}
+writefile("/tmp/bsh-lang-workshop", "ada")
+println(readfile("/tmp/bsh-lang-workshop").trim())
+println(fs_exists("/tmp/bsh-lang-workshop"))
+fs_remove("/tmp/bsh-lang-workshop")
+println(fs_exists("/tmp/bsh-lang-workshop"))
+
+n=0
+while read x; do
+  n=$((n + 1))
+done <<'END'
+a
+b
+END
+echo "shell:$n"
+for name in a b; do
+  read line
+  echo "$name:$line"
+done <<'END'
+one
+two
+END
+echo "modern:@{ names[0] }"

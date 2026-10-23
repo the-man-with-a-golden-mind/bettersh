@@ -41,12 +41,20 @@ typedef struct SavedFd {
     int copy;
 } SavedFd;
 
-int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **saved, int *nsaved);
+/* line is the command's first line. Dash names that line, not the redirect token. */
+int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **saved, int *nsaved,
+                 int line);
 void restore_fds(SavedFd *list, int n);
 void commit_fds(SavedFd *list, int n);
 /* 1 when a write to stdout failed. Any pending text is discarded. */
 int stdout_failed(void);
 
 int func_index(EvalCtx *ctx, const char *name);
+
+void note(EvalCtx *ctx, int status, int chk);
+int eval_if(EvalCtx *ctx, Node *node, int chk);
+int eval_while(EvalCtx *ctx, Node *node, int chk);
+int eval_for(EvalCtx *ctx, Node *node, int chk);
+int eval_case(EvalCtx *ctx, Node *node, int chk);
 
 #endif

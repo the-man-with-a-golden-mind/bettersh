@@ -5,7 +5,6 @@
 #include "shjob.h"
 
 #include <errno.h>
-#include <fnmatch.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,7 +63,7 @@ int fatal(EvalCtx *ctx, int line, const char *fmt, ...) {
     return -1;
 }
 
-static void note(EvalCtx *ctx, int status, int chk) {
+void note(EvalCtx *ctx, int status, int chk) {
     ctx->status = status;
     if (chk && ctx->errexit && status != 0) {
         ctx->exit_req = 1;
@@ -489,7 +488,8 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
     SavedFd *saved = NULL;
     int nsaved = 0;
     trace_simple(ctx, aname, aval, nassign, args.v, (int)args.n);
-    if (apply_redirs(ctx, node->u.simple.redirs, node->u.simple.nredirs, &saved, &nsaved) < 0) {
+    if (apply_redirs(ctx, node->u.simple.redirs, node->u.simple.nredirs, &saved, &nsaved, node->line) <
+        0) {
         fields_free(&args);
         if (!keep) {
             for (int i = 0; i < nassign; i++) {
@@ -702,10 +702,10 @@ static int eval_pipeline(EvalCtx *ctx, Node *node, int chk) {
     return status;
 }
 
-static int with_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t n, Node *body, int chk) {
+static int with_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t n, Node *body, int chk, int line) {
     SavedFd *saved = NULL;
     int nsaved = 0;
-    if (apply_redirs(ctx, redirs, n, &saved, &nsaved) < 0) {
+    if (apply_redirs(ctx, redirs, n, &saved, &nsaved, line) < 0) {
         restore_fds(saved, nsaved);
         note(ctx, ctx->status, chk);
         return ctx->status;
@@ -791,7 +791,8 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
     case NODE_SIMPLE:
         return eval_simple(ctx, node, chk);
     case NODE_BRACE:
-        return with_redirs(ctx, node->u.group.redirs, node->u.group.nredirs, node->u.group.body, chk);
+        return with_redirs(ctx, node->u.group.redirs, node->u.group.nredirs, node->u.group.body, chk,
+                           node->line);
     case NODE_SUBSHELL: {
         fflush(NULL);
         pid_t pid = fork();
@@ -806,7 +807,8 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
             ctx->forked = 1;
             SavedFd *saved = NULL;
             int nsaved = 0;
-            if (apply_redirs(ctx, node->u.group.redirs, node->u.group.nredirs, &saved, &nsaved) < 0) {
+            if (apply_redirs(ctx, node->u.group.redirs, node->u.group.nredirs, &saved, &nsaved,
+                             node->line) < 0) {
                 child_exit(ctx, ctx->status);
             }
             commit_fds(saved, nsaved);
@@ -842,148 +844,14 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
         note(ctx, st, chk);
         return st;
     }
-    case NODE_IF: {
-        int cond = eval_node(ctx, node->u.ifc.cond, 0);
-        if (ctx->exit_req || ctx->returning || ctx->break_n || ctx->cont_n) {
-            return cond;
-        }
-        Node *branch = cond == 0 ? node->u.ifc.body : node->u.ifc.otherwise;
-        int st = 0;
-        if (branch) {
-            st = with_redirs(ctx, node->u.ifc.redirs, node->u.ifc.nredirs, branch, chk);
-        } else if (node->u.ifc.nredirs) {
-            st = with_redirs(ctx, node->u.ifc.redirs, node->u.ifc.nredirs, NULL, chk);
-        }
-        if (!branch) {
-            /* No else, or an empty then: the status is 0 unless a redirect failed. */
-            if (st == 0) {
-                note(ctx, 0, 0);
-            }
-            return st;
-        }
-        return st;
-    }
-    case NODE_WHILE: {
-        int st = 0;
-        ctx->loop_depth++;
-        while (!ctx->exit_req && !ctx->returning) {
-            if (ctx->break_n) {
-                ctx->break_n--;
-                goto while_out;
-            }
-            if (ctx->cont_n) {
-                ctx->cont_n--;
-                if (ctx->cont_n) {
-                    goto while_out;
-                }
-            }
-            int cond = eval_node(ctx, node->u.loop.cond, 0);
-            if (ctx->exit_req || ctx->returning) {
-                st = cond;
-                goto while_out;
-            }
-            int go = node->u.loop.until ? cond != 0 : cond == 0;
-            if (!go) {
-                note(ctx, st, 0);
-                break;
-            }
-            st = with_redirs(ctx, node->u.loop.redirs, node->u.loop.nredirs, node->u.loop.body, chk);
-            if (ctx->cont_n) {
-                ctx->cont_n--;
-                if (ctx->cont_n) {
-                    goto while_out;
-                }
-                continue;
-            }
-            if (ctx->break_n) {
-                ctx->break_n--;
-                goto while_out;
-            }
-        }
-    while_out:
-        ctx->loop_depth--;
-        return st;
-    }
-    case NODE_FOR: {
-        Fields words;
-        memset(&words, 0, sizeof words);
-        if (node->u.forloop.has_in) {
-            for (uint32_t i = 0; i < node->u.forloop.nwords; i++) {
-                if (expand_word(ctx, node->u.forloop.words[i], 1, &words) < 0) {
-                    fields_free(&words);
-                    return ctx->status;
-                }
-            }
-        } else {
-            for (uint32_t i = 0; i < ctx->env.npos; i++) {
-                fields_push(&words, dup_c(ctx->env.pos[i]));
-            }
-        }
-        int st = 0;
-        ctx->loop_depth++;
-        for (uint32_t i = 0; i < words.n; i++) {
-            if (ctx->exit_req || ctx->returning) {
-                break;
-            }
-            if (ctx->break_n) {
-                ctx->break_n--;
-                break;
-            }
-            if (ctx->cont_n) {
-                ctx->cont_n--;
-                if (ctx->cont_n) {
-                    break;
-                }
-            }
-            env_set(&ctx->env, node->u.forloop.name, words.v[i]);
-            st = with_redirs(ctx, node->u.forloop.redirs, node->u.forloop.nredirs, node->u.forloop.body,
-                             chk);
-            if (ctx->cont_n) {
-                ctx->cont_n--;
-                if (ctx->cont_n) {
-                    break;
-                }
-                continue;
-            }
-            if (ctx->break_n) {
-                ctx->break_n--;
-                break;
-            }
-        }
-        fields_free(&words);
-        ctx->loop_depth--;
-        return st;
-    }
-    case NODE_CASE: {
-        char *subject = expand_flat(ctx, node->u.cas.word);
-        if (!subject) {
-            return ctx->status;
-        }
-        int st = 0;
-        int matched = 0;
-        for (uint32_t i = 0; i < node->u.cas.narms && !matched; i++) {
-            CaseArm *arm = &node->u.cas.arms[i];
-            for (uint32_t p = 0; p < arm->npats; p++) {
-                char *pat = pattern_of(ctx, arm->pats[p]);
-                if (!pat) {
-                    free(subject);
-                    return ctx->status;
-                }
-                int ok = fnmatch(pat, subject, 0) == 0;
-                free(pat);
-                if (ok) {
-                    matched = 1;
-                    st = with_redirs(ctx, node->u.cas.redirs, node->u.cas.nredirs, arm->body, chk);
-                    break;
-                }
-            }
-        }
-        free(subject);
-        if (!matched) {
-            note(ctx, 0, 0);
-        }
-        return st;
-    }
+    case NODE_IF:
+        return eval_if(ctx, node, chk);
+    case NODE_WHILE:
+        return eval_while(ctx, node, chk);
+    case NODE_FOR:
+        return eval_for(ctx, node, chk);
+    case NODE_CASE:
+        return eval_case(ctx, node, chk);
     case NODE_FUNC:
         func_define(ctx, node->u.func.name, node->u.func.body, node->line);
         note(ctx, 0, 0);
