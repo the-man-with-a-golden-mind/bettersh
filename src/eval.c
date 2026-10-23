@@ -491,6 +491,7 @@ void eval_begin(EvalCtx *ctx, Arena *arena, const char *filename, int argc, char
                 const char *src, size_t src_len) {
     memset(ctx, 0, sizeof *ctx);
     ctx->tty_fd = -1;
+    ctx->cmd_chk = 1;
     ctx->job_plus = -1;
     ctx->job_minus = -1;
     ctx->arena = arena;

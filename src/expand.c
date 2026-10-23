@@ -374,7 +374,9 @@ char *capture_node(EvalCtx *ctx, Node *node) {
         close(fds[1]);
         shell_at_fork(ctx, 0);
         ctx->forked = 1;
-        int st = eval_node(ctx, node, 0);
+        /* This subshell is not the caller's if/&&/||/! exemption.
+           set -e still applies to the commands inside it. */
+        int st = eval_node(ctx, node, 1);
         child_exit(ctx, st);
     }
     close(fds[1]);

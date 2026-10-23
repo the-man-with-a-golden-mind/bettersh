@@ -141,6 +141,8 @@ typedef struct EvalCtx {
     int skip_hash;
     /* `command` ran this builtin. A special-builtin error does not abort. */
     int plain_cmd;
+    /* The simple command's errexit check. eval and command read it. */
+    int cmd_chk;
     /* Set once the script assigns or unsets LINENO. Until then each
        command stores its line number there. */
     int lineno_user;
@@ -195,7 +197,7 @@ void hist_add(EvalCtx *ctx, const char *text);
 void eval_begin(EvalCtx *ctx, Arena *arena, const char *filename, int argc, char **argv, char **envp,
                 const char *src, size_t src_len);
 void eval_end(EvalCtx *ctx);
-int launch(EvalCtx *ctx, int argc, char **argv);
+int launch(EvalCtx *ctx, int argc, char **argv, int chk);
 void shell_err(EvalCtx *ctx, int line, const char *fmt, ...);
 /* Record a special-builtin failure and ask the shell to exit. */
 void shell_abort(EvalCtx *ctx, int status);

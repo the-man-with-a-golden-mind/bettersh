@@ -110,7 +110,9 @@ static void func_define(EvalCtx *ctx, const char *name, Node *body, int line) {
     ctx->nfuncs++;
 }
 
-static int call_func(EvalCtx *ctx, Node *body, int argc, char **argv, int line) {
+/* chk is the caller's tested-context flag. It covers the whole body,
+   including a nested call and a set -e turned on inside the function. */
+static int call_func(EvalCtx *ctx, Node *body, int argc, char **argv, int line, int chk) {
     char **old = ctx->env.pos;
     uint32_t nold = ctx->env.npos;
     uint32_t cold = ctx->env.cpos;
@@ -142,7 +144,7 @@ static int call_func(EvalCtx *ctx, Node *body, int argc, char **argv, int line) 
     int saved_base = ctx->lineno_base;
     ctx->in_func = 1;
     ctx->lineno_base = line > 0 ? line : 1;
-    int st = eval_node(ctx, body, 1);
+    int st = eval_node(ctx, body, chk);
     ctx->in_func = saved_in;
     ctx->lineno_base = saved_base;
     local_pop(ctx);
@@ -282,14 +284,14 @@ static char **argv_term(int argc, char **argv) {
     return av;
 }
 
-int launch(EvalCtx *ctx, int argc, char **argv) {
+int launch(EvalCtx *ctx, int argc, char **argv, int chk) {
     if (argc < 1) {
         return 0;
     }
     if (!ctx->skip_func) {
         int index = func_index(ctx, argv[0]);
         if (index >= 0) {
-            return call_func(ctx, ctx->funcs[index].body, argc, argv, ctx->funcs[index].line);
+            return call_func(ctx, ctx->funcs[index].body, argc, argv, ctx->funcs[index].line, chk);
         }
     }
     int found = 0;
@@ -557,7 +559,10 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
     } else if (args.n == 0) {
         status = ctx->cmdsub_ran ? ctx->cmdsub_status : 0;
     } else {
-        status = launch(ctx, (int)args.n, args.v);
+        int saved_chk = ctx->cmd_chk;
+        ctx->cmd_chk = chk;
+        status = launch(ctx, (int)args.n, args.v, chk);
+        ctx->cmd_chk = saved_chk;
     }
     if (stdout_failed() && args.n > 0) {
         shell_err(ctx, node->line, "%s: %s: I/O error", args.v[0], args.v[0]);
@@ -601,6 +606,9 @@ static int eval_pipeline(EvalCtx *ctx, Node *node, int chk) {
     if (n == 1 && !node->u.pipeline.bang) {
         return eval_node(ctx, node->u.pipeline.cmds[0], chk);
     }
+    /* A component keeps errexit unless this pipeline is exempt:
+       it starts with !, or the caller is if/while or not the last AND-OR. */
+    int child_chk = chk && !node->u.pipeline.bang;
     int prev = -1;
     pid_t *pids = xmalloc(n * sizeof(pid_t));
     pid_t pgid = 0;
@@ -632,7 +640,7 @@ static int eval_pipeline(EvalCtx *ctx, Node *node, int chk) {
                 close(fds[1]);
             }
             ctx->forked = 1;
-            int st = eval_node(ctx, node->u.pipeline.cmds[i], 0);
+            int st = eval_node(ctx, node->u.pipeline.cmds[i], child_chk);
             child_exit(ctx, st);
         }
         if (top) {
@@ -756,7 +764,8 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
                     }
                     shell_at_fork(ctx, 0);
                     ctx->forked = 1;
-                    int child = eval_node(ctx, item->node, 0);
+                    /* The async shell honors errexit. The parent does not. */
+                    int child = eval_node(ctx, item->node, 1);
                     child_exit(ctx, child);
                 }
                 if (pid > 0) {
@@ -812,7 +821,7 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
                 child_exit(ctx, ctx->status);
             }
             commit_fds(saved, nsaved);
-            int st = eval_node(ctx, node->u.group.body, 1);
+            int st = eval_node(ctx, node->u.group.body, chk);
             child_exit(ctx, st);
         }
         if (job_top(ctx)) {

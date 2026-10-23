@@ -142,7 +142,7 @@ int cmd_command(EvalCtx *ctx, int argc, char **argv) {
         env_set(&ctx->env, "PATH", "/usr/bin:/bin");
         ctx->skip_hash = 1;
     }
-    int st = launch(ctx, argc - i, argv + i);
+    int st = launch(ctx, argc - i, argv + i, ctx->cmd_chk);
     ctx->skip_func = prev;
     ctx->plain_cmd = prev_plain;
     if (defpath) {
@@ -266,7 +266,7 @@ int cmd_eval(EvalCtx *ctx, int argc, char **argv) {
         }
         return 2;
     }
-    return eval_node(ctx, root, 1);
+    return eval_node(ctx, root, ctx->cmd_chk);
 }
 
 int cmd_dot(EvalCtx *ctx, int argc, char **argv) {
@@ -361,6 +361,8 @@ int cmd_dot(EvalCtx *ctx, int argc, char **argv) {
     ctx->src_quiet = 0;
     ctx->verbose_line = 0;
     ctx->dot_depth++;
+    /* `.` does not inherit the caller's exemption. A failure in the file
+       still sets exit_req when errexit is on. */
     int st = eval_node(ctx, root, 1);
     ctx->dot_depth--;
     /* return ends this file. The caller, including a function, continues. */
