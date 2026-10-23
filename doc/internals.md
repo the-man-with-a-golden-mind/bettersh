@@ -1,43 +1,88 @@
-# Internals
+# bettersh internals
 
-This note describes the program in this tree. `README.md` and `doc/language.md` are the contract. The bytecode image is a private, versioned file. It is not a stable instruction set, and untrusted bytes are not a supported program.
+This document explains how the implementation fits together. The [README](../README.md) is the project overview, and the [language guide](language.md) describes user-visible behavior.
 
-## Two languages
+## Execution overview
 
-`src/main.c` picks the language. A path ending in `.btr` is modern. A path ending in `.sh` is strict unless the shebang is `bettersh` or `env bettersh`. Any other path follows that same shebang rule, and a missing shebang stays strict. `bettersh -c` stays strict. A file named `.bsh` is not modern. `import` of a spec that ends in `.bsh` is read as the `.btr` file of the same stem, including `std/name.bsh`.
+`src/main.c` parses command-line options, reads the source, selects a language, and creates the runtime state. A `.btr` path selects the modern language. A `.sh` path selects strict mode unless its shebang names bettersh. Other paths use the shebang, with strict mode as the default. Commands supplied with `-c` are strict shell commands.
 
-Strict code is a `Node` tree in `eval_sh.c`. Modern code is an `MNode` tree. A modern shell statement is the source span, reparsed by the strict parser. The VM and `--interp` call that same evaluator.
+Strict and modern source use separate syntax trees:
 
-## Strings
+```text
+strict source -> lexer -> parser -> Node -> shell evaluator
 
-Bytes are what a string stores. `src/string.c` keeps a process-wide intern table for identical byte sequences used as chunk names and compiled constants. `str_intern` returns one reference, and the table holds another. The last external `str_unref` drops the table entry and frees the bytes. `str_append` copies when the string is interned or shared. Runtime strings from the evaluator stay uninterned. There is no small-string optimization.
+modern source -> scanner -> parser -> MNode -> compiler -> verifier -> VM
+                                      \-> interpreter
+```
 
-`src/utf8.c` counts Unicode scalar values for the modern `.length`, index, `.slice`, and `.index` operations. One invalid byte is one unit. `chr` encodes one scalar in `0..0x10FFFF` and rejects surrogates `U+D800..U+DFFF`. `ord` accepts exactly one unit. Shell `${#name}` still counts bytes. `upper`, `lower`, `visible`, and `split` stay byte-wise. `bytes` returns one integer for each stored byte, including a NUL. `unbytes` builds a string from integers in `0..255`. `readall` returns the remaining stdin bytes and keeps a NUL. `fs_load` returns the file bytes, or null when the path cannot be read. `fs_save` returns false when the write fails. A path still rejects an interior NUL.
+A shell statement inside a modern program is stored as a source span. When that statement runs, the strict parser reads the span and the shell evaluator executes the resulting `Node` tree. The VM and tree-walking interpreter therefore share one shell implementation.
 
-## Maps
+The interpreter is mainly a semantic cross-check for the compiler and VM. It also shares runtime helpers for values, methods, arithmetic, and builtins, so it is not an independent implementation of the whole language.
 
-`src/map.c` keeps keys and values in insertion order. Lookup uses an open-addressed FNV-1a table of slots. An empty slot is `0`. A stored slot is the dense index plus one. `map_remove` shifts the dense arrays and rehashes. A missing value is stored as `null`, so lookup can tell a missing key from a null value with `map_has`.
+## Strict shell engine
 
-## Values and collection
+The strict lexer is split across `lexer.c`, `lex_word.c`, and `lex_param.c`. `parser.c` owns lists, pipelines, token movement, and here-document timing; `parse_cmd.c` handles simple and compound commands. The evaluator is divided between general execution in `eval_sh.c`, compound flow in `eval_flow.c`, expansion in `expand.c`, arithmetic in `arith_text.c`, and redirection handling in `redir.c`.
 
-`src/value.c` refcounts values, cells, and interpreter environments. A value that contains itself is freed when the outside references are gone. Array, map, and function cycles use the same rule.
+External commands and pipelines use the process helpers in `process.c`. `shjob.c` owns job-control state and terminal process groups. `interact.c` manages the prompt and persistent history, while `vi_line.c` implements interactive line editing.
 
-An interpreter environment is collected when its references are the functions and child environments in that graph. `g_closed` refuses a function that has an upvalue and hands that graph to `src/trace.c`. `trace_env` walks values, environments, and upvalue cells reachable from the root environment. It frees the group only when every environment reference and every value that captures the group is accounted for inside the walk. An outside reference leaves the pointers live. `value_collecting` stops the two collectors from re-entering.
+The shell parses a complete non-interactive source before evaluating it. This keeps ownership and here-document handling simple, but it differs from shells that execute earlier commands before discovering a later syntax error.
 
-## Bytecode image
+## Modern compiler and VM
 
-`src/bcode.c` writes a private image. The header is the four bytes `BTRC`, a little-endian `u32` version (`1`), a little-endian `u32` source length, and the source bytes. The chunk follows as explicit little-endian fields, not as a dumped struct. The source is stored because shell words and holes are spans into that text. Counts above one million and files above 8MB are rejected. A short read, a trailing byte, a bad magic, or a bad version is `bad bytecode` and status 2. `verify_chunk` runs before the image is written and again before `vm_run`. Nothing runs when verification fails.
+The modern scanner and parser live in `mod_scan.c`, `mod_expr.c`, and `mod_parse.c`. The compiler is split across `compiler.c`, `compile_expr.c`, and `compile_flow.c`. It emits a tree of `Chunk` objects containing instructions, constants, names, nested functions, shell-word descriptors, source locations, and capture metadata.
 
-`--compile` requires `--output`. `--bytecode FILE` loads and runs an image. The `.btr` suffix does not mean the file is an image.
+`verify.c` validates every chunk before the VM executes it. Verification checks instruction boundaries, operand indexes, jump targets, stack depths and merge points, constant kinds, parameter counts, source spans, and closure captures. A child capture must refer to a local or capture that exists in its parent chunk.
 
-## History
+`vm.c` owns frames and the value stack. `vm_ops.c`, `vm_method.c`, and `vm_exec.c` implement operators, methods, calls, and embedded shell execution. The VM runs one instruction stream at a time and has no worker threads.
 
-`src/interact.c` loads `HISTFILE` only after the session is interactive. Each record is a decimal length, a space, that many bytes, and a newline. The length cap is 8192. A record that does not match is skipped through the next newline, and the session prints `bettersh: history: ignored a corrupt line` once. A missing file is silent. Other read and write failures print `cannot read history` or `cannot write history` once. Loading does not append the records it just read. With `HISTFILE` unset, history stays in the process list that `fc` already uses. The interactive tests use a private pty and unset `HISTFILE` except for the history case.
+`interp.c` and `interp_expr.c` walk the modern syntax tree directly. The differential generator runs the same program through the interpreter and VM and compares output, errors, and status.
 
-## Suggestions
+## Values and memory
 
-`src/suggest.c` picks the closest name within edit distance 2. Names longer than 64 are skipped. An equal distance keeps the name that sorts first with `strcmp`. The compiler walks locals and builtins. The interpreter walks the environment chain and builtins. The message is `undefined name; did you mean NAME?` only when a suggestion exists. Otherwise it stays `undefined name`. `--interp` still reports column 1.
+`Value` represents null, booleans, integers, floats, strings, arrays, maps, and functions. Values, captured cells, and interpreter environments are reference counted.
 
-## Not claimed here
+Reference counting alone cannot free a cycle, so `value.c` and `trace.c` perform a trial walk when a container or closed environment may be held only by its own graph. The walk covers arrays, maps, functions, upvalue cells, parent environments, and child environments. The graph is freed only when every remaining reference is internal; one outside reference keeps it alive. `value_collecting` prevents the collector from re-entering itself while it releases a group.
 
-The Open Group shell suite is not in this tree and was not run. `tests/unit/posix_suite.sh` runs one only when `BETTERSH_POSIX_SUITE` is set. GitHub Actions has not run from this tree. A local Docker run is not that workflow.
+Strings store arbitrary bytes and carry a trailing zero for C interfaces. `string.c` interns compiled constants and chunk names, while most runtime strings remain uninterned. Mutation copies a string when it is shared or interned.
+
+`utf8.c` supplies Unicode-scalar indexing for the modern string operations that need it. Invalid bytes count as single units so an operation can always make progress. Shell string length and several byte-oriented methods continue to count stored bytes.
+
+Maps preserve insertion order in dense key and value arrays. An open-addressed FNV-1a table maps a key to its dense index. Removing a key compacts the arrays and rebuilds the table.
+
+## Modules and host functions
+
+`module.c` resolves a module to a canonical path, stores its state in a cache owned by one run, and evaluates it once. Encountering the same module while it is still loading reports an import cycle. A completed module exports a map.
+
+The standard library is BetterSh source layered on host functions. `host.c` contains general runtime and math calls, `host_fs.c` handles files, `host_pipe.c` handles bidirectional child processes, and `host_term.c` handles raw-terminal operations. Operating-system calls that require C strings reject interior zero bytes instead of silently truncating their arguments.
+
+The standard library is located through `BETTERSH_PATH`, the working tree, or paths relative to the executable. It is installed under `lib/bettersh/std` rather than compiled into the binary.
+
+## Bytecode images
+
+`bcode.c` serializes a private bytecode image. The file begins with the four bytes `BTRC`, a little-endian 32-bit format version, and a little-endian 32-bit source length. The source text follows, then the chunk tree as explicit little-endian fields. The source is included because embedded shell words and interpolation holes refer to source offsets.
+
+The reader rejects an unknown version, malformed count, file larger than 8 MiB, count above one million, short read, trailing data, or chunk that fails verification. Verification runs both before writing an image and before executing one. The format contains indexes rather than serialized host pointers.
+
+The image format is private to bettersh. Changes may require a version bump, and external producers should not depend on its current layout.
+
+## Interactive history and terminal state
+
+Interactive history uses length-prefixed records: a decimal byte count, one space, the command bytes, and a newline. Records longer than 8192 bytes are not accepted. A malformed record is skipped through the next newline, and the warning is printed once per session. A missing history file is ignored; other read and write failures are reported.
+
+Terminal code saves the previous terminal settings before entering raw mode and restores them on normal exit and through the registered exit handler. Job control prefers `/dev/tty` and falls back to a terminal attached to one of the standard streams.
+
+## Tests
+
+`tests/run.sh` combines several kinds of evidence:
+
+- parser golden files and expected syntax errors;
+- 129 strict scripts compared with dash;
+- modern-language output and error fixtures;
+- unit scripts for builtins, installation, modules, the terminal, and the standard library;
+- C tests for values and the verifier;
+- malformed and randomized bytecode tests;
+- generated programs compared between the interpreter and VM.
+
+`make test` runs the deterministic local suite. `make debug` prepares an AddressSanitizer and UndefinedBehaviorSanitizer build. `make test-host` adds checks that depend on the host, such as network access, Apple `leaks`, and performance reporting. `make fuzz-nightly` increases the generated differential run from 1,000 to 10,000 programs.
+
+The compatibility directory is a project regression corpus rather than a conformance certification. An external POSIX suite can be supplied through `BETTERSH_POSIX_SUITE`; it is not vendored in this repository.

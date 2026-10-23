@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* One AST for strict sh now and the modern language later.
+/* Syntax tree for strict shell programs.
    Milestone 1 only builds the sh command nodes below. */
 
 typedef enum PartKind {

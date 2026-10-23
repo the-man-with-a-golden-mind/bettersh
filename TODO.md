@@ -1,19 +1,53 @@
-# TODO
+# Known limitations and open work
 
-Noted while building M1. These are deferred on purpose.
+This file tracks behavior that is implemented consistently but still differs from the intended shell or language design. It is a work list, not a feature summary.
 
-- Here-strings (`<<<`) are parsed and executed. dash rejects them, so they stay out of the dash differential suite.
-- `${parameter:offset}` and `${parameter:offset:length}` are "bad substitution". They are not POSIX. dash accepts the syntax and reports "Bad substitution" at runtime. `${name:}word}` is the value, or empty when unset or null, joined with word. dash drops text that follows that expansion inside the same quotes (`"${x:}he}llo"` is `abche` there).
-- An IO number is one digit, matching dash. The POSIX token rule allows several digits. `10>file` is the word `10` and a redirect of standard output. A quoted digit is not an IO number.
-- Backtick command substitutions report an approximate line and column. The rescanned text does not keep the original source positions.
-- A word's spell copies the text of an expansion as written. A backslash-newline inside `$(...)` or `${...}` is not removed from that spelling.
-- Compound commands, function definitions, subshells, and evaluation run in strict mode. A modern shebang compiles and runs. Brace `if`, `while`, `for`, `case`, `return`, and `import` are implemented. A module is cached by its canonical path and evaluated once per run. `std` is BetterSh code over host builtins for files, the environment, libm, and process jobs. Async waits on those processes. It does not start threads. The terminal screen is BetterSh too: it paints a grid and names keys. `std/tui.btr` places windows, fields, buttons, and lists on that grid. The host only puts the tty in raw mode and reads one byte, and it restores the tty on the way out. `std/edit.btr` is a modal editor on that screen. It keeps the view offset, scrolls long lines, stays up when a save fails, and edits by subword, indent, comment, and redo. It loads a theme and a language server from `BETTERSH_EDITOR` or `$HOME/.bettersh/editor.conf`. A theme highlights comments, strings, keywords, numbers, functions, types, constants, macros, and shell variables in JavaScript, TypeScript, Rust, shell, BetterSh, Python, and Lua. Theme names are plain, dark, light, nord, gruvbox, dracula, catppuccin, solarized, monokai, and tokyonight. A modern local is not a shell variable. Closures capture the environment where the function was defined.
-- The modern tree is a separate node type. eval_sh.c cannot grow the strict node enum, so a shell statement is reparsed from its source span.
-- `@{ ... }` inside a quoted here-document is still interpolated.
-- A missing here-document delimiter at end of file is the rest of the script. An interactive prompt still waits.
-- A script is parsed before any of it runs. A later `Missing '}'` leaves stdout empty. dash runs the commands that came before that error.
-- There is no `--eval`. Arguments after the script path are positional parameters.
-- `hash` with no operands prints remembered paths in the order they were stored. dash prints them in hash-bucket order.
-- Non-interactive scripts expand aliases. This dash does not. `tests/unit/posix.sh` locks the expansion. `eval` expands aliases in both.
-- `set -v` prints a compound through its closing line before the body runs. `bettersh -v -c` does not echo the `-c` string. A file read with `.` still is.
-- `set -o` lists options in dash's order and columns, then `pipefail`. `set +o` prints `set -o name` or `set +o name`. `set -o debug` is stored and listed. It does not write a trace file.
+## Strict shell compatibility
+
+### Parsing and execution order
+
+bettersh parses an entire non-interactive script before running it. If the parser finds an error near the end of a file, commands earlier in that file do not run. Dash may run those commands before it reaches the error.
+
+A here-document whose delimiter is missing at end of file consumes the remaining source as its body. At an interactive prompt, bettersh waits for another line instead.
+
+### Redirections and here-documents
+
+An IO-number token is limited to one digit. POSIX permits more than one, so `10>file` is currently parsed as the word `10` followed by a redirection of standard output.
+
+Here-strings (`<<<`) are supported as an extension and are excluded from the dash comparison because dash rejects them.
+
+A quoted here-document still processes modern `@{ ... }` interpolation. Quoting the delimiter should make the body literal with respect to modern interpolation as well as shell expansion.
+
+### Parameter and command expansion
+
+`${parameter:offset}` and `${parameter:offset:length}` are not implemented. They currently report `bad substitution`.
+
+The accepted form `${name:}word}` has unusual compatibility behavior: it joins the value, or an empty string for an unset or empty value, with `word`. This parser edge case needs either a deliberate specification or removal.
+
+Backtick command substitutions lose exact source columns when their contents are rescanned. Their error line is useful, but the column may be approximate.
+
+The spelling retained for a shell word does not remove every backslash-newline inside `$(...)` and `${...}`. This mainly affects verbose and diagnostic output.
+
+### Builtins and options
+
+Non-interactive scripts expand aliases, while the dash used by the compatibility suite does not. `eval` expands aliases in both shells.
+
+`hash` prints remembered paths in insertion order. Dash exposes its hash-table order.
+
+`set -v` prints a complete compound command before its body runs. `bettersh -v -c` does not echo the command string, although a file read with `.` is echoed.
+
+`set -o` includes the bettersh-specific `pipefail` and `debug` entries after the dash-compatible options. The `debug` option is recorded and displayed but does not write a trace file.
+
+There is no `--eval` command-line option. Use `-c` for strict shell text or a source file for modern code.
+
+## Modern-language architecture
+
+Strict and modern programs use different syntax-tree types. A shell statement embedded in a modern program is stored as a source span and parsed again when it executes. This keeps one shell evaluator, but it duplicates parsing work and makes exact source mapping harder.
+
+The VM and tree-walking interpreter share value, method, builtin, and shell helpers. Differential tests can find compiler and VM disagreements, but a defect in shared code can appear in both results.
+
+## Performance and portability
+
+Strict-mode variable lookup is linear, arithmetic text is reparsed, and assignments allocate. The microbenchmarks should be used to identify regressions and guide profiling; their timings should not be treated as portable pass/fail numbers.
+
+Cross-build targets exist for Intel macOS and x86-64 and ARM64 musl Linux. A release still needs those binaries to be executed on their target systems, followed by the full hosted CI run on the exact release commit.

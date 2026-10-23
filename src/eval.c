@@ -673,6 +673,7 @@ void shell_apply_start(EvalCtx *ctx, const ShellStart *start) {
     ctx->src_quiet = start->src_quiet;
     ctx->vi = start->vi;
     ctx->emacs = start->emacs;
+    ctx->btr = start->btr;
     if (start->vi) {
         ctx->emacs = 0;
     }

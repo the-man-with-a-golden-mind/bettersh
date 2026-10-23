@@ -1,5 +1,6 @@
 #include "interact.h"
 
+#include "btr_prompt.h"
 #include "eval_priv.h"
 #include "parser.h"
 #include "shjob.h"
@@ -11,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 enum { HIST_MAX = 8192 };
@@ -208,19 +210,33 @@ static int read_cooked(const char *prompt, char **out) {
     return 0;
 }
 
-static int read_one(EvalCtx *ctx, const char *prompt, char **out) {
+static long mono_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (long)ts.tv_sec * 1000L + (long)(ts.tv_nsec / 1000000L);
+}
+
+static int read_one(EvalCtx *ctx, const char *prompt, const ViStyle *style, char **out) {
     int rc;
     shjob_reap(ctx, 1);
-    if (ctx->vi && isatty(STDIN_FILENO)) {
+    if ((ctx->vi || ctx->btr) && isatty(STDIN_FILENO)) {
         char **hist = NULL;
         uint32_t i;
+        ViStyle plain;
+        const ViStyle *use = style;
         if (ctx->nhist > 0) {
             hist = xmalloc(ctx->nhist * sizeof(char *));
             for (i = 0; i < ctx->nhist; i++) {
                 hist[i] = ctx->hist[i].text;
             }
         }
-        rc = vi_read_line(prompt, hist, ctx->nhist, out);
+        if (!use) {
+            vi_style_clear(&plain);
+            use = &plain;
+        }
+        rc = vi_read_line_ex(prompt, hist, ctx->nhist, use, out);
         free(hist);
         if (rc < 0) {
             rc = read_cooked(prompt, out);
@@ -269,6 +285,7 @@ int interact_run(int argc, char **argv, char **envp, const ShellStart *start) {
     /* Dash numbers each physical line of the session. A blank line counts.
        An ignored EOF does not. */
     int session = 1;
+    long last_ms = 0;
     while (!ctx.exit_req) {
         char *acc = NULL;
         size_t alen = 0;
@@ -277,8 +294,30 @@ int interact_run(int argc, char **argv, char **envp, const ShellStart *start) {
         int cmd_line = session;
         for (;;) {
             char *line = NULL;
-            const char *ps = alen == 0 ? var_or(&ctx, "PS1", "$ ") : var_or(&ctx, "PS2", "> ");
-            int rc = read_one(&ctx, ps, &line);
+            char *owned = NULL;
+            const char *ps;
+            ViStyle style;
+            const ViStyle *style_ptr = NULL;
+            int rc;
+            vi_style_clear(&style);
+            if (ctx.btr && isatty(STDIN_FILENO)) {
+                BtrPrompt bp;
+                btr_prompt_make(name, ctx.status, alen == 0 ? last_ms : 0, alen != 0, &ctx.btr_warned, &bp);
+                owned = bp.text;
+                ps = owned ? owned : (alen == 0 ? "$ " : "> ");
+                style = bp.style;
+                if (!bp.from_kit) {
+                    style.suggest = 1;
+                    style.complete = 1;
+                }
+                style.emacs = !ctx.vi;
+                style_ptr = &style;
+                got_int = 0;
+            } else {
+                ps = alen == 0 ? var_or(&ctx, "PS1", "$ ") : var_or(&ctx, "PS2", "> ");
+            }
+            rc = read_one(&ctx, ps, style_ptr, &line);
+            free(owned);
             Diag diag;
             Node *root = NULL;
             int pr;
@@ -319,7 +358,14 @@ int interact_run(int argc, char **argv, char **envp, const ShellStart *start) {
             if (ctx.job_warning > 0) {
                 ctx.job_warning--;
             }
-            eval_node(&ctx, root, 1);
+            {
+                long t0 = mono_ms();
+                eval_node(&ctx, root, 1);
+                last_ms = mono_ms() - t0;
+                if (last_ms < 0) {
+                    last_ms = 0;
+                }
+            }
             break;
         }
         free(acc);

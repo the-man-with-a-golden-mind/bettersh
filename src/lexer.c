@@ -11,9 +11,9 @@
  * $(...) and backticks re-enter the parser through LexHooks, so a nested
  * program, including its here-documents, is real syntax.
  *
- * IO_NUMBER is a single digit. POSIX's grammar allows more, but dash (the
- * M2 differential oracle) and most shells accept only one, so "10>f" is the
- * word 10 followed by ">".
+ * IO_NUMBER is a single digit. POSIX's grammar allows more, but the dash used
+ * by the compatibility tests accepts only one, so "10>f" is the word 10
+ * followed by ">".
  */
 
 int is_name_start(int c) {

@@ -18,6 +18,9 @@ void modcache_free(ModCache *cache);
 /* Bind name of std/strings or ./x.btr. Returns -1 when the name is empty. */
 int module_stem(const char *spec, char *buf, size_t cap);
 
+/* *out is a malloc'd path of a std file such as "btr.btr". exe is argv[0]. */
+int module_std_file(const char *file, const char *exe, char **out);
+
 /* On success *out is a new reference to the module map. On failure an
    error is already printed and *out is NULL. use_interp selects the
    tree-walker for this load and every module it imports. */

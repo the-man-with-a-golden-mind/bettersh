@@ -79,6 +79,9 @@ typedef struct ShellStart {
     int debug;
     int vi;
     int emacs;
+    /* argv0 basename btr, or -btr for a login shell. The prompt kit is separate
+       from the plain interactive editor. */
+    int btr;
     int interactive;
     int stdin_mode;
     int monitor;
@@ -108,6 +111,9 @@ typedef struct EvalCtx {
     int notify;
     int vi;
     int emacs;
+    int btr;
+    /* Set after the missing-prompt message has been printed once. */
+    int btr_warned;
     int interactive;
     int stdin_mode;
     int monitor;

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Live dash is the oracle for stdout and status. bettersh and --interp must
+# Live dash is the reference for stdout and status. bettersh and --interp must
 # agree with it. Stderr may differ in the filename prefix; messages that dash
 # prints without a filename are compared byte for byte.
 bin=${1:?}

@@ -390,6 +390,13 @@ static int search_std(const char *file, const char *exe, char **out) {
     }
 }
 
+int module_std_file(const char *file, const char *exe, char **out) {
+    if (!file || !file[0] || !out) {
+        return -1;
+    }
+    return search_std(file, exe, out);
+}
+
 static int resolve_spec(const char *from_file, const char *spec, const char *exe, char **out) {
     char *file;
     size_t n;
