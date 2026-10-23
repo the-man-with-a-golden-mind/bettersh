@@ -274,8 +274,8 @@ void value_ref(Value *value) {
 }
 
 /* Slots that point back at this same value. They keep a ref, so the last
-   outside owner must still free the value. A cycle through a second value
-   is not counted and is not collected.
+   outside owner must still free the value. A cycle through another array
+   or map is handled by release_cycle. This count does not include it.
    A function upvalue counts only while this function is the cell's last
    owner. Another closure can share the cell, and that reference stays
    live until the other closure drops it. */
@@ -328,6 +328,131 @@ static unsigned self_refs(const Value *value) {
     return n;
 }
 
+static int cycle_has(Value **set, uint32_t n, const Value *value) {
+    uint32_t i;
+    for (i = 0; i < n; i++) {
+        if (set[i] == value) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void cycle_add(Value ***set, uint32_t *n, uint32_t *cap, Value *value) {
+    if (*n >= *cap) {
+        uint32_t next = *cap ? *cap * 2 : 8;
+        *set = xrealloc(*set, (size_t)next * sizeof(Value *));
+        *cap = next;
+    }
+    (*set)[(*n)++] = value;
+}
+
+/* Arrays and maps reachable from start. Strings and functions are not
+   entered, so a function cell cannot keep a member of this set alive
+   without that member's ref count showing the outside owner. */
+static void cycle_reach(Value ***set, uint32_t *n, uint32_t *cap, Value *start) {
+    uint32_t at = 0;
+    if (!start || (start->kind != VAL_ARRAY && start->kind != VAL_MAP)) {
+        return;
+    }
+    cycle_add(set, n, cap, start);
+    while (at < *n) {
+        Value *value = (*set)[at++];
+        uint32_t i;
+        uint32_t len = 0;
+        Value **kids = NULL;
+        if (value->kind == VAL_ARRAY && value->u.arr) {
+            kids = value->u.arr->items;
+            len = value->u.arr->len;
+        } else if (value->kind == VAL_MAP && value->u.map) {
+            kids = value->u.map->vals;
+            len = value->u.map->len;
+        }
+        for (i = 0; i < len; i++) {
+            Value *child = kids[i];
+            if (!child || (child->kind != VAL_ARRAY && child->kind != VAL_MAP)) {
+                continue;
+            }
+            if (!cycle_has(*set, *n, child)) {
+                cycle_add(set, n, cap, child);
+            }
+        }
+    }
+}
+
+static unsigned cycle_inbound(Value **set, uint32_t n, const Value *target) {
+    unsigned count = 0;
+    uint32_t i;
+    for (i = 0; i < n; i++) {
+        Value *value = set[i];
+        uint32_t j;
+        uint32_t len = 0;
+        Value **kids = NULL;
+        if (value->kind == VAL_ARRAY && value->u.arr) {
+            kids = value->u.arr->items;
+            len = value->u.arr->len;
+        } else if (value->kind == VAL_MAP && value->u.map) {
+            kids = value->u.map->vals;
+            len = value->u.map->len;
+        }
+        for (j = 0; j < len; j++) {
+            if (kids[j] == target) {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+static void cycle_unlink(Value *value, Value **set, uint32_t n) {
+    uint32_t i;
+    uint32_t len = 0;
+    Value **kids = NULL;
+    if (value->kind == VAL_ARRAY && value->u.arr) {
+        kids = value->u.arr->items;
+        len = value->u.arr->len;
+    } else if (value->kind == VAL_MAP && value->u.map) {
+        kids = value->u.map->vals;
+        len = value->u.map->len;
+    }
+    for (i = 0; i < len; i++) {
+        if (kids[i] && cycle_has(set, n, kids[i])) {
+            kids[i] = NULL;
+        }
+    }
+}
+
+/* Free a closed group of arrays and maps. Returns after freeing start
+   when every member's refs equal the pointers from inside the group.
+   One outside ref keeps the whole group. */
+static void release_cycle(Value *start) {
+    Value **set = NULL;
+    uint32_t n = 0;
+    uint32_t cap = 0;
+    uint32_t i;
+    cycle_reach(&set, &n, &cap, start);
+    if (n < 2) {
+        free(set);
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        if (set[i]->refs != cycle_inbound(set, n, set[i])) {
+            free(set);
+            return;
+        }
+    }
+    for (i = 0; i < n; i++) {
+        cycle_unlink(set[i], set, n);
+    }
+    for (i = 0; i < n; i++) {
+        set[i]->refs = 1;
+    }
+    for (i = 0; i < n; i++) {
+        value_unref(set[i]);
+    }
+    free(set);
+}
+
 void value_unref(Value *value) {
     if (!value || value->refs == 0) {
         return;
@@ -335,6 +460,7 @@ void value_unref(Value *value) {
     if (value->refs > 1) {
         value->refs--;
         if (value->refs > self_refs(value)) {
+            release_cycle(value);
             return;
         }
     }

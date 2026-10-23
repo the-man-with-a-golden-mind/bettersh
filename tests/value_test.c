@@ -184,6 +184,67 @@ static void test_shared_fn_cell(void) {
     cell_unref(cell);
 }
 
+/* Two arrays that contain only each other, plus a string owned by the
+   cycle. Dropping one outside owner must leave both arrays. Dropping
+   the last outside owner frees the group. The pointers are not read
+   after that free. */
+static void test_pair_cycle(void) {
+    Value *a = value_array(array_new());
+    Value *b = value_array(array_new());
+    Value *s = value_str(str_from_c("s"));
+    value_ref(b);
+    array_push(a->u.arr, b);
+    value_ref(a);
+    array_push(b->u.arr, a);
+    value_ref(s);
+    array_push(a->u.arr, s);
+    check(a->refs == 2, "pair a refs");
+    check(b->refs == 2, "pair b refs");
+    check(s->refs == 2, "pair string refs");
+    value_unref(a);
+    check(a->refs == 1, "pair a held by b");
+    check(b->refs == 2, "pair b still outside");
+    check(array_get(b->u.arr, 0) == a, "pair link live");
+    value_unref(s);
+    check(s->refs == 1, "pair string held by a");
+    value_unref(b);
+}
+
+static void test_map_cycle(void) {
+    Value *a = value_map(map_new());
+    Value *b = value_map(map_new());
+    value_ref(b);
+    map_set(a->u.map, "b", b);
+    value_ref(a);
+    map_set(b->u.map, "a", a);
+    check(a->refs == 2, "map cycle a");
+    check(b->refs == 2, "map cycle b");
+    value_unref(a);
+    check(a->refs == 1, "map cycle a held");
+    check(map_get(b->u.map, "a") == a, "map cycle link");
+    value_unref(b);
+}
+
+static void test_trio_cycle(void) {
+    Value *a = value_array(array_new());
+    Value *b = value_array(array_new());
+    Value *c = value_array(array_new());
+    value_ref(b);
+    array_push(a->u.arr, b);
+    value_ref(c);
+    array_push(b->u.arr, c);
+    value_ref(a);
+    array_push(c->u.arr, a);
+    check(a->refs == 2 && b->refs == 2 && c->refs == 2, "trio refs");
+    value_unref(a);
+    value_unref(b);
+    check(a->refs == 1, "trio a inside");
+    check(b->refs == 1, "trio b inside");
+    check(c->refs == 2, "trio c outside");
+    check(array_get(c->u.arr, 0) == a, "trio link live");
+    value_unref(c);
+}
+
 static void test_nested(void) {
     Array *inner = array_new();
     array_push(inner, value_str(str_from_c("x")));
@@ -208,6 +269,9 @@ int main(void) {
     test_map();
     test_self_cycle();
     test_shared_fn_cell();
+    test_pair_cycle();
+    test_map_cycle();
+    test_trio_cycle();
     test_nested();
     if (fails) {
         fprintf(stderr, "%d value checks failed\n", fails);
