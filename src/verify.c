@@ -282,7 +282,74 @@ static int verify_flow(const Chunk *chunk, const uint8_t *mark, const char **msg
     return rc;
 }
 
+/* Closure flags, parameter counts, constant kinds, and source spans.
+   A non-local capture is an index into the parent, which this chunk
+   does not store, so that index is not bounded here. */
+static int check_meta(const Chunk *chunk, const char **msg) {
+    uint32_t i;
+    if (chunk->required_count > chunk->param_count || chunk->param_count > chunk->max_locals) {
+        return fail(msg, "bad params");
+    }
+    if (chunk->ups_len > 0 && !chunk->ups) {
+        return fail(msg, "bad capture");
+    }
+    for (i = 0; i < chunk->ups_len; i++) {
+        UpDesc up = chunk->ups[i];
+        if (up.local > 1 || (up.local && up.index >= 256)) {
+            return fail(msg, "bad capture");
+        }
+    }
+    if (chunk->consts_len > 0 && !chunk->consts) {
+        return fail(msg, "bad const");
+    }
+    for (i = 0; i < chunk->consts_len; i++) {
+        const Value *value = chunk->consts[i];
+        if (!value || (unsigned)value->kind > (unsigned)VAL_FN) {
+            return fail(msg, "bad const");
+        }
+    }
+    if (chunk->code_len > 0 && (!chunk->lines || chunk->lines_cap < chunk->code_len)) {
+        return fail(msg, "bad span");
+    }
+    if (chunk->code_len > 0) {
+        uint32_t ip = 0;
+        while (ip < chunk->code_len) {
+            int width = chunk_width(chunk->code, chunk->code_len, ip);
+            if (width <= 0) {
+                break;
+            }
+            if (chunk->lines[ip] == 0) {
+                return fail(msg, "bad span");
+            }
+            ip += (uint32_t)width;
+        }
+    }
+    if ((chunk->words_len > 0 && !chunk->words) || (chunk->holes_len > 0 && !chunk->holes)) {
+        return fail(msg, "bad span");
+    }
+    for (i = 0; i < chunk->words_len; i++) {
+        WordDesc word = chunk->words[i];
+        uint32_t h;
+        if (word.nholes == 0) {
+            continue;
+        }
+        if (word.hole_at > chunk->holes_len || word.nholes > chunk->holes_len - word.hole_at) {
+            return fail(msg, "bad span");
+        }
+        for (h = 0; h < word.nholes; h++) {
+            HoleDesc hole = chunk->holes[word.hole_at + h];
+            if (hole.end < hole.start) {
+                return fail(msg, "bad span");
+            }
+        }
+    }
+    return 0;
+}
+
 static int verify_one(const Chunk *chunk, const char **msg) {
+    if (check_meta(chunk, msg) != 0) {
+        return -1;
+    }
     if (check_operands(chunk, msg) != 0) {
         return -1;
     }
