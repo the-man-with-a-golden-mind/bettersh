@@ -12,7 +12,7 @@ markdown
 
 This is the original build brief, written before the code. It is not a description of a finished shell, and it is not a release note. `../README.md` says what the tree does today. Where they disagree, the source and `../README.md` win.
 
-Cross-compilation and a 10,000-case release fuzz were a plan. They are not in this repository. There is no license file. The language manual is `../doc/language.md`. `make install` copies the binary and `std/`. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS. That workflow has not been executed from this tree.
+Cross-compilation and a 10,000-case release fuzz were a plan. They are not in this repository. The license is MIT, in `../LICENSE`. The language manual is `../doc/language.md`. `make install` copies the binary and `std/`. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS. That workflow has not been executed from this tree.
 
 Section 2 used to state several of these as laws. The wording there now matches the code.
 
@@ -64,7 +64,7 @@ These are the rules for a change. The original brief called them laws. Several w
    Generated scripts compare the tree walker with the VM. They share helpers, so a shared semantic bug agrees with itself.
 
 10. **The verifier runs before the VM executes a chunk.**
-    It checks instruction boundaries, indexes, jump targets, stack depth, and merges. It does not check closure descriptors, parameter metadata, constant types, or source spans. `tests/verify_test.c` covers a handful of corrupt chunks.
+    It checks instruction boundaries, indexes, jump targets, stack depth, and merges. It also checks closure flags, parameter counts, constant kinds, and source spans. A parent-upvalue index is not limited by the child chunk. `tests/verify_test.c` covers corrupt chunks.
 
 ---
 

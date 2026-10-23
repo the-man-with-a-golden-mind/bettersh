@@ -2,7 +2,7 @@
 
 bettersh is two languages in one program. A file whose shebang is `bettersh`, or `env bettersh`, is the modern language. `#!/bin/sh`, any other shebang, and a missing shebang stay strict sh. One shell engine runs the strict code. The modern language compiles to bytecode. `bettersh --interp` walks the same tree and calls that engine.
 
-This manual describes the program in this tree. It is not an Open Group specification. `tests/compat/` is a hand-written set compared with this machine's dash. `TODO.md` lists strict-mode differences that are left on purpose. `plans/DESIGN.md` and `plans/PROMPT.md` are the original brief, not this manual.
+This manual describes the program in this tree. The license is MIT, in `LICENSE`. It is not an Open Group specification. `tests/compat/` is a hand-written set compared with this machine's dash. `TODO.md` lists strict-mode differences that are left on purpose. `plans/DESIGN.md` and `plans/PROMPT.md` are the original brief, not this manual.
 
 ## Invocation
 
@@ -17,7 +17,7 @@ Arguments after a script path are positional parameters. `-c` reads the next arg
 
 `bettersh -i` reads interactive input. PS1 is the primary prompt. Input that ends inside a compound, quote, or here-document prints PS2 and waits. Monitor mode opens `/dev/tty` when it can, and otherwise the first terminal among stdin, stdout, and stderr. With no terminal it prints `can't access tty; job control turned off` and leaves monitor off. `set -o ignoreeof` prints `Use "exit" to leave shell.` on Ctrl-D.
 
-`set -o` with no operand prints `name on` or `name off` for: errexit, nounset, pipefail, xtrace, noclobber, noglob, noexec, verbose, allexport, ignoreeof, monitor, nolog, notify, vi, emacs, interactive, stdin. `set -o pipefail` is a bettersh option. dash does not accept it. `set -o vi` and `set -o emacs` select the line editor. `fc` edits history. dash has no `fc`.
+`set -o` with no operand prints `Current option settings` and then each option padded to 16 columns. The order is errexit, noglob, ignoreeof, interactive, monitor, noexec, stdin, xtrace, verbose, vi, emacs, noclobber, allexport, notify, nounset, nolog, debug, pipefail. `set +o` prints `set -o name` or `set +o name` in that order. `set -o pipefail` is a bettersh option. dash does not accept it. `set -o debug` is stored and listed. It does not write a trace file. `set -o vi` and `set -o emacs` select the line editor. `fc` edits history. dash has no `fc`.
 
 ## Install
 
@@ -110,9 +110,9 @@ A module is read from its canonical path, cached, and evaluated once in a run. I
 
 Closures capture the environment where the function was defined. A modern `let` is not a shell variable.
 
-Values are refcounted. A value that contains itself is freed. Two values that contain only each other are not collected. There is no garbage collector.
+Values are refcounted. A value that contains itself is freed. An array or map cycle is freed when every remaining reference comes from inside that cycle. Function upvalues are not part of that walk. There is no tracing garbage collector.
 
-The verifier checks opcode boundaries, indexes, jump targets, stack depth, and stack merges before execution. It does not check closure descriptors, parameter metadata, constant types, or source spans.
+The verifier checks opcode boundaries, indexes, jump targets, stack depth, stack merges, closure flags, parameter counts, constant kinds, and source spans before execution. A capture of a parent upvalue is not bounded by the child function's own capture list.
 
 ## Strict sh
 
@@ -122,23 +122,21 @@ Strict mode is the shell language: pipelines, `if`/`then`/`fi`, `while` and `for
 
 `exec` is recognized and does not start a second program. `source` is `.`.
 
+Field splitting applies to unquoted expansion results. A literal IFS character stays in the word. Assignment values are expanded and are not pathname-expanded. `LINENO` follows the file until a function, where it counts from that function's first line, and a script assignment or `unset` stops the updates. `set -x` expands `PS4` before each traced line. `echo` interprets the backslash escapes this machine's dash does, including octal. `printf` `%b` uses that same octal rule. A numeric `printf` conversion treats a leading 0 as octal and `0x` as hex. `return` inside `.` stops that file and leaves the caller running. `cd` searches `CDPATH` for a relative operand that does not start with `.`, and prints the new directory when the component was not empty. `command` runs a special builtin without aborting the shell on its error. `set -e` still does. A false `if` with no `else` leaves status 0. `test` rejects a non-numeric comparison with `Illegal number`, a lone `!` is a non-empty string, and `<` and `>` compare strings by byte order. `command -v` of a missing name returns 127. `wait` rejects a non-number, a missing job id is status 2, and a second `wait` for a collected child returns that status. The first explicit `wait` for a signaled child prints the signal text. `read` joins a trailing backslash-newline and splits fields on IFS, including empty fields. `readonly` rejects a bad name and aborts. `jobs` reports a missing job.
+
 On the hand-written scripts in `tests/compat/`, stdout, the exit status, and stderr match dash, aside from a `tmp.` suffix in temporary paths. That is not a claim about every sh script.
 
 Differences that are left on purpose, with the detail in `TODO.md`:
 
 - An IO number is one digit. `10>file` is the word `10` and a redirect of standard output.
-- `${parameter:offset}` is a bad substitution.
-- A missing here-document delimiter is a parse error.
+- `${parameter:offset}` is a bad substitution. `${name:}word}` joins the value with word.
 - `hash` with no operands prints paths in the order they were stored.
-- `set -v` prints the closing line of a compound when the script ends.
-- `set -o` does not use dash's padded columns.
 - Here-strings (`<<<`) run. They are not in the dash comparison.
 - `@{ ... }` inside a quoted here-document is interpolated.
 
 ## What this tree does not claim
 
 - Open Group conformance.
-- A license. There is no license file.
 - A test of every sh script, or of Linux. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS. This tree has no record of that workflow running.
 - Cross-compilation, or a 10,000-case fuzz run.
 - UTF-8 strings, interned strings, or an ordered hash map.
