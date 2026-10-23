@@ -3,6 +3,7 @@
 #include "arena.h"
 #include "module.h"
 #include "string.h"
+#include "suggest.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -133,8 +134,26 @@ int compile_load_name(Compiler *c, const MNode *node) {
     }
     int up = capture_up(c, name);
     if (up < 0) {
+        char hint[64];
+        char msg[96];
+        const char *names[512];
+        int n = 0;
+        const Compiler *p;
+        int i;
         if (c->failed) {
             return -1;
+        }
+        for (p = c; p && n < 512; p = p->parent) {
+            for (i = 0; i < p->nlocals && n < 512; i++) {
+                names[n++] = p->locals[i].name;
+            }
+        }
+        for (i = 0; i < BI_COUNT && n < 512; i++) {
+            names[n++] = builtin_name(i);
+        }
+        if (suggest_closest(name, names, n, hint, sizeof hint)) {
+            snprintf(msg, sizeof msg, "undefined name; did you mean %s?", hint);
+            return c_fail(c, node, msg);
         }
         return c_fail(c, node, "undefined name");
     }
@@ -345,7 +364,7 @@ static int compile_shell(Compiler *c, const MNode *node) {
 
 static int emit_import(Compiler *c, const MNode *node) {
     const char *spec = node->text ? node->text : "";
-    uint32_t idx = chunk_const(c->chunk, value_str(str_new(spec, strlen(spec))));
+    uint32_t idx = chunk_const(c->chunk, value_str(str_intern(spec, strlen(spec))));
     if (idx > 65535) {
         return c_fail(c, node, "too many constants");
     }

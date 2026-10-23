@@ -15,13 +15,13 @@ if ! make install PREFIX="$d" >/dev/null; then
     echo FAIL install make >&2
     exit 1
 fi
-if [ ! -f "$d/lib/bettersh/std/strings.bsh" ]; then
+if [ ! -f "$d/lib/bettersh/std/strings.btr" ]; then
     echo FAIL install std path >&2
     exit 1
 fi
 mkdir "$d/work"
-printf '%s\n' "$script" >"$d/work/t.bsh"
-got=$(cd "$d/work" && "$d/bin/bettersh" t.bsh)
+printf '%s\n' "$script" >"$d/work/t.btr"
+got=$(cd "$d/work" && "$d/bin/bettersh" t.btr)
 st=$?
 if [ "$st" -ne 0 ] || [ "$got" != "ba" ]; then
     printf 'FAIL install import st=%s got=%s\n' "$st" "$got" >&2
@@ -31,7 +31,7 @@ if ! make uninstall PREFIX="$d" >/dev/null; then
     echo FAIL install uninstall >&2
     exit 1
 fi
-if [ -e "$d/bin/bettersh" ] || [ -e "$d/lib/bettersh/std/strings.bsh" ] ||
+if [ -e "$d/bin/bettersh" ] || [ -e "$d/lib/bettersh/std/strings.btr" ] ||
     [ -d "$d/lib/bettersh" ] || [ -d "$d/lib" ]; then
     echo FAIL install files remain >&2
     fail=1
@@ -41,13 +41,13 @@ if ! make install DESTDIR="$stage" PREFIX=/usr/local >/dev/null; then
     exit 1
 fi
 if [ ! -x "$stage/usr/local/bin/bettersh" ] ||
-    [ ! -f "$stage/usr/local/lib/bettersh/std/strings.bsh" ]; then
+    [ ! -f "$stage/usr/local/lib/bettersh/std/strings.btr" ]; then
     echo FAIL install staged paths >&2
     exit 1
 fi
 mkdir "$stage/work"
-printf '%s\n' "$script" >"$stage/work/t.bsh"
-got=$(cd "$stage/work" && "$stage/usr/local/bin/bettersh" t.bsh)
+printf '%s\n' "$script" >"$stage/work/t.btr"
+got=$(cd "$stage/work" && "$stage/usr/local/bin/bettersh" t.btr)
 st=$?
 if [ "$st" -ne 0 ] || [ "$got" != "ba" ]; then
     printf 'FAIL install staged st=%s got=%s\n' "$st" "$got" >&2
@@ -58,7 +58,7 @@ if ! make uninstall DESTDIR="$stage" PREFIX=/usr/local >/dev/null; then
     exit 1
 fi
 if [ -e "$stage/usr/local/bin/bettersh" ] ||
-    [ -e "$stage/usr/local/lib/bettersh/std/strings.bsh" ]; then
+    [ -e "$stage/usr/local/lib/bettersh/std/strings.btr" ]; then
     echo FAIL install staged files remain >&2
     fail=1
 fi

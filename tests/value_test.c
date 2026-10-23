@@ -138,7 +138,103 @@ static void test_map(void) {
     check(map->len == 8, "map grown");
     check(map_get(map, "f")->u.i == 5, "map last");
     check(map_has(map, "missing") == 0, "map missing");
+    check(strcmp(map->keys[0], "") == 0, "order null key");
+    check(strcmp(map->keys[1], "k") == 0, "order replaced key");
+    check(strcmp(map->keys[2], "a") == 0 && strcmp(map->keys[7], "f") == 0, "order a through f");
+    {
+        Value *mid = map_remove(map, "c");
+        check(mid && mid->u.i == 2, "order removed middle");
+        value_unref(mid);
+        check(map->len == 7, "order len after remove");
+        check(strcmp(map->keys[4], "d") == 0, "order shifted");
+        check(strcmp(map->keys[6], "f") == 0, "order tail");
+        check(map_get(map, "c") == NULL && map_get(map, "f")->u.i == 5, "order lookup after remove");
+    }
     map_unref(map);
+}
+
+static void test_map_order(void) {
+    Map *map = map_new();
+    int i;
+    Value *gone;
+    for (i = 0; i < 64; i++) {
+        char key[16];
+        snprintf(key, sizeof key, "k%d", i);
+        map_set(map, key, value_int(i));
+    }
+    check(map->len == 64, "64 len");
+    check(map_get(map, "k20")->u.i == 20, "64 get");
+    check(strcmp(map->keys[0], "k0") == 0 && strcmp(map->keys[20], "k20") == 0, "64 insert order");
+    check(strcmp(map->keys[63], "k63") == 0, "64 tail");
+    gone = map_remove(map, "k20");
+    check(gone && gone->u.i == 20, "64 removed");
+    value_unref(gone);
+    check(map->len == 63, "64 len after remove");
+    check(strcmp(map->keys[20], "k21") == 0, "64 shifted");
+    check(strcmp(map->keys[62], "k63") == 0, "64 tail survived");
+    check(map_get(map, "k20") == NULL && map_get(map, "k63")->u.i == 63, "64 lookup");
+    map_unref(map);
+}
+
+static void test_intern(void) {
+    Str *a = str_intern("same", 4);
+    Str *b = str_intern("same", 4);
+    Str *c = str_intern("other", 5);
+    Str *empty = str_intern(NULL, 0);
+    Str *empty2 = str_intern("", 0);
+    Str *grown;
+    check(a == b, "intern same pointer");
+    check(a != c, "intern different");
+    check(a->refs == 3 && a->intern == 1, "intern refs");
+    check(empty == empty2 && empty->len == 0, "intern empty");
+    grown = str_append(a, "c", 1);
+    check(grown != b && grown->intern == 0 && grown->len == 5, "intern append copies");
+    check(strcmp(grown->data, "samec") == 0, "intern append bytes");
+    check(b->len == 4 && strcmp(b->data, "same") == 0 && b->refs == 2, "intern unchanged");
+    str_unref(grown);
+    str_unref(b);
+    str_unref(c);
+    str_unref(empty);
+    str_unref(empty2);
+    a = str_intern("same", 4);
+    check(a && a->refs == 2 && a->intern == 1 && strcmp(a->data, "same") == 0, "intern again");
+    str_unref(a);
+}
+
+/* The environment holds an array, the array holds a function, and the
+   function's upvalue holds the array. The function also captures the
+   environment. An extra environment ref keeps the pointers. Dropping
+   that ref frees the group. Nothing is read after the last unref. */
+static void test_trace_up(void) {
+    IEnv *env = ienv_new(NULL);
+    Value *box = value_array(array_new());
+    Value *fn = value_fn(NULL, 0, 0);
+    Cell *cell;
+    Cell **ups;
+    ienv_ref(env);
+    fn->u.fn->ienv = env;
+    ienv_bind(env, "box", box);
+    value_unref(box);
+    cell = cell_new(box);
+    ups = xmalloc(sizeof(Cell *));
+    cell_ref(cell);
+    ups[0] = cell;
+    fn->u.fn->ups = ups;
+    fn->u.fn->nups = 1;
+    array_push(box->u.arr, fn);
+    cell_unref(cell);
+    check(cell->refs == 1, "trace frame dropped");
+    check(box->refs == 2, "trace array refs");
+    check(fn->refs == 1, "trace function refs");
+    check(array_get(box->u.arr, 0) == fn, "trace array link");
+    check(fn->u.fn->ienv == env, "trace env link");
+    check(fn->u.fn->ups[0] == cell && cell->value == box, "trace upvalue link");
+    ienv_ref(env);
+    ienv_unref(env);
+    check(ienv_get(env, "box") == box, "trace name live");
+    check(array_get(box->u.arr, 0) == fn, "trace array live");
+    check(fn->u.fn->ups[0]->value == box, "trace upvalue live");
+    ienv_unref(env);
 }
 
 static void test_self_cycle(void) {
@@ -372,6 +468,9 @@ int main(void) {
     test_values();
     test_array();
     test_map();
+    test_map_order();
+    test_intern();
+    test_trace_up();
     test_self_cycle();
     test_shared_fn_cell();
     test_pair_cycle();

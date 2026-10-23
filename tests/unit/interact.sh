@@ -13,10 +13,15 @@ fi
 cat >"$d/drive.py" << 'PY'
 import os, pty, select, signal, sys, time
 
+def apply_env(env):
+    os.environ.update(env)
+    if "HISTFILE" not in env:
+        os.environ.pop("HISTFILE", None)
+
 def run(argv, payload, timeout, env):
     pid, fd = pty.fork()
     if pid == 0:
-        os.environ.update(env)
+        apply_env(env)
         os.execv(argv[0], argv)
         os._exit(127)
     data = b""
@@ -114,7 +119,7 @@ def stripped(body):
 def paced(argv, steps, timeout, env, gap):
     pid, fd = pty.fork()
     if pid == 0:
-        os.environ.update(env)
+        apply_env(env)
         os.execv(argv[0], argv)
         os._exit(127)
     data = b""
@@ -199,6 +204,7 @@ def main():
     dash = sys.argv[3]
     editor = sys.argv[4] if len(sys.argv) > 4 else ""
     env = os.environ.copy()
+    env.pop("HISTFILE", None)
     env["PS1"] = "P "
     env["PS2"] = "S "
     if kind == "prompt":
@@ -408,7 +414,7 @@ exit
         ]
         pid, fd = pty.fork()
         if pid == 0:
-            os.environ.update(env)
+            apply_env(env)
             os.execv(bin, [bin, "-i"])
             os._exit(127)
         data = b""
@@ -487,7 +493,7 @@ exit
         def until_eof(sig):
             pid2, fd2 = pty.fork()
             if pid2 == 0:
-                os.environ.update(env)
+                apply_env(env)
                 os.execv(bin, [bin, "-i"])
                 os._exit(127)
             blob = b""
@@ -539,6 +545,42 @@ exit
             show("endure-restored", st, data)
             return 1
         return 0
+    if kind == "hist":
+        base = os.path.dirname(editor)
+        st, data = run([bin, "-i"], b"echo QUIET\nexit\n", 6, env)
+        if exited(st) != 0 or b"history:" in data or b"QUIET" not in data:
+            show("hist-unset", st, data)
+            return 1
+        missing = os.path.join(base, "missing-hist")
+        env_m = dict(env)
+        env_m["HISTFILE"] = missing
+        st, data = run([bin, "-i"], b"echo MADE\nexit\n", 6, env_m)
+        if exited(st) != 0 or b"history:" in data or not os.path.isfile(missing):
+            show("hist-missing", st, data)
+            return 1
+        raw = open(missing, "rb").read()
+        if b"echo MADE" not in raw:
+            show("hist-missing", st, data)
+            sys.stderr.write(repr(raw) + "\n")
+            return 1
+        hist = os.path.join(base, "histfile")
+        with open(hist, "wb") as fh:
+            fh.write(b"nope\n")
+            fh.write(b"8 echo OLD\n")
+            fh.write(b"12x\n")
+        env_h = dict(env)
+        env_h["HISTFILE"] = hist
+        st, data = run([bin, "-i"], b"echo NEW\nfc -l\nexit\n", 6, env_h)
+        body = text(data)
+        if exited(st) != 0 or "ignored a corrupt line" not in body or "echo OLD" not in body or "echo NEW" not in body:
+            show("hist-load", st, data)
+            return 1
+        st, data = run([bin, "-i"], b"fc -l\nexit\n", 6, env_h)
+        body = text(data)
+        if exited(st) != 0 or "echo NEW" not in body or "echo OLD" not in body:
+            show("hist-again", st, data)
+            return 1
+        return 0
     sys.stderr.write("unknown %s\n" % kind)
     return 1
 
@@ -551,7 +593,7 @@ printf 'echo EDITED\n' > "$1"
 EOF
 chmod +x "$d/ed.sh"
 dash_bin=$(command -v dash)
-for kind in prompt jobs vi fc jerr jlive eof fce stop endure; do
+for kind in prompt jobs vi fc jerr jlive eof fce stop endure hist; do
     if ! python3 "$d/drive.py" "$kind" "$bin" "$dash_bin" "$d/ed.sh"; then
         printf 'FAIL interact %s\n' "$kind" >&2
         fail=1

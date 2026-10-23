@@ -134,7 +134,7 @@ case $status {
   *     : echo "unknown"
 }
 3.9 Standard library
-std/io, std/strings, std/fs, std/path, std/env, std/proc, std/http. Written in BetterSh, shipped as .bsh files in std/. No C-level std lib.
+std/io, std/strings, std/fs, std/path, std/env, std/proc, std/http. Written in BetterSh, shipped as .btr files in std/. No C-level std lib.
 
 4. Architecture
 4.1 Pipeline
@@ -240,7 +240,7 @@ bettersh/
 │       ├── posix.c
 │       └── win32.c              ← stub in v1
 ├── std/
-│   ├── io.bsh  strings.bsh  fs.bsh  path.bsh  env.bsh  proc.bsh  http.bsh
+│   ├── io.btr  strings.btr  fs.btr  path.btr  env.btr  proc.btr  http.btr
 ├── tests/
 │   ├── run.sh                   ← test runner (shell)
 │   ├── unit/
@@ -406,11 +406,11 @@ Differential fuzz: 1000 randomly-generated scripts run through --interp and VM, 
 Human review: vm.c frame setup/teardown specifically
 
 M5 — Modules (≈1,000 LOC)
-Files to write: module.c/h, std/*.bsh.
+Files to write: module.c/h, std/*.btr.
 
 Scope:
 
-import "./x.bsh", import "./x.bsh" as name, import { a, b } from "./x.bsh", import std/name
+import "./x.btr", import "./x.btr" as name, import { a, b } from "./x.btr", import std/name
 
 Module resolution: relative, std/, $BETTERSH_PATH
 
@@ -418,7 +418,7 @@ Module cache keyed by canonical path
 
 Cycle detection with cycle printed in error
 
-std/io.bsh, std/strings.bsh, std/fs.bsh, std/path.bsh, std/env.bsh, std/proc.bsh, std/http.bsh
+std/io.btr, std/strings.btr, std/fs.btr, std/path.btr, std/env.btr, std/proc.btr, std/http.btr
 
 Acceptance:
 
@@ -428,7 +428,7 @@ Two imports of the same file evaluate once (side effect printed once)
 
 Cyclic import produces an error naming the full cycle
 
-std/http.bsh does a real HTTP GET via curl and returns the body as a string
+std/http.btr does a real HTTP GET via curl and returns the body as a string
 
 Human review: module cache and cycle detection
 
@@ -455,7 +455,7 @@ Human review: the whole thing, once, slowly
 
 8. Testing protocol
 8.1 The runner
-tests/run.sh is a shell script. No test framework. Each test is a .sh or .bsh file that exits 0 on pass, non-zero on fail. The runner iterates, tallies, prints failing names.
+tests/run.sh is a shell script. No test framework. Each test is a .sh or .btr file that exits 0 on pass, non-zero on fail. The runner iterates, tallies, prints failing names.
 
 Total test infrastructure budget: 200 LOC of shell.
 
@@ -464,18 +464,18 @@ Directory	What it tests	Gate
 tests/unit/	Individual C functions via test-only builtins	Every commit
 tests/compat/	Hand-written dash regressions, not the Open Group suite	M2
 tests/language/	Modern language features one at a time	Every commit after M3
-tests/golden/	input.bsh + expected.out pairs	Every commit
+tests/golden/	input.btr + expected.out pairs	Every commit
 tests/differential/	Same input → --interp vs VM → diff	Every commit after M4
 8.3 Differential testing (mandatory)
 After M4, every commit runs:
 
 sh
 tests/differential/run.sh
-For each .bsh in tests/differential/corpus/:
+For each .btr in tests/differential/corpus/:
 
-Run bettersh --interp script.bsh > out_interp.txt 2> err_interp.txt
+Run bettersh --interp script.btr > out_interp.txt 2> err_interp.txt
 
-Run bettersh script.bsh > out_vm.txt 2> err_vm.txt
+Run bettersh script.btr > out_vm.txt 2> err_vm.txt
 
 Diff both pairs and the exit code
 
@@ -483,7 +483,7 @@ Any mismatch = CI fail
 
 Start with 100 hand-written scripts. Add one generated script per commit until 10,000. This is the single highest-value test in the project.
 
-Fuzz harness: tests/differential/fuzz.py (Python for the generator only — the runner is shell) generates random syntactically-valid ASTs, serializes to .bsh, runs both paths. Add to CI as a nightly job, not per-commit.
+Fuzz harness: tests/differential/fuzz.py (Python for the generator only — the runner is shell) generates random syntactically-valid ASTs, serializes to .btr, runs both paths. Add to CI as a nightly job, not per-commit.
 
 8.4 The three files worth reviewing
 When a milestone lands, the human reviews exactly these:
@@ -513,7 +513,7 @@ Do not ask for "the whole compiler." You'll get a plausible-looking mess that vi
 9.2 Tests first, implementation second
 For every file, the prompt order is:
 
-"Write tests/language/test_X.bsh that exercises [feature] as specified in DESIGN.md §3."
+"Write tests/language/test_X.btr that exercises [feature] as specified in DESIGN.md §3."
 
 "Now write compiler.c's handling of [feature] so that those tests pass."
 
@@ -613,4 +613,4 @@ Version	Changes
 1.0	Initial design. VM-based execution. Six milestones.
 12. One-paragraph summary
 
-BetterSh is an alpha. The modern language is a bytecode VM plus a tree walker, with modules, closures, and a standard library under `std/`. Strict mode runs ordinary sh through one engine shared by both drivers. Dash is the comparison for a hand-written set of scripts, not an Open Group suite. On that set, stdout, status, and stderr match, aside from a normalized mktemp suffix. The binary is C17 and links libm. `std/http.bsh` runs curl. Strings are bytes. Maps are linear tables. Read `../README.md` for the current bounds.
+BetterSh is an alpha. The modern language is a bytecode VM plus a tree walker, with modules, closures, and a standard library under `std/`. Strict mode runs ordinary sh through one engine shared by both drivers. Dash is the comparison for a hand-written set of scripts, not an Open Group suite. On that set, stdout, status, and stderr match, aside from a normalized mktemp suffix. The binary is C17 and links libm. `std/http.btr` runs curl. Strings are bytes. Maps are linear tables. Read `../README.md` for the current bounds.

@@ -83,11 +83,11 @@ echo "$i"
 }
 
 modern = {
-    "squares.bsh": """#!/usr/bin/env bettersh
+    "squares.btr": """#!/usr/bin/env bettersh
 let s = 0
 for i in 1..1000000 { let s = i * i }
 """,
-    "while.bsh": """#!/usr/bin/env bettersh
+    "while.btr": """#!/usr/bin/env bettersh
 let i = 0
 let s = 0
 while i < 1200000 {
@@ -96,7 +96,7 @@ while i < 1200000 {
 }
 println(s)
 """,
-    "concat.bsh": """#!/usr/bin/env bettersh
+    "concat.btr": """#!/usr/bin/env bettersh
 let s = ""
 let i = 0
 while i < 1200000 {
@@ -105,7 +105,7 @@ while i < 1200000 {
 }
 println(s.length)
 """,
-    "map.bsh": """#!/usr/bin/env bettersh
+    "map.btr": """#!/usr/bin/env bettersh
 let m = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }
 let keys = ["a", "b", "c", "d", "e", "f", "g", "h"]
 let i = 0
@@ -116,7 +116,7 @@ while i < 600000 {
 }
 println(s)
 """,
-    "filter.bsh": """#!/usr/bin/env bettersh
+    "filter.btr": """#!/usr/bin/env bettersh
 let nums = [1, 2, 3, 4, 5, 6, 7, 8]
 let i = 0
 let n = 0
@@ -136,11 +136,11 @@ expect = {
     "case.sh": b"50000\n",
     "func.sh": b"161991000\n",
     "printf.sh": b"12000\n",
-    "squares.bsh": b"",
-    "while.bsh": b"719999400000\n",
-    "concat.bsh": b"1200000\n",
-    "map.bsh": b"2700000\n",
-    "filter.bsh": b"400000\n",
+    "squares.btr": b"",
+    "while.btr": b"719999400000\n",
+    "concat.btr": b"1200000\n",
+    "map.btr": b"2700000\n",
+    "filter.btr": b"400000\n",
 }
 
 labels = [
@@ -149,11 +149,11 @@ labels = [
     ("posix case 20000", "case.sh", True),
     ("posix function 18000", "func.sh", True),
     ("posix printf 12000", "printf.sh", True),
-    ("modern for 1..1000000 squares", "squares.bsh", False),
-    ("modern while sum 1200000", "while.bsh", False),
-    ("modern string concat 1200000", "concat.bsh", False),
-    ("modern map lookup 600000", "map.bsh", False),
-    ("modern filter 100000", "filter.bsh", False),
+    ("modern for 1..1000000 squares", "squares.btr", False),
+    ("modern while sum 1200000", "while.btr", False),
+    ("modern string concat 1200000", "concat.btr", False),
+    ("modern map lookup 600000", "map.btr", False),
+    ("modern filter 100000", "filter.btr", False),
 ]
 
 for name, body in list(posix.items()) + list(modern.items()):

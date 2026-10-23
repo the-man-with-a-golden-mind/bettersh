@@ -4,12 +4,12 @@
 bin=${1:?}
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
-cat >"$d/p.bsh" <<'EOF'
+cat >"$d/p.btr" <<'EOF'
 #!/usr/bin/env bettersh
 let s = 0
 for i in 1..1000000 { let s = i * i }
 EOF
-python3 - "$bin" "$d/p.bsh" <<'PY'
+python3 - "$bin" "$d/p.btr" <<'PY'
 import os, subprocess, sys, time
 bin, script = sys.argv[1], sys.argv[2]
 limit = os.environ.get("BETTERSH_PERF_LIMIT", "")

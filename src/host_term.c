@@ -1,6 +1,7 @@
 #include "host.h"
 
 #include "chunk.h"
+#include "utf8.h"
 #include "vm_priv.h"
 
 #include <errno.h>
@@ -12,6 +13,11 @@
 #include <termios.h>
 #include <unistd.h>
 
+/* POSIX hides this name. macOS and Linux both number it 28. */
+#ifndef SIGWINCH
+#define SIGWINCH 28
+#endif
+
 /* One terminal for the process. The editor restores it on the way out.
    atexit covers exit(1) from an allocation failure while raw mode is on.
    SIGKILL cannot be caught. */
@@ -19,12 +25,14 @@ static struct termios saved_attr;
 static struct sigaction saved_int;
 static struct sigaction saved_term;
 static struct sigaction saved_hup;
+static struct sigaction saved_winch;
 static int have_attr;
 static int raw_on;
 static int leaving;
 static int signals_on;
 static int exit_on;
 static int screen_fd = -1;
+static volatile sig_atomic_t winch;
 
 static const char enter_screen[] = "\x1b[?1049h\x1b[?25l";
 static const char leave_screen[] = "\x1b[?25h\x1b[?1049l";
@@ -67,7 +75,13 @@ static void disarm_signals(void) {
     sigaction(SIGINT, &saved_int, NULL);
     sigaction(SIGTERM, &saved_term, NULL);
     sigaction(SIGHUP, &saved_hup, NULL);
+    sigaction(SIGWINCH, &saved_winch, NULL);
     signals_on = 0;
+}
+
+static void on_winch(int sig) {
+    (void)sig;
+    winch = 1;
 }
 
 static void leave_raw(void) {
@@ -102,6 +116,10 @@ static void arm_signals(void) {
     sigaction(SIGINT, &sa, &saved_int);
     sigaction(SIGTERM, &sa, &saved_term);
     sigaction(SIGHUP, &sa, &saved_hup);
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_winch;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGWINCH, &sa, &saved_winch);
     signals_on = 1;
 }
 
@@ -205,33 +223,39 @@ static Value *pop_str(VM *vm) {
 
 static int host_chr(VM *vm) {
     int64_t n = 0;
-    unsigned char buf[1];
+    char buf[4];
+    size_t nbyte;
     if (pop_i64(vm, &n) != 0) {
         return -1;
     }
-    if (n < 0 || n > 255) {
+    if (n < 0 || n > 0x10ffff) {
         vm_fail(vm, "bad operand");
         return -1;
     }
-    buf[0] = (unsigned char)n;
-    vm_push(vm, value_str(str_new((const char *)buf, 1)));
+    nbyte = utf8_encode((uint32_t)n, buf);
+    if (nbyte == 0) {
+        vm_fail(vm, "bad operand");
+        return -1;
+    }
+    vm_push(vm, value_str(str_new(buf, nbyte)));
     return 0;
 }
 
 static int host_ord(VM *vm) {
     Value *arg = pop_str(vm);
-    unsigned char byte;
+    uint32_t cp = 0;
+    size_t used;
     if (!arg) {
         return -1;
     }
-    if (arg->u.str->len != 1) {
+    used = utf8_decode(arg->u.str->data, arg->u.str->len, &cp);
+    if (used == 0 || used != arg->u.str->len) {
         value_unref(arg);
         vm_fail(vm, "bad operand");
         return -1;
     }
-    byte = (unsigned char)arg->u.str->data[0];
     value_unref(arg);
-    vm_push(vm, value_int((int64_t)byte));
+    vm_push(vm, value_int((int64_t)cp));
     return 0;
 }
 
@@ -266,11 +290,24 @@ static int host_term_raw(VM *vm) {
     return 0;
 }
 
+/* An empty string means the window size changed. Null is end of file. */
+static int push_winch(VM *vm) {
+    if (!winch) {
+        return 0;
+    }
+    winch = 0;
+    vm_push(vm, value_str(str_new("", 0)));
+    return 1;
+}
+
 static int read_byte(VM *vm, int wait_ms) {
     unsigned char buf[1];
     if (!raw_on) {
         vm_fail(vm, "bad terminal");
         return -1;
+    }
+    if (push_winch(vm)) {
+        return 0;
     }
     if (wait_ms >= 0) {
         for (;;) {
@@ -283,6 +320,9 @@ static int read_byte(VM *vm, int wait_ms) {
             FD_SET(STDIN_FILENO, &fds);
             rc = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
             if (rc < 0 && errno == EINTR) {
+                if (push_winch(vm)) {
+                    return 0;
+                }
                 continue;
             }
             if (rc < 0) {
@@ -299,6 +339,9 @@ static int read_byte(VM *vm, int wait_ms) {
     for (;;) {
         ssize_t n = read(STDIN_FILENO, buf, 1);
         if (n < 0 && errno == EINTR) {
+            if (push_winch(vm)) {
+                return 0;
+            }
             continue;
         }
         if (n < 0) {

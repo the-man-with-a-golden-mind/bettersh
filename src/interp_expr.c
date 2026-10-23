@@ -2,7 +2,9 @@
 
 #include "array.h"
 #include "map.h"
+#include "suggest.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -455,7 +457,27 @@ Value *eval_expr(Interp *ip, const MNode *node) {
     case M_NAME: {
         Value *value = ienv_get(ip->env, node->text);
         if (!value) {
-            ifail(ip, node, "undefined name");
+            char hint[64];
+            char msg[96];
+            const char *names[512];
+            int n = 0;
+            IEnv *env;
+            int i;
+            for (env = ip->env; env && n < 512; env = ienv_parent(env)) {
+                int len = ienv_len(env);
+                for (i = 0; i < len && n < 512; i++) {
+                    names[n++] = ienv_name_at(env, i);
+                }
+            }
+            for (i = 0; i < BI_COUNT && n < 512; i++) {
+                names[n++] = builtin_name(i);
+            }
+            if (suggest_closest(node->text, names, n, hint, sizeof hint)) {
+                snprintf(msg, sizeof msg, "undefined name; did you mean %s?", hint);
+                ifail(ip, node, msg);
+            } else {
+                ifail(ip, node, "undefined name");
+            }
             return NULL;
         }
         value_ref(value);

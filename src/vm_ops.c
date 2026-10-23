@@ -2,6 +2,7 @@
 
 #include "array.h"
 #include "map.h"
+#include "utf8.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -480,16 +481,20 @@ int vm_index(VM *vm) {
         return 0;
     }
     if (recv->kind == VAL_STR) {
-        if (index->kind != VAL_INT || index->u.i < 0 || (uint64_t)index->u.i >= recv->u.str->len) {
+        size_t points = utf8_count(recv->u.str->data, recv->u.str->len);
+        size_t from;
+        size_t to;
+        if (index->kind != VAL_INT || index->u.i < 0 || (uint64_t)index->u.i >= points) {
             value_unref(recv);
             value_unref(index);
             vm_fail(vm, "index out of range");
             return -1;
         }
-        char ch = recv->u.str->data[index->u.i];
-        value_unref(recv);
+        from = utf8_offset(recv->u.str->data, recv->u.str->len, (size_t)index->u.i);
+        to = utf8_offset(recv->u.str->data, recv->u.str->len, (size_t)index->u.i + 1);
         value_unref(index);
-        vm_push(vm, value_str(str_new(&ch, 1)));
+        vm_push(vm, value_str(str_new(recv->u.str->data + from, to - from)));
+        value_unref(recv);
         return 0;
     }
     if (recv->kind == VAL_MAP) {

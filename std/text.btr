@@ -1,0 +1,128 @@
+#!/usr/bin/env bettersh
+
+# Returns the scalars of s from last to first. strings.reverse reverses bytes.
+fn flip(s) {
+  let out = ""
+  let i = s.length
+  while i > 0 {
+    let i = i - 1
+    let out = "@{ out }@{ s[i] }"
+  }
+  return out
+}
+
+# Splits s on newlines and drops the empty piece after a final newline. An empty text has no lines.
+fn lines(s) {
+  if s.length == 0 { return [] }
+  let parts = s.split("\n")
+  if s[s.length - 1] == "\n" {
+    let junk = parts.pop()
+  }
+  return parts
+}
+
+# Splits s on runs of ASCII whitespace and drops the empty pieces.
+fn fields(s) {
+  fn ws(ch) {
+    return ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == chr(11) || ch == chr(12)
+  }
+  let out = []
+  let i = 0
+  let n = s.length
+  while i < n {
+    while i < n && ws(s[i]) {
+      let i = i + 1
+    }
+    if i >= n { return out }
+    let start = i
+    while i < n && !ws(s[i]) {
+      let i = i + 1
+    }
+    let out = out.push(s.slice(start, i))
+  }
+  return out
+}
+
+# Returns the text before the first sep, or null when sep is missing or empty.
+fn before(s, sep) {
+  if sep.length == 0 { return null }
+  let at = s.index(sep)
+  if at < 0 { return null }
+  return s.slice(0, at)
+}
+
+# Returns the text after the first sep, or null when sep is missing or empty.
+fn after(s, sep) {
+  if sep.length == 0 { return null }
+  let at = s.index(sep)
+  if at < 0 { return null }
+  return s.slice(at + sep.length, s.length)
+}
+
+# Returns the text after the first open and before the following close, or null when either is missing.
+fn between(s, open, close) {
+  let rest = after(s, open)
+  if rest == null { return null }
+  return before(rest, close)
+}
+
+# Returns the first n scalars. n below 1 is "". A long n is s.
+fn truncate(s, n) {
+  if n <= 0 { return "" }
+  if n >= s.length { return s }
+  return s.slice(0, n)
+}
+
+# Returns s when it fits in n scalars. A longer text ends with "..." and has length n, when n is at least 3.
+fn ellipsize(s, n) {
+  if n <= 0 { return "" }
+  if s.length <= n { return s }
+  if n < 3 { return truncate(s, n) }
+  return "@{ truncate(s, n - 3) }..."
+}
+
+# Joins the whitespace-separated words of s into lines of at most width scalars. A word longer than width stays whole. width below 1 returns s.
+fn wrap(s, width) {
+  if width < 1 { return s }
+  let parts = fields(s)
+  if parts.length == 0 { return "" }
+  let lines = []
+  let cur = ""
+  let i = 0
+  while i < parts.length {
+    let w = parts[i]
+    if cur.length == 0 {
+      let cur = w
+    } else if cur.length + 1 + w.length <= width {
+      let cur = "@{ cur } @{ w }"
+    } else {
+      let lines = lines.push(cur)
+      let cur = w
+    }
+    let i = i + 1
+  }
+  let lines = lines.push(cur)
+  return lines.join("\n")
+}
+
+# Returns one integer per scalar. An invalid byte is its own value.
+fn codepoints(s) {
+  let out = []
+  let i = 0
+  while i < s.length {
+    let out = out.push(ord(s[i]))
+    let i = i + 1
+  }
+  return out
+}
+
+# Returns the text of those code points. A value chr rejects is an error.
+fn from_codes(xs) {
+  let out = ""
+  let i = 0
+  while i < xs.length {
+    let out = "@{ out }@{ chr(xs[i]) }"
+    let i = i + 1
+  }
+  return out
+}

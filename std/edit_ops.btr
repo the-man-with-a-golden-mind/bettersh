@@ -1,0 +1,309 @@
+#!/usr/bin/env bettersh
+
+# Text operations for the editor. A subword is an identifier run split at camelCase.
+
+# Returns true when ch is ASCII space or another ASCII blank.
+fn is_space(ch) {
+  if ch == " " || ch == "\t" { return true }
+  let n = ord(ch)
+  if n >= 9 && n <= 13 { return true }
+  return false
+}
+
+# Returns true when ch belongs to an identifier. A scalar past ASCII does too.
+fn is_word(ch) {
+  if ch >= "a" && ch <= "z" { return true }
+  if ch >= "A" && ch <= "Z" { return true }
+  if ch >= "0" && ch <= "9" { return true }
+  if ch == "_" { return true }
+  if ord(ch) > 127 { return true }
+  return false
+}
+
+# Returns true when ch is an ASCII capital letter.
+fn is_upper(ch) {
+  if ch >= "A" && ch <= "Z" { return true }
+  return false
+}
+
+# Returns true when ch is an ASCII small letter.
+fn is_lower(ch) {
+  if ch >= "a" && ch <= "z" { return true }
+  return false
+}
+
+# Returns true when ch is an ASCII digit.
+fn is_digit(ch) {
+  if ch >= "0" && ch <= "9" { return true }
+  return false
+}
+
+# Returns true when a subword starts at index i.
+fn sub_break(line, i) {
+  if i <= 0 || i >= line.length { return false }
+  let prev = line[i - 1]
+  let cur = line[i]
+  if is_space(cur) { return false }
+  if is_space(prev) { return true }
+  if is_word(prev) != is_word(cur) { return true }
+  if is_word(cur) {
+    if is_lower(prev) && is_upper(cur) { return true }
+    if is_digit(prev) && is_upper(cur) { return true }
+    if is_upper(prev) && is_upper(cur) && i + 1 < line.length && is_lower(line[i + 1]) { return true }
+  }
+  return false
+}
+
+# Returns the column where the next subword starts, or the length when this line has none.
+fn next_col(line, col) {
+  let i = col + 1
+  while i < line.length {
+    if sub_break(line, i) { return i }
+    let i = i + 1
+  }
+  return line.length
+}
+
+# Returns the column where the previous subword starts, or -1 when it is on an earlier line.
+fn prev_col(line, col) {
+  if col <= 0 { return 0 - 1 }
+  let i = col
+  let hop = false
+  if i >= line.length { let hop = true }
+  if !hop && is_space(line[i]) { let hop = true }
+  if !hop && sub_break(line, i) { let hop = true }
+  if hop {
+    let i = i - 1
+    while i > 0 && is_space(line[i]) { let i = i - 1 }
+    if is_space(line[i]) { return 0 - 1 }
+  }
+  while i > 0 && !sub_break(line, i) { let i = i - 1 }
+  if is_space(line[i]) { return 0 - 1 }
+  return i
+}
+
+# Returns the column of the last subword on the line.
+fn last_col(line) {
+  if line.length == 0 { return 0 }
+  let i = line.length - 1
+  while i > 0 && is_space(line[i]) { let i = i - 1 }
+  if is_space(line[i]) { return 0 }
+  while i > 0 && !sub_break(line, i) { let i = i - 1 }
+  return i
+}
+
+# Returns the column of the end of this subword, or the length when the end is on the next line.
+fn end_col(line, col) {
+  if line.length == 0 { return 0 }
+  if col >= line.length { return line.length }
+  let i = col
+  if is_space(line[i]) {
+    while i < line.length && is_space(line[i]) { let i = i + 1 }
+    if i >= line.length { return line.length }
+  } else if i + 1 >= line.length || is_space(line[i + 1]) || sub_break(line, i + 1) {
+    let i = i + 1
+    while i < line.length && is_space(line[i]) { let i = i + 1 }
+    if i >= line.length { return line.length }
+  }
+  while i + 1 < line.length && !is_space(line[i + 1]) && !sub_break(line, i + 1) {
+    let i = i + 1
+  }
+  return i
+}
+
+# Returns the column where a backward subword delete starts.
+fn back_span(line, col) {
+  if col <= 0 { return 0 }
+  let i = col
+  while i > 0 && is_space(line[i - 1]) { let i = i - 1 }
+  if i == 0 { return 0 }
+  let i = i - 1
+  while i > 0 && !sub_break(line, i) { let i = i - 1 }
+  return i
+}
+
+# Returns the identifier or punctuation run under col. Spaces return "".
+fn word_at(line, col) {
+  if col < 0 || col >= line.length { return "" }
+  if is_space(line[col]) { return "" }
+  let word = is_word(line[col])
+  let a = col
+  while a > 0 && !is_space(line[a - 1]) && is_word(line[a - 1]) == word {
+    let a = a - 1
+  }
+  let b = col + 1
+  while b < line.length && !is_space(line[b]) && is_word(line[b]) == word {
+    let b = b + 1
+  }
+  return line.slice(a, b)
+}
+
+# Joins two lines. Leading space on the second line is one space when both sides have text.
+fn join_lines(left, right) {
+  let i = 0
+  while i < right.length && is_space(right[i]) { let i = i + 1 }
+  let rest = right.slice(i, right.length)
+  if left.length == 0 { return rest }
+  if rest.length == 0 { return left }
+  if is_space(left[left.length - 1]) { return "@{ left }@{ rest }" }
+  return "@{ left } @{ rest }"
+}
+
+# Inserts a tab at the start of the line.
+fn indent(line) {
+  return "\t@{ line }"
+}
+
+# Removes one leading tab, or up to four leading spaces.
+fn outdent(line) {
+  if line.length > 0 && line[0] == "\t" { return line.slice(1, line.length) }
+  let n = 0
+  while n < 4 && n < line.length && line[n] == " " { let n = n + 1 }
+  if n == 0 { return line }
+  return line.slice(n, line.length)
+}
+
+# Toggles a "# " comment after the leading space.
+fn comment(line) {
+  let i = 0
+  while i < line.length && is_space(line[i]) { let i = i + 1 }
+  let rest = line.slice(i, line.length)
+  if rest.length > 0 && rest[0] == "#" {
+    let drop = 1
+    if rest.length > 1 && rest[1] == " " { let drop = 2 }
+    return "@{ line.slice(0, i) }@{ rest.slice(drop, rest.length) }"
+  }
+  return "@{ line.slice(0, i) }# @{ rest }"
+}
+
+# Swaps the ASCII case of one scalar. Any other scalar is unchanged.
+fn swap_case(ch) {
+  if ch >= "a" && ch <= "z" { return ch.upper() }
+  if ch >= "A" && ch <= "Z" { return ch.lower() }
+  return ch
+}
+
+# Returns lines with line inserted before index at.
+fn insert_before(lines, at, line) {
+  let out = []
+  let i = 0
+  while i < lines.length {
+    if i == at { let out = out.push(line) }
+    let out = out.push(lines[i])
+    let i = i + 1
+  }
+  return out
+}
+
+# Returns lines with the items at a and b exchanged.
+fn exchange(lines, a, b) {
+  let out = []
+  let i = 0
+  while i < lines.length {
+    let item = lines[i]
+    if i == a { let item = lines[b] }
+    if i == b { let item = lines[a] }
+    let out = out.push(item)
+    let i = i + 1
+  }
+  return out
+}
+
+# Returns the closer for an opener, or "".
+fn closer(ch) {
+  if ch == "(" { return ")" }
+  if ch == "[" { return "]" }
+  if ch == "{" { return "}" }
+  return ""
+}
+
+# Returns the opener for a closer, or "".
+fn opener(ch) {
+  if ch == ")" { return "(" }
+  if ch == "]" { return "[" }
+  if ch == "}" { return "{" }
+  return ""
+}
+
+# Returns code brackets. Quotes may span lines. A # comment ends at the line.
+fn code_brackets(lines) {
+  let marks = []
+  let row = 0
+  let state = "code"
+  while row < lines.length {
+    if state == "comment" { let state = "code" }
+    let line = lines[row]
+    let col = 0
+    while col < line.length {
+      let ch = line[col]
+      if state == "sq" || state == "dq" {
+        if ch == "\\" && col + 1 < line.length {
+          let col = col + 2
+        } else {
+          if (state == "sq" && ch == "'") || (state == "dq" && ch == "\"") { let state = "code" }
+          let col = col + 1
+        }
+      } else if ch == "#" {
+        let col = line.length
+      } else if ch == "'" {
+        let state = "sq"
+        let col = col + 1
+      } else if ch == "\"" {
+        let state = "dq"
+        let col = col + 1
+      } else {
+        if closer(ch).length > 0 || opener(ch).length > 0 {
+          let marks = marks.push({ row: row, col: col, ch: ch })
+        }
+        let col = col + 1
+      }
+    }
+    let row = row + 1
+  }
+  return marks
+}
+
+# Returns the matching bracket for the cursor, or null. A bracket inside a string or comment is skipped.
+fn match_at(lines, row, col) {
+  let marks = code_brackets(lines)
+  let i = 0
+  let start = 0 - 1
+  while i < marks.length {
+    let m = marks[i]
+    if m.row == row && m.col == col { let start = i }
+    if start < 0 && (m.row > row || (m.row == row && m.col > col)) { let start = i }
+    if start >= 0 { let i = marks.length }
+    else { let i = i + 1 }
+  }
+  if start < 0 { return null }
+  let ch = marks[start].ch
+  let close = closer(ch)
+  if close.length > 0 {
+    let depth = 1
+    let i = start + 1
+    while i < marks.length {
+      let m = marks[i]
+      if m.ch == ch { let depth = depth + 1 }
+      if m.ch == close {
+        let depth = depth - 1
+        if depth == 0 { return { row: m.row, col: m.col } }
+      }
+      let i = i + 1
+    }
+    return null
+  }
+  let open = opener(ch)
+  if open.length == 0 { return null }
+  let depth = 1
+  let i = start - 1
+  while i >= 0 {
+    let m = marks[i]
+    if m.ch == ch { let depth = depth + 1 }
+    if m.ch == open {
+      let depth = depth - 1
+      if depth == 0 { return { row: m.row, col: m.col } }
+    }
+    let i = i - 1
+  }
+  return null
+}

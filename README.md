@@ -15,6 +15,8 @@ make debug
 make install
 make uninstall
 make dist
+make fuzz-nightly
+make cross
 ```
 
 `make` produces `./bettersh` with C17, `-Wpedantic -Werror`, and `-D_POSIX_C_SOURCE=200809L`. The program links libm. On this Mac the built binary's only dynamic library is `/usr/lib/libSystem.B.dylib`.
@@ -27,9 +29,11 @@ make dist
 
 `make dist` writes `dist/bettersh-$(VERSION).tar.gz` from `git archive` of `HEAD`, and a sha256 file beside it.
 
+`make test` compares 1,000 generated scripts between `--interp` and the VM. `make fuzz-nightly` compares 10,000. On this Mac that command exited 0. `make cross` builds `build/macos-x86_64/bettersh`, `build/linux-x86_64/bettersh`, and `build/linux-arm64/bettersh` without replacing `./bettersh`.
+
 ## Examples
 
-`examples/` holds short programs. `posix.sh`, `gcd.sh`, `trim.sh`, and `table.sh` are strict sh. `hello.bsh`, `flow.bsh`, `values.bsh`, `std.bsh`, `shell.bsh`, `words.bsh`, `scores.bsh`, `paths.bsh`, `primes.bsh`, and `counter.bsh` are the modern language. `tests/unit/examples.sh` runs them.
+`examples/` holds short programs. `posix.sh`, `gcd.sh`, `trim.sh`, and `table.sh` are strict sh. `hello.btr`, `flow.btr`, `values.btr`, `std.btr`, `shell.btr`, `words.btr`, `scores.btr`, `paths.btr`, `primes.btr`, and `counter.btr` are the modern language. `tests/unit/examples.sh` runs them.
 
 ## Two modes
 
@@ -42,14 +46,14 @@ The shebang selects the mode. `bettersh` or `env bettersh` is the modern languag
 | Area | What the code does |
 | --- | --- |
 | Modern syntax | `let`, `fn`, `import`, `return`, `if`, `else`, `while`, `for`, `case`, `true`, `false`, `null`. Brace blocks. `@{ }` interpolation. |
-| Values | `null`, booleans, int64, float64, byte strings, arrays, maps, functions. Maps keep insertion order in parallel arrays and look up by a linear scan. Strings are bytes: length and indexes count bytes, and case conversion is ASCII. There is no small-string optimization and no UTF-8 decoder. |
+| Values | `null`, booleans, int64, float64, byte strings, arrays, maps, functions. Maps keep insertion order and look up by hash. Strings store bytes. Modern length, index, and slice count Unicode scalar values. One invalid byte is one unit. Shell `${#name}` counts bytes. Case conversion stays byte-wise. Identical compiled strings are interned. There is no small-string optimization. |
 | Closures | The compiler resolves captured cells. |
-| Modules | Resolved by canonical path, cached, and rejected if the import cycle repeats. `import std/...` reads the `std/*.bsh` files on disk. They are not compiled into the binary. |
-| Bytecode | The verifier runs before execution. It checks opcode boundaries, indexes, jump targets, stack depth, stack merges, closure flags, parameter counts, constant kinds, and source spans. A capture index has to name a local or a capture of the parent chunk. `tests/verify_test.c` and `tests/chunk_fuzz` build corrupt chunks by hand. `tests/chunk_fuzz` runs an accepted random chunk under a step limit unless that chunk contains `OP_EXEC`, `OP_EXEC_PIPE`, `OP_EXEC_SPLICE`, `OP_IMPORT`, or a host builtin at or above `BI_CAPTURE`. Dedicated cases run `:` through `OP_EXEC`, an import of a missing module, and every host builtin from `capture` through `term_tty`. Each of those builtins is called with a wrong argument count, a wrong type, an interior NUL when it takes a string, an empty string when it takes one, and one success. File and process successes stay in a private directory and use `printf`. `term_raw(true)`, `term_read`, and `term_poll` run on a private pty. |
-| Standard library | `std/fs.bsh`, `path`, `io`, `strings`, `math`, `env`, `proc`, `async`, `http`, `ui`, `edit`. `http.get` runs `curl`. Async waits on processes. It does not start threads. |
+| Modules | Resolved by canonical path, cached, and rejected if the import cycle repeats. `import std/...` reads the `std/*.btr` files on disk. They are not compiled into the binary. |
+| Bytecode | The verifier runs before execution. It checks opcode boundaries, indexes, jump targets, stack depth, stack merges, closure flags, parameter counts, constant kinds, and source spans. A capture index has to name a local or a capture of the parent chunk. `tests/verify_test.c` and `tests/chunk_fuzz` build corrupt chunks by hand. `tests/chunk_fuzz` runs an accepted random chunk under a step limit unless that chunk contains `OP_EXEC`, `OP_EXEC_PIPE`, `OP_EXEC_SPLICE`, `OP_IMPORT`, or a host builtin at or above `BI_CAPTURE`. Dedicated cases run `:` through `OP_EXEC`, an import of a missing module, and every host builtin from `capture` through `map_set`. Each of those builtins is called with a wrong argument count, a wrong type, and one success. An interior NUL is rejected for a path, an environment name, a command, or a math name. `bytes` keeps an interior NUL, and one success builds it back with `unbytes`. `readall` keeps one too. File and process successes stay in a private directory and use `printf`. `term_raw(true)`, `term_read`, and `term_poll` run on a private pty. |
+| Standard library | `std/fs.btr`, `path`, `io`, `strings`, `text`, `codec`, `math`, `env`, `proc`, `async`, `http`, `ui`, `tui`, `edit`, `json`, `theme`, `lsp`. `http.get` runs `curl`. Async waits on processes. It does not start threads. `text` counts scalar values. `codec` encodes stored bytes. `io` reads lines and raw stdin. `fs` lists a directory, copies bytes, creates one directory level, and saves without aborting when the write fails. The editor moves by subword, indents, comments, joins, duplicates, and redoes. `std/tui` places fields, buttons, lists, and windows on a screen and paints that screen as text. `json` parses and writes one JSON value. `theme` loads colors and language-server commands. The editor starts the server named for a file's extension. `K`, `gd`, Ctrl-x, and Ctrl-u call it. With a theme, it highlights comments, strings, keywords, numbers, functions, types, constants, macros, and shell variables in JavaScript, TypeScript, Rust, shell, BetterSh, Python, and Lua. Theme names are plain, dark, light, nord, gruvbox, dracula, catppuccin, solarized, monokai, and tokyonight. |
 | Strict sh | Parser, expansions, builtins, redirects, jobs, `local`, `ulimit`, `fc`, and an interactive line editor. One engine, used by both drivers. |
-| Interactive | `bettersh -i` prints PS1. Input that ends inside a compound, quote, or here-document prints PS2 instead of a syntax error. Monitor mode opens `/dev/tty` when it can, and otherwise the first terminal among stdin, stdout, and stderr. With no terminal it prints `can't access tty; job control turned off` and leaves monitor off. The tests drive a private pty, including one that cannot open `/dev/tty`. History is the in-memory list for that process. There is no `HISTFILE`. `fc` reads that list. |
-| Memory | Values are refcounted. A value that contains itself is freed. An array, map, function, or environment cycle is freed when every remaining reference comes from inside that cycle and no function in it has an upvalue. A function that captures an upvalue keeps that cycle. There is no tracing garbage collector. |
+| Interactive | `bettersh -i` prints PS1. Input that ends inside a compound, quote, or here-document prints PS2 instead of a syntax error. Monitor mode opens `/dev/tty` when it can, and otherwise the first terminal among stdin, stdout, and stderr. With no terminal it prints `can't access tty; job control turned off` and leaves monitor off. The tests drive a private pty, including one that cannot open `/dev/tty`. An interactive `HISTFILE` is loaded and appended. A corrupt record is skipped. A missing file is silent. With `HISTFILE` unset, history is the in-memory list for that process. `fc` reads that list. |
+| Memory | Values are refcounted. A value that contains itself is freed. An array, map, function, or environment cycle is freed when every remaining reference comes from inside that cycle, including a function upvalue that points back at its environment. An outside reference keeps the group. |
 
 `TODO.md` lists further strict-mode differences that are left on purpose, including one-digit IO numbers, `${parameter:offset}`, and here-strings.
 
@@ -61,7 +65,7 @@ Stdout, the exit status, and stderr have to match. A `tmp.` mktemp suffix in std
 
 `tests/unit/compat_gaps.sh` locks cd, a missing command, nounset, and division by zero against dash, including stderr. Unset or empty `HOME` makes `cd` succeed and stay put. Unset or empty `OLDPWD` makes `cd -` succeed and print the current directory.
 
-Other checks in `make test`: parser goldens, modern-language goldens on the VM and on `--interp`, unit scripts, and 1,000 generated scripts compared between `--interp` and the VM.
+Other checks in `make test`: parser goldens, modern-language goldens on the VM and on `--interp`, unit scripts, and 1,000 generated scripts compared between `--interp` and the VM. `make fuzz-nightly` is the 10,000-script run and is not part of `make test`.
 
 ## Support in 0.1.0
 
@@ -78,9 +82,11 @@ Strict mode targets dash-compatible POSIX, checked against this machine's dash. 
 
 The systems this tree is built and tested for are this Mac with Apple clang, and the GitHub Actions images `macos-latest` and `ubuntu-latest`. The Ubuntu `test` job uses that image's default compiler, which is GCC. `ubuntu-clang` sets `CC=clang`. The sanitizer job is Ubuntu with ASan, UBSan, and `ASAN_OPTIONS=detect_leaks=1`. That is not a claim that every POSIX system or architecture works. This tree has no record of the Actions workflow having run.
 
-The bytecode format is private. It is not a stable public instruction set, and there is no on-disk bytecode file. The verifier's contract is memory safety for an in-memory chunk: a chunk it accepts must execute without an invalid memory access. Untrusted bytes are not a supported program format.
+On this Mac, `make cross` produced a Mach-O x86_64 binary and two static musl binaries, `x86_64` and `aarch64`. Both Linux binaries printed `hi` from `echo hi` under Docker. The x86_64 mac binary was not executed. That Docker run is not GitHub Actions.
 
-History is process-lifetime only. A corrupted history file does not apply, because no history file is read or written.
+The bytecode format is private and versioned. Magic is `BTRC`, version 1. It is not a stable public instruction set. `--compile --output` writes an image of a source file. `--bytecode` verifies that image and runs it. A bad image does not run. The `.btr` suffix is source, not an image. Untrusted bytes are not a supported program format. The verifier's contract is memory safety for a chunk it accepts. `doc/internals.md` describes the image.
+
+Interactive history is appended to `HISTFILE` when that variable is set. A corrupt record is skipped through the next newline. A missing file is silent. With `HISTFILE` unset, the list lasts for the process.
 
 `make bench` and the perf script are informational unless `BETTERSH_PERF_LIMIT` names a ceiling. The 3–5× gap versus dash on parameter length, case, and functions, on the machine that produced `bench/baseline.tsv`, comes from a linear variable scan, arithmetic text that is reparsed, and a fresh allocation on assignment.
 
@@ -88,9 +94,9 @@ History is process-lifetime only. A corrupted history file does not apply, becau
 
 - Bit-identical behavior for every sh script. The hand-written `tests/compat/` set matches this dash on stdout, status, and stderr, aside from the mktemp suffix. That is not an Open Group result.
 - An Open Group conformance result. The suite was not vendored and was not run.
-- UTF-8 strings, interned or SSO strings, or an ordered hash map.
+- Small-string optimization. Strings are refcounted heap allocations. Identical compiled strings are interned.
 - A single AST for both languages. Strict code uses `Node`. Modern code uses `MNode`.
-- No global mutable state. Signal flags, the terminal restore state, and job-control signal state are process-lifetime data.
-- No dependencies of any kind. The binary links libm. `std/http.bsh` needs curl. The tests need dash and Python.
+- No global mutable state. Signal flags, the terminal restore state, job-control signal state, and the string intern table are process-lifetime data.
+- No dependencies of any kind. The binary links libm. `std/http.btr` needs curl. The tests need dash and Python.
 - A record of the GitHub Actions workflow having run.
 - `plans/DESIGN.md` and `plans/PROMPT.md` are the original build brief. They are not a description of this tree. `README.md` and `doc/language.md` are.

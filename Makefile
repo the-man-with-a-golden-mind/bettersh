@@ -5,6 +5,9 @@ CFLAGS   ?= -O2
 DEFINES   = -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 LDFLAGS  ?=
 VERSION  := $(shell cat VERSION)
+OBJDIR   ?= src
+OUT      ?= bettersh
+SDK      := $(shell xcrun --show-sdk-path 2>/dev/null)
 
 SRC = src/main.c src/arena.c src/error.c src/ast.c \
       src/lexer.c src/lex_word.c src/lex_param.c \
@@ -18,39 +21,44 @@ SRC = src/main.c src/arena.c src/error.c src/ast.c \
       src/chunk.c src/mod_scan.c src/mod_expr.c src/mod_parse.c \
       src/compiler.c src/compile_expr.c src/compile_flow.c src/verify.c src/disasm.c \
       src/vm.c src/vm_ops.c src/vm_method.c src/vm_exec.c src/interp.c src/interp_expr.c \
-      src/module.c src/host.c src/host_term.c src/modern.c \
-      src/shjob.c src/interact.c src/vi_line.c
-OBJ = $(SRC:.c=.o)
+      src/module.c src/host.c src/host_term.c src/host_fs.c src/host_pipe.c src/modern.c \
+      src/shjob.c src/interact.c src/vi_line.c \
+      src/utf8.c src/suggest.c src/trace.c src/bcode.c
+OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(SRC))
 
 PREFIX  ?= /usr/local
 bindir   = $(PREFIX)/bin
 # The binary finds std/ in ./std, beside itself, under lib/bettersh/std
 # in the parent of its directory, and in the parent's std/.
 stdlibdir = $(PREFIX)/lib/bettersh/std
-STD = $(wildcard std/*.bsh)
+STD = $(wildcard std/*.btr)
 FUZZ_OBJ = $(filter-out src/main.o,$(OBJ))
 
-.PHONY: all test test-host bench debug clean install uninstall dist
+.PHONY: all test test-host bench debug clean install uninstall dist fuzz-nightly \
+	cross cross-macos-x86_64 cross-linux-x86_64 cross-linux-arm64
 
-all: bettersh
+all: $(OUT)
 
-bettersh: $(OBJ)
+$(OUT): $(OBJ)
+	@mkdir -p $(dir $@)
 	$(CC) $(REQUIRED) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS) -lm
 
-tests/value_test: tests/value_test.c src/value.o src/string.o src/array.o src/map.o src/arena.o
+tests/value_test: tests/value_test.c src/value.o src/string.o src/array.o src/map.o src/arena.o src/trace.o
 	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -iquote src -o $@ tests/value_test.c \
-		src/value.o src/string.o src/array.o src/map.o src/arena.o $(LDFLAGS)
+		src/value.o src/string.o src/array.o src/map.o src/arena.o src/trace.o $(LDFLAGS)
 
 tests/verify_test: tests/verify_test.c src/verify.o src/chunk.o src/value.o src/string.o \
-		src/array.o src/map.o src/arena.o
+		src/array.o src/map.o src/arena.o src/trace.o
 	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -iquote src -o $@ tests/verify_test.c \
-		src/verify.o src/chunk.o src/value.o src/string.o src/array.o src/map.o src/arena.o $(LDFLAGS)
+		src/verify.o src/chunk.o src/value.o src/string.o src/array.o src/map.o src/arena.o \
+		src/trace.o $(LDFLAGS)
 
 tests/chunk_fuzz: tests/chunk_fuzz.c $(FUZZ_OBJ)
 	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -iquote src -o $@ tests/chunk_fuzz.c \
 		$(FUZZ_OBJ) $(LDFLAGS) -lm
 
-src/%.o: src/%.c src/*.h
+$(OBJDIR)/%.o: src/%.c src/*.h
+	@mkdir -p $(dir $@)
 	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -DBETTERSH_VERSION='"$(VERSION)"' -iquote src -c $< -o $@
 
 test: bettersh tests/value_test tests/verify_test tests/chunk_fuzz
@@ -72,6 +80,26 @@ debug:
 
 clean:
 	rm -f $(OBJ) bettersh tests/value_test tests/verify_test tests/chunk_fuzz
+	rm -rf build
+
+# Ten thousand generated scripts, compared on both engines. Not part of test.
+fuzz-nightly: bettersh
+	BETTERSH_FUZZ_COUNT=10000 sh tests/differential/run.sh ./bettersh
+
+# Separate object directories, so a cross build does not replace ./bettersh.
+cross: cross-macos-x86_64 cross-linux-x86_64 cross-linux-arm64
+
+cross-macos-x86_64:
+	$(MAKE) OBJDIR=build/macos-x86_64 OUT=build/macos-x86_64/bettersh \
+		CC="clang -target x86_64-apple-macos -isysroot $(SDK)"
+
+cross-linux-x86_64:
+	$(MAKE) OBJDIR=build/linux-x86_64 OUT=build/linux-x86_64/bettersh \
+		CC="zig cc -target x86_64-linux-musl"
+
+cross-linux-arm64:
+	$(MAKE) OBJDIR=build/linux-arm64 OUT=build/linux-arm64/bettersh \
+		CC="zig cc -target aarch64-linux-musl"
 
 install: bettersh
 	mkdir -p $(DESTDIR)$(bindir) $(DESTDIR)$(stdlibdir)

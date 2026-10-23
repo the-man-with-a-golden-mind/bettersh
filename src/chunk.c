@@ -145,7 +145,7 @@ static uint32_t add_str(Str ***list, uint32_t *len, uint32_t *cap, const char *t
         }
     }
     grow_bytes((void **)list, cap, *len + 1, sizeof(Str *));
-    (*list)[*len] = str_new(text ? text : "", n);
+    (*list)[*len] = str_intern(text ? text : "", n);
     return (*len)++;
 }
 
@@ -275,7 +275,9 @@ const char *method_name(int id) {
 static const char *BUILTINS[] = {
     "print", "println", "eprint", "eprintln", "capture", "readfile", "writefile", "fs_exists",
     "fs_remove", "getenv", "setenv", "readln", "mathf", "proc_spawn", "proc_await", "chr", "ord",
-    "arg", "term_raw", "term_read", "term_poll", "term_cols", "term_rows", "term_tty"};
+    "arg", "term_raw", "term_read", "term_poll", "term_cols", "term_rows", "term_tty", "bytes",
+    "unbytes", "fs_append", "fs_mkdir", "fs_rmdir", "fs_list", "fs_kind", "fs_size", "readall",
+    "fs_load", "fs_save", "pipe_open", "pipe_write", "pipe_read", "pipe_close", "kind", "map_set"};
 
 _Static_assert(sizeof BUILTINS / sizeof BUILTINS[0] == BI_COUNT, "builtin table");
 

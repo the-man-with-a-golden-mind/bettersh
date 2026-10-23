@@ -1,0 +1,10 @@
+#!/usr/bin/env bettersh
+import std/io
+println(io.lines("a\nb\n").join("|"))
+println(io.lines("a\nb").join("|"))
+println(io.lines("").length)
+println(io.lines("\n").join("|"))
+io.write_lines(["one", "two"])
+io.write_lines([])
+io.write("x")
+io.writeln("y")

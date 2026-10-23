@@ -16,7 +16,7 @@ for line in open(sys.argv[1], "r", encoding="utf-8", errors="surrogateescape"):
     sys.stdout.write(re.sub(r"^([^:]+:[0-9]+):[0-9]+:", r"\1:C:", line, count=1))
 ' "$1"
 }
-for f in tests/language/*.bsh; do
+for f in tests/language/*.btr; do
     [ -f "$f" ] || continue
     "$bin" "$f" >"$d/vo" 2>"$d/ve"
     vs=$?

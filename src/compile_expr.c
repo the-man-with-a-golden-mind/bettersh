@@ -5,7 +5,7 @@
 #include <string.h>
 
 static void emit_str(Compiler *c, const char *text, size_t len) {
-    uint32_t idx = chunk_const(c->chunk, value_str(str_new(text, len)));
+    uint32_t idx = chunk_const(c->chunk, value_str(str_intern(text, len)));
     if (idx > 65535) {
         c_fail(c, NULL, "too many constants");
         return;

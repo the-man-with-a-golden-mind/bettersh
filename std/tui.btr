@@ -1,0 +1,568 @@
+#!/usr/bin/env bettersh
+
+import std/strings
+import std/ui
+
+# Returns n, or least when n is below least.
+fn clamp_min(n, least) {
+  if n < least { return least }
+  return n
+}
+
+# Returns a new array of the same items.
+fn copy_array(xs) {
+  let out = []
+  let i = 0
+  while i < xs.length {
+    let out = out.push(xs[i])
+    let i = i + 1
+  }
+  return out
+}
+
+# Returns text with each byte below 32, and byte 127, replaced by a space.
+fn clean(text) {
+  let out = []
+  let i = 0
+  while i < text.length {
+    let ch = text[i]
+    let n = ord(ch)
+    if n < 32 || n == 127 { let ch = " " }
+    let out = out.push(ch)
+    let i = i + 1
+  }
+  return out.join("")
+}
+
+# Returns text clipped or padded with spaces to n columns.
+fn fit(text, n) {
+  if n < 1 { return "" }
+  if text.length >= n { return strings.slice(text, 0, n) }
+  return "@{ text }@{ strings.repeat(" ", n - text.length) }"
+}
+
+# Returns the lines of text. A final empty line after a newline is dropped.
+fn split_lines(text) {
+  let parts = text.split("\n")
+  if parts.length > 1 && parts[parts.length - 1] == "" {
+    let parts = parts.slice(0, parts.length - 1)
+  }
+  let out = []
+  let i = 0
+  while i < parts.length {
+    let out = out.push(clean(parts[i]))
+    let i = i + 1
+  }
+  return out
+}
+
+# Returns row with src written at x. A negative x skips that many columns of src.
+fn stamp(row, src, x) {
+  if src.length == 0 || x >= row.length { return row }
+  if x < 0 {
+    let skip = 0 - x
+    if skip >= src.length { return row }
+    let src = strings.slice(src, skip, src.length)
+    let x = 0
+  }
+  let room = row.length - x
+  if src.length > room { let src = strings.slice(src, 0, room) }
+  let end = x + src.length
+  return "@{ strings.slice(row, 0, x) }@{ src }@{ strings.slice(row, end, row.length) }"
+}
+
+# Returns grid with lines stamped at x, y. A negative y skips lines.
+fn blit(grid, lines, x, y) {
+  let out = []
+  let i = 0
+  while i < grid.length {
+    let row = grid[i]
+    let at = i - y
+    if at >= 0 && at < lines.length { let row = stamp(row, lines[at], x) }
+    let out = out.push(row)
+    let i = i + 1
+  }
+  return out
+}
+
+# Returns cols by rows spaces. A size below 1 becomes 1.
+fn blank(cols, rows) {
+  let cols = clamp_min(cols, 1)
+  let rows = clamp_min(rows, 1)
+  let row = strings.repeat(" ", cols)
+  let grid = []
+  let i = 0
+  while i < rows {
+    let grid = grid.push(row)
+    let i = i + 1
+  }
+  return grid
+}
+
+# Returns "+" and inner dashes and "+".
+fn rule(inner) {
+  return "+@{ strings.repeat("-", inner) }+"
+}
+
+# Returns a top rule. An empty title, or one that does not fit, is a plain rule.
+fn cap(title, cols) {
+  if cols < 2 { return strings.repeat("+", cols) }
+  let inner = cols - 2
+  if title.length == 0 || title.length + 2 > inner { return rule(inner) }
+  let dashes = inner - title.length - 2
+  return "+ @{ title } @{ strings.repeat("-", dashes) }+"
+}
+
+# Returns the bottom rule of a window.
+fn bar(cols) {
+  if cols < 2 { return strings.repeat("+", cols) }
+  return rule(cols - 2)
+}
+
+# Returns true when the widget takes keys.
+fn focusable(widget) {
+  if widget.kind == "field" || widget.kind == "button" || widget.kind == "list" { return true }
+  if widget.kind == "window" && widget.child != null { return focusable(widget.child) }
+  return false
+}
+
+# Returns the lines of a label.
+fn label_lines(widget) {
+  return split_lines(widget.text)
+}
+
+# Returns the one line of a field. A focused field uses angle brackets and a caret.
+fn field_line(widget, on) {
+  let cols = widget.cols
+  if cols < 3 { return fit(widget.value, cols) }
+  let inner = cols - 2
+  let view = 0
+  if widget.cursor > inner - 1 { let view = widget.cursor - (inner - 1) }
+  let slice = strings.slice(widget.value, view, widget.value.length)
+  let body = fit(slice, inner)
+  if on {
+    let at = widget.cursor - view
+    if at >= 0 && at < inner {
+      let ch = " "
+      if at < slice.length { let ch = slice[at] }
+      if ch == " " { let ch = "_" }
+      let body = "@{ strings.slice(body, 0, at) }@{ ch }@{ strings.slice(body, at + 1, body.length) }"
+    }
+  }
+  if on { return ">@{ body }<" }
+  return "[@{ body }]"
+}
+
+# Returns the one line of a button. Focus uses square brackets.
+fn button_line(widget, on) {
+  let inner = " @{ widget.label } "
+  if on { return "[@{ inner }]" }
+  return "(@{ inner })"
+}
+
+# Returns the visible lines of a list. The focused row starts with ">".
+fn list_lines(widget, on) {
+  let lines = []
+  let room = widget.cols - 1
+  if room < 0 { let room = 0 }
+  let i = 0
+  while i < widget.rows {
+    let index = widget.top + i
+    let mark = " "
+    if on && widget.items.length > 0 && index == widget.at { let mark = ">" }
+    let text = ""
+    if index >= 0 && index < widget.items.length { let text = clean(widget.items[index]) }
+    let lines = lines.push("@{ mark }@{ fit(text, room) }")
+    let i = i + 1
+  }
+  return lines
+}
+
+# Returns the lines of a widget that is not a window.
+fn leaf_lines(widget, on) {
+  if widget.kind == "label" { return label_lines(widget) }
+  if widget.kind == "field" { return [field_line(widget, on)] }
+  if widget.kind == "button" { return [button_line(widget, on)] }
+  if widget.kind == "list" { return list_lines(widget, on) }
+  return []
+}
+
+# Returns the lines of a window. The child is drawn inside when there is one.
+fn window_lines(widget, on) {
+  let cols = widget.cols
+  let inner_w = cols - 2
+  let inner_h = widget.rows - 2
+  if inner_w < 0 { let inner_w = 0 }
+  if inner_h < 0 { let inner_h = 0 }
+  let gap = ""
+  if inner_w > 0 { let gap = strings.repeat(" ", inner_w) }
+  let body = []
+  let i = 0
+  while i < inner_h {
+    let body = body.push(gap)
+    let i = i + 1
+  }
+  if widget.child != null {
+    let child = widget.child
+    let lines = []
+    if child.kind == "window" { let lines = window_lines(child, on) }
+    else { let lines = leaf_lines(child, on) }
+    let body = blit(body, lines, 0, 0)
+  } else {
+    let body = blit(body, split_lines(widget.text), 0, 0)
+  }
+  let lines = [cap(widget.title, cols)]
+  let i = 0
+  while i < body.length {
+    let lines = lines.push("|@{ body[i] }|")
+    let i = i + 1
+  }
+  return lines.push(bar(cols))
+}
+
+# Returns the lines of one widget.
+fn block(widget, on) {
+  if widget.kind == "window" { return window_lines(widget, on) }
+  return leaf_lines(widget, on)
+}
+
+# Returns a screen. A size below 1 becomes 1. focus is the first widget that takes keys.
+fn screen(cols, rows) {
+  return { cols: clamp_min(cols, 1), rows: clamp_min(rows, 1), items: [], focus: 0 }
+}
+
+# Returns a label. Newlines are separate lines.
+fn label(text) {
+  return { kind: "label", text: text }
+}
+
+# Returns a framed window. A size below 2 becomes 2. It shows no text and no child.
+fn window(title, cols, rows) {
+  return {
+    kind: "window",
+    title: clean(title),
+    cols: clamp_min(cols, 2),
+    rows: clamp_min(rows, 2),
+    text: "",
+    child: null
+  }
+}
+
+# Returns the window showing text. The child is cleared. Another widget is unchanged.
+fn write(widget, text) {
+  if widget.kind != "window" { return widget }
+  return {
+    kind: "window",
+    title: widget.title,
+    cols: widget.cols,
+    rows: widget.rows,
+    text: text,
+    child: null
+  }
+}
+
+# Returns the window showing one child widget. The text is cleared. Another widget is unchanged.
+fn show(widget, child) {
+  if widget.kind != "window" { return widget }
+  return {
+    kind: "window",
+    title: widget.title,
+    cols: widget.cols,
+    rows: widget.rows,
+    text: "",
+    child: child
+  }
+}
+
+# Returns a one-line field. cols counts the two edge characters. A width below 3 becomes 3.
+fn field(cols) {
+  return { kind: "field", cols: clamp_min(cols, 3), value: "", cursor: 0 }
+}
+
+# Returns the field with text as its value and the cursor at the end. The value stops at 240 scalars.
+fn fill(widget, text) {
+  if widget.kind != "field" { return widget }
+  let text = clean(text)
+  if text.length > 240 { let text = strings.slice(text, 0, 240) }
+  return { kind: "field", cols: widget.cols, value: text, cursor: text.length }
+}
+
+# Returns a button. enter or space marks it.
+fn button(label) {
+  return { kind: "button", label: clean(label), hit: false }
+}
+
+# Returns a list. cols and rows below 1 become 1. at is 0.
+fn list(items, cols, rows) {
+  return {
+    kind: "list",
+    items: copy_array(items),
+    cols: clamp_min(cols, 1),
+    rows: clamp_min(rows, 1),
+    at: 0,
+    top: 0,
+    hit: false
+  }
+}
+
+# Returns the focus index to keep, or the first widget that takes keys.
+fn first_focus(items, focus) {
+  if focus >= 0 && focus < items.length && focusable(items[focus].widget) { return focus }
+  let i = 0
+  while i < items.length {
+    if focusable(items[i].widget) { return i }
+    let i = i + 1
+  }
+  return 0
+}
+
+# Returns a screen with the widget at col, row. A later widget covers an earlier one.
+fn place(screen, widget, col, row) {
+  let items = copy_array(screen.items)
+  let items = items.push({ widget: widget, col: col, row: row })
+  return {
+    cols: screen.cols,
+    rows: screen.rows,
+    items: items,
+    focus: first_focus(items, screen.focus)
+  }
+}
+
+# Returns the frame as text, one scalar per column. paint does not print.
+fn paint(screen) {
+  let grid = blank(screen.cols, screen.rows)
+  let i = 0
+  while i < screen.items.length {
+    let item = screen.items[i]
+    let on = false
+    if i == screen.focus && focusable(item.widget) { let on = true }
+    let grid = blit(grid, block(item.widget, on), item.col, item.row)
+    let i = i + 1
+  }
+  return grid.join("\n")
+}
+
+# Returns the next widget that takes keys, wrapping around the screen.
+fn next_focus(items, focus) {
+  let n = items.length
+  if n == 0 { return 0 }
+  let i = 0
+  while i < n {
+    let at = (focus + 1 + i) % n
+    if focusable(items[at].widget) { return at }
+    let i = i + 1
+  }
+  return focus
+}
+
+# Returns a screen with a new focus index and the same widgets.
+fn with_focus(screen, focus) {
+  return { cols: screen.cols, rows: screen.rows, items: screen.items, focus: focus }
+}
+
+# Returns items with the widget at index replaced.
+fn replace_item(items, index, item) {
+  let out = []
+  let i = 0
+  while i < items.length {
+    let item_i = items[i]
+    if i == index { let item_i = item }
+    let out = out.push(item_i)
+    let i = i + 1
+  }
+  return out
+}
+
+# Returns the field after one key. A scalar is inserted, up to 240.
+fn press_field(widget, key) {
+  let value = widget.value
+  let cursor = widget.cursor
+  if key == "left" {
+    if cursor > 0 { let cursor = cursor - 1 }
+  } else if key == "right" {
+    if cursor < value.length { let cursor = cursor + 1 }
+  } else if key == "home" {
+    let cursor = 0
+  } else if key == "end" {
+    let cursor = value.length
+  } else if key == "backspace" {
+    if cursor > 0 {
+      let value = "@{ strings.slice(value, 0, cursor - 1) }@{ strings.slice(value, cursor, value.length) }"
+      let cursor = cursor - 1
+    }
+  } else if key == "delete" {
+    if cursor < value.length {
+      let value = "@{ strings.slice(value, 0, cursor) }@{ strings.slice(value, cursor + 1, value.length) }"
+    }
+  } else if key.length == 1 {
+    let n = ord(key)
+    if n >= 32 && n != 127 && value.length < 240 {
+      let value = "@{ strings.slice(value, 0, cursor) }@{ key }@{ strings.slice(value, cursor, value.length) }"
+      let cursor = cursor + 1
+    }
+  }
+  return { kind: "field", cols: widget.cols, value: value, cursor: cursor }
+}
+
+# Returns the button. enter or space sets hit. Any other key clears it.
+fn press_button(widget, key) {
+  let hit = false
+  if key == "enter" || key == " " { let hit = true }
+  return { kind: "button", label: widget.label, hit: hit }
+}
+
+# Returns the list scrolled so at is visible. hit is cleared.
+fn reveal(widget, at) {
+  let n = widget.items.length
+  if n < 1 {
+    let at = 0
+  } else {
+    if at < 0 { let at = 0 }
+    if at >= n { let at = n - 1 }
+  }
+  let top = widget.top
+  if at < top { let top = at }
+  if at >= top + widget.rows { let top = at - widget.rows + 1 }
+  if top < 0 { let top = 0 }
+  return {
+    kind: "list",
+    items: widget.items,
+    cols: widget.cols,
+    rows: widget.rows,
+    at: at,
+    top: top,
+    hit: false
+  }
+}
+
+# Returns the list after one key. enter marks the current row.
+fn press_list(widget, key) {
+  if key == "up" { return reveal(widget, widget.at - 1) }
+  if key == "down" { return reveal(widget, widget.at + 1) }
+  if key == "pageup" { return reveal(widget, widget.at - widget.rows) }
+  if key == "pagedown" { return reveal(widget, widget.at + widget.rows) }
+  if key == "home" { return reveal(widget, 0) }
+  if key == "end" { return reveal(widget, widget.items.length - 1) }
+  if key == "enter" && widget.items.length > 0 {
+    return {
+      kind: "list",
+      items: widget.items,
+      cols: widget.cols,
+      rows: widget.rows,
+      at: widget.at,
+      top: widget.top,
+      hit: true
+    }
+  }
+  return reveal(widget, widget.at)
+}
+
+# Returns the widget after one key. A window passes the key to its child.
+fn press_widget(widget, key) {
+  if widget.kind == "field" { return press_field(widget, key) }
+  if widget.kind == "button" { return press_button(widget, key) }
+  if widget.kind == "list" { return press_list(widget, key) }
+  if widget.kind == "window" && widget.child != null { return show(widget, press_widget(widget.child, key)) }
+  return widget
+}
+
+# Returns the screen after one key name. tab moves to the next widget that takes keys.
+fn press(screen, key) {
+  let items = screen.items
+  let n = items.length
+  if n == 0 { return screen }
+  if key == "tab" { return with_focus(screen, next_focus(items, screen.focus)) }
+  let focus = screen.focus
+  if focus < 0 || focus >= n || !focusable(items[focus].widget) { return screen }
+  let item = items[focus]
+  let widget = press_widget(item.widget, key)
+  let items = replace_item(items, focus, { widget: widget, col: item.col, row: item.row })
+  return { cols: screen.cols, rows: screen.rows, items: items, focus: focus }
+}
+
+# Writes an ANSI cursor sequence.
+fn esc(seq) {
+  print("@{ chr(27) }[@{ seq }")
+}
+
+# Draws the screen on the terminal. The last column stays unused.
+fn draw(screen) {
+  let cols = term_cols()
+  let rows = term_rows()
+  if cols < 1 { let cols = 1 }
+  if rows < 1 { let rows = 1 }
+  let limit = cols - 1
+  if limit < 1 { let limit = 1 }
+  let lines = paint(screen).split("\n")
+  let i = 0
+  while i < rows {
+    esc("@{ i + 1 };1H")
+    let line = ""
+    if i < lines.length { let line = lines[i] }
+    print(ui.take(line, 0, limit))
+    esc("K")
+    let i = i + 1
+  }
+  esc("1;1H")
+}
+
+# Reads one byte. An empty string is a resize. Null is end of file or a poll timeout.
+fn read_input(pending) {
+  if pending.length > 0 { return term_poll() }
+  return term_read()
+}
+
+# Runs the screen on the terminal and returns null. step receives the screen and one key name.
+# A null return from step leaves. Without a terminal this prints "not a terminal".
+fn run(screen, step) {
+  if !term_tty() {
+    eprintln("not a terminal")
+    return null
+  }
+  term_raw(true)
+  draw(screen)
+  let pending = ""
+  let carry = ""
+  let quit = false
+  while !quit {
+    let byte = null
+    let have = false
+    if carry.length > 0 {
+      let byte = carry[0]
+      let carry = strings.slice(carry, 1, carry.length)
+      let have = true
+    }
+    if !have { let byte = read_input(pending) }
+    if byte == null && !have {
+      if pending.length > 0 {
+        let flushed = ui.flush(pending)
+        let pending = ""
+        if flushed.extra != null { let carry = flushed.extra }
+        if flushed.key != null {
+          let next = step(screen, flushed.key)
+          if next == null { let quit = true }
+          else { let screen = next }
+        }
+      } else {
+        let quit = true
+      }
+    } else if byte == "" {
+      draw(screen)
+    } else if byte != null {
+      let ev = ui.feed(pending, byte)
+      let pending = ev.pending
+      if ev.extra != null {
+        if carry.length > 0 { let carry = "@{ ev.extra }@{ carry }" }
+        else { let carry = ev.extra }
+      }
+      if ev.key != null {
+        let next = step(screen, ev.key)
+        if next == null { let quit = true }
+        else { let screen = next }
+      }
+    }
+    if !quit && carry.length == 0 { draw(screen) }
+  }
+  term_raw(false)
+  return null
+}

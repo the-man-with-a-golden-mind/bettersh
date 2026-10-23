@@ -11,7 +11,7 @@ def main():
     count = int(sys.argv[2]) if len(sys.argv) > 2 else 1000
     os.makedirs(out, exist_ok=True)
     for i in range(count):
-        path = os.path.join(out, "s%04d.bsh" % i)
+        path = os.path.join(out, "s%04d.btr" % i)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(script(i))
 

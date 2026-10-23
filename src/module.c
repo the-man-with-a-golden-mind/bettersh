@@ -46,7 +46,7 @@ int module_stem(const char *spec, char *buf, size_t cap) {
         }
     }
     n = strlen(base);
-    if (n >= 4 && strcmp(base + n - 4, ".bsh") == 0) {
+    if ((n >= 4 && strcmp(base + n - 4, ".btr") == 0) || (n >= 4 && strcmp(base + n - 4, ".bsh") == 0)) {
         n -= 4;
     }
     if (n == 0 || n + 1 > cap) {
@@ -402,12 +402,16 @@ static int resolve_spec(const char *from_file, const char *spec, const char *exe
     if (strncmp(spec, "std/", 4) == 0 && spec[4]) {
         const char *rest = spec + 4;
         n = strlen(rest);
-        if (n >= 4 && strcmp(rest + n - 4, ".bsh") == 0) {
+        if (n >= 4 && strcmp(rest + n - 4, ".btr") == 0) {
             file = dup_c(rest);
+        } else if (n >= 4 && strcmp(rest + n - 4, ".bsh") == 0) {
+            file = xmalloc(n + 1);
+            memcpy(file, rest, n - 4);
+            memcpy(file + n - 4, ".btr", 5);
         } else {
             file = xmalloc(n + 5);
             memcpy(file, rest, n);
-            memcpy(file + n, ".bsh", 5);
+            memcpy(file + n, ".btr", 5);
         }
         rc = search_std(file, exe, out);
         free(file);
@@ -416,6 +420,17 @@ static int resolve_spec(const char *from_file, const char *spec, const char *exe
     base = parent_dir(from_file);
     joined = join_path(base, spec);
     rc = try_file(joined, out);
+    n = strlen(spec);
+    if (rc != 0 && n >= 4 && strcmp(spec + n - 4, ".bsh") == 0) {
+        size_t jn = strlen(joined);
+        if (jn >= 4) {
+            char *alt = xmalloc(jn + 1);
+            memcpy(alt, joined, jn - 4);
+            memcpy(alt + jn - 4, ".btr", 5);
+            rc = try_file(alt, out);
+            free(alt);
+        }
+    }
     free(joined);
     free(base);
     return rc;

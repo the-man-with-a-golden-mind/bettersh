@@ -6,11 +6,129 @@
 #include "vi_line.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+enum { HIST_MAX = 8192 };
+
+static const char *hist_path(EvalCtx *ctx) {
+    const char *path = NULL;
+    if (!ctx->interactive) {
+        return NULL;
+    }
+    if (!env_get(&ctx->env, "HISTFILE", &path) || !path || !path[0]) {
+        return NULL;
+    }
+    return path;
+}
+
+static void hist_warn(EvalCtx *ctx, int *flag, const char *text) {
+    (void)ctx;
+    if (*flag) {
+        return;
+    }
+    *flag = 1;
+    fprintf(stderr, "bettersh: history: %s\n", text);
+}
+
+/* One record is a decimal length, a space, that many bytes, and a newline.
+   A record that does not match is skipped through the next newline. */
+static void hist_load(EvalCtx *ctx) {
+    const char *path = hist_path(ctx);
+    FILE *fp;
+    if (!path) {
+        return;
+    }
+    fp = fopen(path, "rb");
+    if (!fp) {
+        if (errno != ENOENT) {
+            hist_warn(ctx, &ctx->hist_read_err, "cannot read history");
+        }
+        return;
+    }
+    for (;;) {
+        int c = fgetc(fp);
+        unsigned long n = 0;
+        char *buf;
+        size_t got;
+        if (c == EOF) {
+            break;
+        }
+        if (c < '0' || c > '9') {
+            while (c != EOF && c != '\n') {
+                c = fgetc(fp);
+            }
+            hist_warn(ctx, &ctx->hist_bad, "ignored a corrupt line");
+            continue;
+        }
+        while (c >= '0' && c <= '9') {
+            if (n > HIST_MAX) {
+                n = HIST_MAX + 1;
+            } else {
+                n = n * 10 + (unsigned long)(c - '0');
+            }
+            c = fgetc(fp);
+        }
+        if (c != ' ' || n > HIST_MAX) {
+            while (c != EOF && c != '\n') {
+                c = fgetc(fp);
+            }
+            hist_warn(ctx, &ctx->hist_bad, "ignored a corrupt line");
+            continue;
+        }
+        buf = xmalloc(n + 1);
+        got = n ? fread(buf, 1, n, fp) : 0;
+        buf[got] = '\0';
+        c = fgetc(fp);
+        if (got != n || c != '\n') {
+            free(buf);
+            hist_warn(ctx, &ctx->hist_bad, "ignored a corrupt line");
+            if (c == EOF) {
+                break;
+            }
+            while (c != EOF && c != '\n') {
+                c = fgetc(fp);
+            }
+            continue;
+        }
+        ctx->hist_loading = 1;
+        hist_add(ctx, buf);
+        ctx->hist_loading = 0;
+        free(buf);
+    }
+    fclose(fp);
+}
+
+static void hist_save(EvalCtx *ctx, const char *text) {
+    const char *path = hist_path(ctx);
+    size_t n;
+    int fd;
+    char lenbuf[32];
+    int wrote;
+    if (ctx->hist_loading || !path || !text) {
+        return;
+    }
+    n = strlen(text);
+    if (n > HIST_MAX) {
+        hist_warn(ctx, &ctx->hist_bad, "ignored a corrupt line");
+        return;
+    }
+    fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (fd < 0) {
+        hist_warn(ctx, &ctx->hist_write_err, "cannot write history");
+        return;
+    }
+    wrote = snprintf(lenbuf, sizeof lenbuf, "%zu ", n);
+    if (wrote < 0 || (size_t)wrote >= sizeof lenbuf || write(fd, lenbuf, (size_t)wrote) != (ssize_t)wrote ||
+        (n > 0 && write(fd, text, n) != (ssize_t)n) || write(fd, "\n", 1) != 1) {
+        hist_warn(ctx, &ctx->hist_write_err, "cannot write history");
+    }
+    close(fd);
+}
 
 static volatile sig_atomic_t got_int;
 
@@ -30,6 +148,7 @@ void hist_add(EvalCtx *ctx, const char *text) {
     }
     ctx->hist[ctx->nhist].text = dup_c(text);
     ctx->nhist++;
+    hist_save(ctx, text);
 }
 
 static void append_line(char **data, size_t *len, size_t *cap, const char *line) {
@@ -136,6 +255,7 @@ int interact_run(int argc, char **argv, char **envp, const ShellStart *start) {
     shell_apply_start(&ctx, start);
     ctx.interactive = 1;
     ctx.stdin_mode = 1;
+    hist_load(&ctx);
     if (!env_get(&ctx.env, "PS1", NULL)) {
         env_set(&ctx.env, "PS1", geteuid() == 0 ? "# " : "$ ");
     }

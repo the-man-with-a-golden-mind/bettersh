@@ -11,6 +11,10 @@ typedef struct Map {
     Value **vals;
     uint32_t len;
     uint32_t cap;
+    /* Open-addressed slots. 0 is empty. A stored index is the key slot plus 1.
+       keys and vals stay in insertion order. */
+    uint32_t *slots;
+    uint32_t hcap;
 } Map;
 
 Map *map_new(void);

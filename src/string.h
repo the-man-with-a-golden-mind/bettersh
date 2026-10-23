@@ -5,6 +5,8 @@
 
 typedef struct Str {
     unsigned refs;
+    /* 1 when this string is in the process intern table. */
+    unsigned intern;
     size_t len;
     /* Bytes available in data, not counting the trailing NUL. */
     size_t cap;
@@ -12,6 +14,8 @@ typedef struct Str {
 } Str;
 
 Str *str_new(const char *src, size_t len);
+/* Shared string for an identical byte sequence. The caller owns one ref. */
+Str *str_intern(const char *src, size_t len);
 /* len bytes, uninitialized apart from the trailing NUL. */
 Str *str_make(size_t len);
 /* Grow a uniquely owned string. The pointer may move. */

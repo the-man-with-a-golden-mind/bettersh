@@ -1,0 +1,104 @@
+#!/usr/bin/env bettersh
+
+# Returns the lowercase hex of every stored byte.
+fn hex(s) {
+  fn digit(n) {
+    let digits = "0123456789abcdef"
+    return digits[n]
+  }
+  let bs = bytes(s)
+  let out = ""
+  let i = 0
+  while i < bs.length {
+    let n = bs[i]
+    let out = "@{ out }@{ digit(n / 16) }@{ digit(n % 16) }"
+    let i = i + 1
+  }
+  return out
+}
+
+# Returns the bytes named by a hex string. An odd length or a bad digit is an error. A-F and a-f are both accepted.
+fn unhex(s) {
+  fn value(ch) {
+    let digits = "0123456789abcdef"
+    return digits.index(ch.lower())
+  }
+  if s.length % 2 != 0 { return unbytes([-1]) }
+  let out = []
+  let i = 0
+  while i < s.length {
+    let hi = value(s[i])
+    let lo = value(s[i + 1])
+    if hi < 0 || lo < 0 { return unbytes([-1]) }
+    let out = out.push(hi * 16 + lo)
+    let i = i + 2
+  }
+  return unbytes(out)
+}
+
+# Returns the standard base64 of every stored byte, with "=" padding.
+fn base64(s) {
+  fn ch(n) {
+    let alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    return alpha[n]
+  }
+  let bs = bytes(s)
+  let out = ""
+  let i = 0
+  while i + 3 <= bs.length {
+    let n = bs[i] * 65536 + bs[i + 1] * 256 + bs[i + 2]
+    let out = "@{ out }@{ ch(n / 262144) }@{ ch((n / 4096) % 64) }@{ ch((n / 64) % 64) }@{ ch(n % 64) }"
+    let i = i + 3
+  }
+  if i < bs.length {
+    let b0 = bs[i]
+    let b1 = 0
+    let two = i + 1 < bs.length
+    if two { let b1 = bs[i + 1] }
+    let n = b0 * 65536 + b1 * 256
+    let out = "@{ out }@{ ch(n / 262144) }@{ ch((n / 4096) % 64) }"
+    if two {
+      let out = "@{ out }@{ ch((n / 64) % 64) }="
+    } else {
+      let out = "@{ out }=="
+    }
+  }
+  return out
+}
+
+# Returns the bytes of a standard base64 string. A bad length, character, or padding is an error.
+fn unbase64(s) {
+  fn value(ch) {
+    let alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    return alpha.index(ch)
+  }
+  if s.length % 4 != 0 { return unbytes([-1]) }
+  let out = []
+  let i = 0
+  while i < s.length {
+    let c0 = s[i]
+    let c1 = s[i + 1]
+    let c2 = s[i + 2]
+    let c3 = s[i + 3]
+    let pad = 0
+    if c2 == "=" { let pad = 2 }
+    if c3 == "=" && pad == 0 { let pad = 1 }
+    if c2 == "=" && c3 != "=" { return unbytes([-1]) }
+    if pad != 0 && i + 4 != s.length { return unbytes([-1]) }
+    let n0 = value(c0)
+    let n1 = value(c1)
+    let n2 = 0
+    let n3 = 0
+    if pad < 2 { let n2 = value(c2) }
+    if pad < 1 { let n3 = value(c3) }
+    if n0 < 0 || n1 < 0 || n2 < 0 || n3 < 0 { return unbytes([-1]) }
+    if pad == 2 && n1 % 16 != 0 { return unbytes([-1]) }
+    if pad == 1 && n2 % 4 != 0 { return unbytes([-1]) }
+    let n = n0 * 262144 + n1 * 4096 + n2 * 64 + n3
+    let out = out.push(n / 65536)
+    if pad < 2 { let out = out.push((n / 256) % 256) }
+    if pad < 1 { let out = out.push(n % 256) }
+    let i = i + 4
+  }
+  return unbytes(out)
+}

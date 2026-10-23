@@ -1,0 +1,10 @@
+#!/usr/bin/env bettersh
+let s = "éx"
+println(s.length)
+println(s[0])
+println(s[1])
+println(s.slice(0, 1))
+println(s.index("x"))
+println(ord(s[0]))
+println(chr(256).length)
+println(ord(chr(256)))

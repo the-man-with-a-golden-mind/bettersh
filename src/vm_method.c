@@ -1,3 +1,4 @@
+#include "utf8.h"
 #include "vm_priv.h"
 
 #include "array.h"
@@ -250,7 +251,7 @@ static int method_string(VM *vm, Value *recv, Value **args, int id) {
         return 0;
     }
     if (id == METH_LENGTH) {
-        vm_push(vm, value_int((int64_t)str->len));
+        vm_push(vm, value_int((int64_t)utf8_count(str->data, str->len)));
         return 0;
     }
     if (id == METH_SPLIT || id == METH_CONTAINS || id == METH_REPLACE || id == METH_INDEX) {
@@ -265,7 +266,9 @@ static int method_string(VM *vm, Value *recv, Value **args, int id) {
             return 0;
         }
         if (id == METH_INDEX) {
-            vm_push(vm, value_int(find_sub(str->data, str->len, pat, pn)));
+            int at = find_sub(str->data, str->len, pat, pn);
+            int64_t pos = at < 0 ? (int64_t)-1 : (int64_t)utf8_count(str->data, (size_t)at);
+            vm_push(vm, value_int(pos));
             return 0;
         }
         if (pn == 0) {
@@ -656,11 +659,12 @@ static int method_slice(VM *vm, Value *recv, Value **args) {
     int64_t b = 0;
     int span;
     if (recv->kind == VAL_STR && recv->u.str) {
-        if (recv->u.str->len > (size_t)INT64_MAX) {
+        size_t points = utf8_count(recv->u.str->data, recv->u.str->len);
+        if (points > (size_t)INT64_MAX) {
             vm_fail(vm, "bad operand");
             return -1;
         }
-        len = (int64_t)recv->u.str->len;
+        len = (int64_t)points;
     } else if (recv->kind == VAL_ARRAY && recv->u.arr) {
         len = (int64_t)recv->u.arr->len;
     } else {
@@ -684,10 +688,12 @@ static int method_slice(VM *vm, Value *recv, Value **args) {
         return -1;
     }
     if (recv->kind == VAL_STR) {
-        size_t n = (size_t)(b - a);
+        size_t from = utf8_offset(recv->u.str->data, recv->u.str->len, (size_t)a);
+        size_t to = utf8_offset(recv->u.str->data, recv->u.str->len, (size_t)b);
+        size_t n = to - from;
         Str *out = str_make(n);
         if (n > 0) {
-            memcpy(out->data, recv->u.str->data + (size_t)a, n);
+            memcpy(out->data, recv->u.str->data + from, n);
         }
         vm_push(vm, value_str(out));
         return 0;

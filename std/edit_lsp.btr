@@ -1,0 +1,186 @@
+#!/usr/bin/env bettersh
+
+import std/lsp
+import std/path
+import std/fs
+import std/env
+import std/theme
+import std/edit_ops
+
+# Connects one editor buffer to the language server named in the user's config.
+
+fn document(buf) {
+  let body = buf.lines.join("\n")
+  if buf.eol { return "@{ body }\n" }
+  return body
+}
+
+fn server_cmd(cfg, ext) {
+  if cfg == null { return null }
+  let list = cfg.servers
+  let i = list.length
+  while i > 0 {
+    let i = i - 1
+    if list[i].ext == ext { return list[i].cmd }
+  }
+  return null
+}
+
+# BETTERSH_EDITOR wins, even when it is empty. Otherwise the file is $HOME/.bettersh/editor.conf.
+fn read_config() {
+  let file = env.get("BETTERSH_EDITOR")
+  if file == null {
+    let home = env.get("HOME")
+    if home == null { return null }
+    let file = "@{ home }/.bettersh/editor.conf"
+  }
+  if file == "" { return null }
+  let text = fs.load(file)
+  if text == null { return null }
+  return theme.load(text)
+}
+
+fn attach(buf, cfg) {
+  let buf = map_set(buf, "theme", cfg)
+  let cmd = server_cmd(cfg, path.ext(buf.path))
+  if cmd == null { return buf }
+  let root = ""
+  if cfg != null { let root = cfg.root }
+  let session = lsp.begin(cmd, buf.path, document(buf), root)
+  if session == null { return buf }
+  let buf = map_set(buf, "lsp", session)
+  if session.dead { return map_set(buf, "hint", "lsp: stopped") }
+  if !session.ready { return map_set(buf, "hint", "lsp: no reply") }
+  return buf
+}
+
+fn changed(buf) {
+  if buf.lsp == null { return buf }
+  let session = lsp.sync(buf.lsp, document(buf))
+  let session = map_set(session, "hold", false)
+  let buf = map_set(buf, "lsp", session)
+  if session.dead { return map_set(buf, "hint", "lsp: stopped") }
+  return buf
+}
+
+fn saved(buf) {
+  if buf.lsp == null { return buf }
+  let session = lsp.saved(buf.lsp)
+  let buf = map_set(buf, "lsp", session)
+  if session.dead { return map_set(buf, "hint", "lsp: stopped") }
+  return buf
+}
+
+fn refresh(buf, stock) {
+  if buf.lsp == null { return buf }
+  let session = lsp.pump(buf.lsp, 0, 1)
+  let buf = map_set(buf, "lsp", session)
+  if session.dead {
+    if buf.hint == stock || buf.hint == session.shown {
+      let session = map_set(session, "shown", "lsp: stopped")
+      let buf = map_set(buf, "lsp", session)
+      return map_set(buf, "hint", "lsp: stopped")
+    }
+    return buf
+  }
+  if session.hold && buf.hint == session.shown { return buf }
+  if buf.hint != stock && buf.hint != session.shown { return buf }
+  let msg = lsp.line_message(session, buf.row)
+  if msg == "" { return buf }
+  let hint = "lsp: @{ msg }"
+  let session = map_set(session, "shown", hint)
+  let session = map_set(session, "hold", false)
+  let buf = map_set(buf, "lsp", session)
+  return map_set(buf, "hint", hint)
+}
+
+fn hover(buf) {
+  if buf.lsp == null || !buf.lsp.ready { return buf }
+  let line = buf.lines[buf.row]
+  let session = lsp.hover(buf.lsp, line, buf.row, buf.col)
+  let buf = map_set(buf, "lsp", session)
+  if session.hover == "" { return buf }
+  let hint = "lsp: @{ session.hover }"
+  let session = map_set(session, "shown", hint)
+  let session = map_set(session, "hold", true)
+  let buf = map_set(buf, "lsp", session)
+  return map_set(buf, "hint", hint)
+}
+
+fn show_item(buf, session) {
+  if session.items.length == 0 { return map_set(buf, "lsp", session) }
+  let hint = "lsp: @{ session.items[session.pick] }"
+  let session = map_set(session, "shown", hint)
+  let session = map_set(session, "hold", true)
+  let buf = map_set(buf, "lsp", session)
+  return map_set(buf, "hint", hint)
+}
+
+fn cycle(buf) {
+  if buf.lsp == null || !buf.lsp.ready { return buf }
+  let session = buf.lsp
+  if session.items.length == 0 {
+    let line = buf.lines[buf.row]
+    let session = lsp.complete(session, line, buf.row, buf.col)
+    let session = map_set(session, "pick", 0)
+  } else {
+    let pick = session.pick + 1
+    if pick >= session.items.length { let pick = 0 }
+    let session = map_set(session, "pick", pick)
+  }
+  return show_item(buf, session)
+}
+
+fn word_span(line, col) {
+  if col < 0 { let col = 0 }
+  if col > line.length { let col = line.length }
+  let a = col
+  let b = col
+  if b < line.length && edit_ops.is_word(line[b]) {
+    while b < line.length && edit_ops.is_word(line[b]) { let b = b + 1 }
+  }
+  while a > 0 && edit_ops.is_word(line[a - 1]) { let a = a - 1 }
+  return { a: a, b: b }
+}
+
+fn accept(buf) {
+  if buf.lsp == null || buf.lsp.items.length == 0 { return { hit: false, line: "", col: buf.col } }
+  let pick = buf.lsp.pick
+  if pick < 0 || pick >= buf.lsp.items.length { let pick = 0 }
+  let word = buf.lsp.items[pick]
+  let line = buf.lines[buf.row]
+  let span = word_span(line, buf.col)
+  let next = "@{ line.slice(0, span.a) }@{ word }@{ line.slice(span.b, line.length) }"
+  return { hit: true, line: next, col: span.a + word.length }
+}
+
+fn define(buf) {
+  if buf.lsp == null || !buf.lsp.ready { return buf }
+  let line = buf.lines[buf.row]
+  let session = lsp.define(buf.lsp, line, buf.row, buf.col)
+  let buf = map_set(buf, "lsp", session)
+  if !session.jump_ok { return buf }
+  if session.jump_uri != session.uri {
+    let hint = "@{ lsp.uri_path(session.jump_uri) }:@{ session.jump_line + 1 }:@{ session.jump_col + 1 }"
+    let session = map_set(session, "shown", hint)
+    let session = map_set(session, "hold", true)
+    let buf = map_set(buf, "lsp", session)
+    return map_set(buf, "hint", hint)
+  }
+  let row = session.jump_line
+  if row < 0 { let row = 0 }
+  if row >= buf.lines.length { let row = buf.lines.length - 1 }
+  let col = lsp.from_utf16(buf.lines[row], session.jump_col)
+  let limit = 0
+  if buf.lines[row].length > 0 { let limit = buf.lines[row].length - 1 }
+  if col > limit { let col = limit }
+  if col < 0 { let col = 0 }
+  let buf = map_set(buf, "row", row)
+  let buf = map_set(buf, "col", col)
+  return map_set(buf, "mode", "normal")
+}
+
+fn stop(buf) {
+  if buf.lsp == null { return null }
+  return lsp.stop(buf.lsp)
+}

@@ -1,0 +1,66 @@
+#!/usr/bin/env bettersh
+
+# Returns the bytes of path.
+fn read(path) {
+  return readfile(path)
+}
+
+# Replaces path with text and returns null.
+fn write(path, text) {
+  return writefile(path, text)
+}
+
+# Returns true when path exists.
+fn exists(path) {
+  return fs_exists(path)
+}
+
+# Removes path and returns null.
+fn remove(path) {
+  return fs_remove(path)
+}
+
+# Adds text to the end of path, creating the file when it is missing, and returns null.
+fn append(path, text) {
+  return fs_append(path, text)
+}
+
+# Copies the bytes of src to dst, replacing dst, and returns null.
+fn copy(src, dst) {
+  return write(dst, read(src))
+}
+
+# Creates one directory and returns null. The parent must already exist.
+fn mkdir(path) {
+  return fs_mkdir(path)
+}
+
+# Removes an empty directory and returns null.
+fn rmdir(path) {
+  return fs_rmdir(path)
+}
+
+# Returns the names in path, in byte order, without "." and "..".
+fn list(path) {
+  return fs_list(path)
+}
+
+# Returns "file", "dir", "other", or null when path is missing.
+fn kind(path) {
+  return fs_kind(path)
+}
+
+# Returns the byte size of path. A missing path is an error.
+fn size(path) {
+  return fs_size(path)
+}
+
+# Returns the bytes of path, or null when the path cannot be read.
+fn load(path) {
+  return fs_load(path)
+}
+
+# Replaces path with text. Returns true when the bytes were written.
+fn save(path, text) {
+  return fs_save(path, text)
+}

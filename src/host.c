@@ -1,6 +1,8 @@
-#include "host.h"
+#include "host_priv.h"
 
+#include "array.h"
 #include "chunk.h"
+#include "map.h"
 #include "vm_priv.h"
 
 #include <errno.h>
@@ -12,19 +14,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
-
-typedef struct Job {
-    int live;
-    pid_t pid;
-    int fd;
-} Job;
-
-struct Jobs {
-    Job *items;
-    int len;
-    int cap;
-};
 
 Jobs *jobs_new(void) {
     Jobs *jobs = xmalloc(sizeof(*jobs));
@@ -42,21 +33,96 @@ static int wait_pid(pid_t pid, int *status) {
     }
 }
 
+/* 0 when the child is gone. 1 when it is still running after a short wait. */
+static int wait_brief(pid_t pid, int *status) {
+    int i;
+    for (i = 0; i < 4; i++) {
+        pid_t got = waitpid(pid, status, WNOHANG);
+        struct timespec ts;
+        if (got == pid) {
+            return 0;
+        }
+        if (got < 0) {
+            return 0;
+        }
+        ts.tv_sec = 0;
+        ts.tv_nsec = 50000000L;
+        nanosleep(&ts, NULL);
+    }
+    return 1;
+}
+
+static void kill_group(pid_t pid, int sig) {
+    if (kill(-pid, sig) != 0) {
+        kill(pid, sig);
+    }
+}
+
+int jobs_add(Jobs *jobs, pid_t pid, int fd, int wr) {
+    Job *job;
+    int cap;
+    if (!jobs) {
+        return 0;
+    }
+    if (jobs->len >= jobs->cap) {
+        cap = jobs->cap > 0 ? jobs->cap * 2 : 4;
+        jobs->items = xrealloc(jobs->items, (size_t)cap * sizeof(Job));
+        jobs->cap = cap;
+    }
+    job = &jobs->items[jobs->len++];
+    job->live = 1;
+    job->pid = pid;
+    job->fd = fd;
+    job->wr = wr;
+    return jobs->len;
+}
+
+Job *jobs_at(Jobs *jobs, int id) {
+    if (!jobs || id < 1 || id > jobs->len) {
+        return NULL;
+    }
+    return &jobs->items[id - 1];
+}
+
+void job_release(Job *job) {
+    int status = 0;
+    int piped;
+    pid_t pid;
+    if (!job) {
+        return;
+    }
+    piped = job->wr >= 0;
+    pid = job->pid;
+    if (job->fd >= 0) {
+        close(job->fd);
+        job->fd = -1;
+    }
+    if (job->wr >= 0) {
+        close(job->wr);
+        job->wr = -1;
+    }
+    if (!job->live) {
+        return;
+    }
+    if (piped) {
+        kill_group(pid, SIGTERM);
+        if (wait_brief(pid, &status) != 0) {
+            kill_group(pid, SIGKILL);
+            wait_pid(pid, &status);
+        }
+    } else {
+        wait_pid(pid, &status);
+    }
+    job->live = 0;
+}
+
 void jobs_free(Jobs *jobs) {
     int i;
     if (!jobs) {
         return;
     }
     for (i = 0; i < jobs->len; i++) {
-        if (jobs->items[i].fd >= 0) {
-            close(jobs->items[i].fd);
-            jobs->items[i].fd = -1;
-        }
-        if (jobs->items[i].live) {
-            int status = 0;
-            wait_pid(jobs->items[i].pid, &status);
-            jobs->items[i].live = 0;
-        }
+        job_release(&jobs->items[i]);
     }
     free(jobs->items);
     free(jobs);
@@ -408,12 +474,48 @@ static int math_apply(const char *name, int arity, double x, double y, double *o
         *out = exp(x);
     } else if (arity == 1 && strcmp(name, "abs") == 0) {
         *out = fabs(x);
+    } else if (arity == 1 && strcmp(name, "log10") == 0) {
+        *out = log10(x);
+    } else if (arity == 1 && strcmp(name, "log2") == 0) {
+        *out = log2(x);
+    } else if (arity == 1 && strcmp(name, "cbrt") == 0) {
+        *out = cbrt(x);
+    } else if (arity == 1 && strcmp(name, "exp2") == 0) {
+        *out = exp2(x);
+    } else if (arity == 1 && strcmp(name, "expm1") == 0) {
+        *out = expm1(x);
+    } else if (arity == 1 && strcmp(name, "log1p") == 0) {
+        *out = log1p(x);
+    } else if (arity == 1 && strcmp(name, "trunc") == 0) {
+        *out = trunc(x);
+    } else if (arity == 1 && strcmp(name, "sinh") == 0) {
+        *out = sinh(x);
+    } else if (arity == 1 && strcmp(name, "cosh") == 0) {
+        *out = cosh(x);
+    } else if (arity == 1 && strcmp(name, "tanh") == 0) {
+        *out = tanh(x);
+    } else if (arity == 1 && strcmp(name, "asinh") == 0) {
+        *out = asinh(x);
+    } else if (arity == 1 && strcmp(name, "acosh") == 0) {
+        *out = acosh(x);
+    } else if (arity == 1 && strcmp(name, "atanh") == 0) {
+        *out = atanh(x);
+    } else if (arity == 1 && strcmp(name, "tgamma") == 0) {
+        *out = tgamma(x);
+    } else if (arity == 1 && strcmp(name, "lgamma") == 0) {
+        *out = lgamma(x);
     } else if (arity == 2 && strcmp(name, "pow") == 0) {
         *out = pow(x, y);
     } else if (arity == 2 && strcmp(name, "hypot") == 0) {
         *out = hypot(x, y);
     } else if (arity == 2 && strcmp(name, "atan2") == 0) {
         *out = atan2(x, y);
+    } else if (arity == 2 && strcmp(name, "fmod") == 0) {
+        *out = fmod(x, y);
+    } else if (arity == 2 && strcmp(name, "remainder") == 0) {
+        *out = remainder(x, y);
+    } else if (arity == 2 && strcmp(name, "copysign") == 0) {
+        *out = copysign(x, y);
     } else {
         return -1;
     }
@@ -462,7 +564,6 @@ static int host_spawn(VM *vm) {
     Value *arg = pop_str(vm);
     int fds[2];
     pid_t pid;
-    Job *job;
     if (!arg) {
         return -1;
     }
@@ -507,16 +608,7 @@ static int host_spawn(VM *vm) {
     }
     close(fds[1]);
     value_unref(arg);
-    if (vm->jobs->len >= vm->jobs->cap) {
-        int cap = vm->jobs->cap > 0 ? vm->jobs->cap * 2 : 4;
-        vm->jobs->items = xrealloc(vm->jobs->items, (size_t)cap * sizeof(Job));
-        vm->jobs->cap = cap;
-    }
-    job = &vm->jobs->items[vm->jobs->len++];
-    job->live = 1;
-    job->pid = pid;
-    job->fd = fds[0];
-    vm_push(vm, value_int(vm->jobs->len));
+    vm_push(vm, value_int(jobs_add(vm->jobs, pid, fds[0], -1)));
     return 0;
 }
 
@@ -563,6 +655,125 @@ static int host_await(VM *vm) {
     }
     vm_push(vm, value_str(str_new(buf ? buf : "", len)));
     free(buf);
+    return 0;
+}
+
+/* One integer per stored byte, including an interior NUL. */
+static int host_bytes(VM *vm) {
+    Value *arg = pop_str(vm);
+    Array *arr;
+    size_t i;
+    if (!arg) {
+        return -1;
+    }
+    arr = array_new();
+    for (i = 0; i < arg->u.str->len; i++) {
+        array_push(arr, value_int((unsigned char)arg->u.str->data[i]));
+    }
+    value_unref(arg);
+    vm_push(vm, value_array(arr));
+    return 0;
+}
+
+/* Builds a string from integers in 0..255. The length is the array length. */
+static int host_unbytes(VM *vm) {
+    Value *arg = vm_pop(vm);
+    Array *arr;
+    char *buf;
+    uint32_t i;
+    if (!arg) {
+        return -1;
+    }
+    if (arg->kind != VAL_ARRAY || !arg->u.arr) {
+        value_unref(arg);
+        vm_fail(vm, "bad operand");
+        return -1;
+    }
+    arr = arg->u.arr;
+    buf = xmalloc((size_t)arr->len + 1);
+    for (i = 0; i < arr->len; i++) {
+        Value *item = arr->items[i];
+        int64_t n;
+        if (!item || item->kind != VAL_INT) {
+            free(buf);
+            value_unref(arg);
+            vm_fail(vm, "bad operand");
+            return -1;
+        }
+        n = item->u.i;
+        if (n < 0 || n > 255) {
+            free(buf);
+            value_unref(arg);
+            vm_fail(vm, "bad operand");
+            return -1;
+        }
+        buf[i] = (char)n;
+    }
+    buf[arr->len] = '\0';
+    vm_push(vm, value_str(str_new(buf, (size_t)arr->len)));
+    free(buf);
+    value_unref(arg);
+    return 0;
+}
+
+static const char *kind_name(const Value *value) {
+    if (!value) {
+        return "null";
+    }
+    switch (value->kind) {
+    case VAL_NULL:
+        return "null";
+    case VAL_BOOL:
+        return "bool";
+    case VAL_INT:
+        return "int";
+    case VAL_FLOAT:
+        return "float";
+    case VAL_STR:
+        return "string";
+    case VAL_ARRAY:
+        return "array";
+    case VAL_MAP:
+        return "map";
+    case VAL_FN:
+        return "fn";
+    }
+    return "null";
+}
+
+static int host_value_kind(VM *vm) {
+    Value *value = vm_pop(vm);
+    const char *name;
+    if (!value) {
+        return -1;
+    }
+    name = kind_name(value);
+    vm_push(vm, value_str(str_new(name, strlen(name))));
+    value_unref(value);
+    return 0;
+}
+
+/* Inserts value under key and returns the same map. Like array push, this mutates. */
+static int host_map_set(VM *vm) {
+    Value *val = vm_pop(vm);
+    Value *key = vm_pop(vm);
+    Value *mapv = vm_pop(vm);
+    if (!val || !key || !mapv) {
+        value_unref(val);
+        value_unref(key);
+        value_unref(mapv);
+        return -1;
+    }
+    if (mapv->kind != VAL_MAP || !mapv->u.map || key->kind != VAL_STR || !key->u.str || has_nul(key)) {
+        value_unref(val);
+        value_unref(key);
+        value_unref(mapv);
+        vm_fail(vm, "bad operand");
+        return -1;
+    }
+    map_set(mapv->u.map, key->u.str->data, val);
+    value_unref(key);
+    vm_push(vm, mapv);
     return 0;
 }
 
@@ -634,7 +845,40 @@ int host_builtin(VM *vm, int id, int argc) {
             return -1;
         }
         return host_await(vm);
-    default:
+    case BI_BYTES:
+        if (argc != 1) {
+            vm_fail(vm, "wrong number of arguments");
+            return -1;
+        }
+        return host_bytes(vm);
+    case BI_UNBYTES:
+        if (argc != 1) {
+            vm_fail(vm, "wrong number of arguments");
+            return -1;
+        }
+        return host_unbytes(vm);
+    case BI_KIND:
+        if (argc != 1) {
+            vm_fail(vm, "wrong number of arguments");
+            return -1;
+        }
+        return host_value_kind(vm);
+    case BI_MAP_SET:
+        if (argc != 3) {
+            vm_fail(vm, "wrong number of arguments");
+            return -1;
+        }
+        return host_map_set(vm);
+    default: {
+        int rc = host_fs_builtin(vm, id, argc);
+        if (rc != 1) {
+            return rc;
+        }
+        rc = host_pipe_builtin(vm, id, argc);
+        if (rc != 1) {
+            return rc;
+        }
         return host_term_builtin(vm, id, argc);
+    }
     }
 }

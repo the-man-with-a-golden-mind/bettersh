@@ -15,7 +15,7 @@ typedef struct Jobs Jobs;
 ModCache *modcache_new(const char *exe);
 void modcache_free(ModCache *cache);
 
-/* Bind name of std/strings or ./x.bsh. Returns -1 when the name is empty. */
+/* Bind name of std/strings or ./x.btr. Returns -1 when the name is empty. */
 int module_stem(const char *spec, char *buf, size_t cap);
 
 /* On success *out is a new reference to the module map. On failure an

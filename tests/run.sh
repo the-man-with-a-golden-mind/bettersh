@@ -98,9 +98,9 @@ if [ -x tests/chunk_fuzz ]; then
 else
     bad tests/chunk_fuzz
 fi
-for f in tests/language/*.bsh; do
+for f in tests/language/*.btr; do
     [ -f "$f" ] || continue
-    base=${f%.bsh}
+    base=${f%.btr}
     got=$(mktemp)
     "$bin" "$f" >"$got" 2>"$got.err"
     bs=$?

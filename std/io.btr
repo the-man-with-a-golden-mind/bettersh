@@ -1,0 +1,52 @@
+#!/usr/bin/env bettersh
+
+# Writes text to stdout without a newline.
+fn write(text) {
+  print(text)
+}
+
+# Writes text to stdout and then a newline.
+fn writeln(text) {
+  println(text)
+}
+
+# Writes text to stderr and then a newline.
+fn error(text) {
+  eprintln(text)
+}
+
+# Reads one line from stdin. A trailing CR or LF is dropped. End of file is null.
+fn read() {
+  return readln()
+}
+
+# Returns every remaining byte from stdin, including NULs and newlines.
+fn read_all() {
+  return readall()
+}
+
+# Returns each stdin line without its trailing CR or LF. A final newline does not add an empty line.
+fn read_lines() {
+  let out = []
+  let line = read()
+  while line != null {
+    let out = out.push(line)
+    let line = read()
+  }
+  return out
+}
+
+# Writes each item followed by a newline.
+fn write_lines(xs) {
+  let i = 0
+  while i < xs.length {
+    writeln(xs[i])
+    let i = i + 1
+  }
+  return null
+}
+
+# Splits text on each newline. The separator is not kept.
+fn lines(text) {
+  return text.split("\n")
+}

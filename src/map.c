@@ -32,6 +32,7 @@ void map_unref(Map *map) {
     }
     free(map->keys);
     free(map->vals);
+    free(map->slots);
     free(map);
 }
 
@@ -42,13 +43,67 @@ static char *dup_key(const char *key) {
     return copy;
 }
 
-void map_set(Map *map, const char *key, Value *value) {
-    for (uint32_t i = 0; i < map->len; i++) {
-        if (strcmp(map->keys[i], key ? key : "") == 0) {
-            value_unref(map->vals[i]);
-            map->vals[i] = value ? value : value_null();
-            return;
+static uint32_t key_hash(const char *key) {
+    const unsigned char *p = (const unsigned char *)(key ? key : "");
+    uint32_t h = 2166136261u;
+    while (*p) {
+        h ^= *p++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* found is 1 when the key is present. The return is the table slot. */
+static uint32_t probe(const Map *map, const char *key, int *found) {
+    uint32_t mask = map->hcap - 1;
+    uint32_t at = key_hash(key) & mask;
+    const char *want = key ? key : "";
+    *found = 0;
+    if (map->hcap == 0) {
+        return 0;
+    }
+    for (;;) {
+        uint32_t slot = map->slots[at];
+        if (slot == 0) {
+            return at;
         }
+        if (strcmp(map->keys[slot - 1], want) == 0) {
+            *found = 1;
+            return at;
+        }
+        at = (at + 1) & mask;
+    }
+}
+
+static void rehash(Map *map) {
+    uint32_t cap = 8;
+    uint32_t i;
+    while (cap < map->len * 2 + 1) {
+        cap *= 2;
+    }
+    free(map->slots);
+    map->slots = xmalloc((size_t)cap * sizeof(uint32_t));
+    memset(map->slots, 0, (size_t)cap * sizeof(uint32_t));
+    map->hcap = cap;
+    for (i = 0; i < map->len; i++) {
+        int found = 0;
+        uint32_t at = probe(map, map->keys[i], &found);
+        map->slots[at] = i + 1;
+    }
+}
+
+void map_set(Map *map, const char *key, Value *value) {
+    int found = 0;
+    uint32_t at = 0;
+    Value *stored = value ? value : value_null();
+    if (map->hcap > 0) {
+        at = probe(map, key, &found);
+    }
+    if (found) {
+        uint32_t i = map->slots[at] - 1;
+        value_unref(map->vals[i]);
+        map->vals[i] = stored;
+        return;
     }
     if (map->len >= map->cap) {
         uint32_t cap = map->cap ? map->cap * 2 : 4;
@@ -57,20 +112,27 @@ void map_set(Map *map, const char *key, Value *value) {
         map->cap = cap;
     }
     map->keys[map->len] = dup_key(key);
-    map->vals[map->len] = value ? value : value_null();
+    map->vals[map->len] = stored;
     map->len++;
+    if (map->hcap == 0 || map->len * 4 >= map->hcap * 3) {
+        rehash(map);
+        return;
+    }
+    at = probe(map, key, &found);
+    map->slots[at] = map->len;
 }
 
 Value *map_get(const Map *map, const char *key) {
-    if (!map) {
+    int found = 0;
+    uint32_t at;
+    if (!map || map->hcap == 0) {
         return NULL;
     }
-    for (uint32_t i = 0; i < map->len; i++) {
-        if (strcmp(map->keys[i], key ? key : "") == 0) {
-            return map->vals[i];
-        }
+    at = probe(map, key, &found);
+    if (!found) {
+        return NULL;
     }
-    return NULL;
+    return map->vals[map->slots[at] - 1];
 }
 
 int map_has(const Map *map, const char *key) {
@@ -78,23 +140,27 @@ int map_has(const Map *map, const char *key) {
 }
 
 Value *map_remove(Map *map, const char *key) {
-    if (!map) {
+    int found = 0;
+    uint32_t at;
+    uint32_t i;
+    Value *value;
+    uint32_t tail;
+    if (!map || map->hcap == 0) {
         return NULL;
     }
-    const char *want = key ? key : "";
-    for (uint32_t i = 0; i < map->len; i++) {
-        if (strcmp(map->keys[i], want) != 0) {
-            continue;
-        }
-        Value *value = map->vals[i];
-        free(map->keys[i]);
-        uint32_t tail = map->len - i - 1;
-        if (tail) {
-            memmove(map->keys + i, map->keys + i + 1, tail * sizeof(char *));
-            memmove(map->vals + i, map->vals + i + 1, tail * sizeof(Value *));
-        }
-        map->len--;
-        return value;
+    at = probe(map, key, &found);
+    if (!found) {
+        return NULL;
     }
-    return NULL;
+    i = map->slots[at] - 1;
+    value = map->vals[i];
+    free(map->keys[i]);
+    tail = map->len - i - 1;
+    if (tail) {
+        memmove(map->keys + i, map->keys + i + 1, tail * sizeof(char *));
+        memmove(map->vals + i, map->vals + i + 1, tail * sizeof(Value *));
+    }
+    map->len--;
+    rehash(map);
+    return value;
 }

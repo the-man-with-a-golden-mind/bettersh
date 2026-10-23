@@ -1,13 +1,11 @@
 /* glibc declares posix_openpt only for X/Open. */
 #define _XOPEN_SOURCE 700
-
 #include "arena.h"
 #include "chunk.h"
 #include "host.h"
 #include "string.h"
 #include "verify.h"
 #include "vm.h"
-
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -18,26 +16,21 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
 /* Malformed chunks must not crash the verifier. Random accepted chunks
    run every opcode except shell words, imports, and host builtins.
    test_exec_and_import and test_host run those. */
-
 static int fails;
 static uint32_t rng = 0xC0FFEEu;
-
 static void check(int cond, const char *msg) {
     if (!cond) {
         fprintf(stderr, "FAIL %s\n", msg);
         fails++;
     }
 }
-
 static uint32_t next_rng(void) {
     rng = rng * 1664525u + 1013904223u;
     return rng;
 }
-
 /* Random chunks skip shell words, imports, and host builtins.
    test_host runs every host builtin on its own. */
 static int host_side(const Chunk *chunk) {
@@ -62,7 +55,6 @@ static int host_side(const Chunk *chunk) {
     }
     return 0;
 }
-
 static int run_limited(Chunk *chunk, int limit) {
     Arena arena;
     int status;
@@ -98,7 +90,6 @@ static int run_limited(Chunk *chunk, int limit) {
     alarm(0);
     return status;
 }
-
 static void test_self_jump(void) {
     Chunk *chunk = chunk_new();
     const char *msg = NULL;
@@ -108,7 +99,6 @@ static void test_self_jump(void) {
     check(run_limited(chunk, 40) == 0, "self jump stops");
     chunk_free(chunk);
 }
-
 static void test_finite(void) {
     Chunk *chunk = chunk_new();
     const char *msg = NULL;
@@ -119,7 +109,6 @@ static void test_finite(void) {
     check(run_limited(chunk, 0) == 0, "finite runs");
     chunk_free(chunk);
 }
-
 static void test_language(void) {
     Chunk *chunk = chunk_new();
     const char *msg = NULL;
@@ -134,7 +123,6 @@ static void test_language(void) {
     status = run_limited(chunk, 40);
     check(status == 0 || status == 2, "index runs");
     chunk_free(chunk);
-
     chunk = chunk_new();
     chunk_emit(chunk, OP_NULL, 1);
     chunk_emit(chunk, OP_CALL, 1);
@@ -144,7 +132,6 @@ static void test_language(void) {
     status = run_limited(chunk, 40);
     check(status == 0 || status == 2, "call runs");
     chunk_free(chunk);
-
     chunk = chunk_new();
     chunk_emit(chunk, OP_NULL, 1);
     chunk_emit(chunk, OP_NULL, 1);
@@ -154,7 +141,6 @@ static void test_language(void) {
     status = run_limited(chunk, 40);
     check(status == 0 || status == 2, "cat runs");
     chunk_free(chunk);
-
     chunk = chunk_new();
     chunk_emit(chunk, OP_BUILTIN, 1);
     chunk_emit(chunk, BI_PRINT, 1);
@@ -164,7 +150,6 @@ static void test_language(void) {
     check(run_limited(chunk, 40) == 0, "print runs");
     chunk_free(chunk);
 }
-
 static void test_exec_and_import(void) {
     Chunk *chunk = chunk_new();
     const char *msg = NULL;
@@ -185,7 +170,6 @@ static void test_exec_and_import(void) {
     alarm(0);
     check(status == 0, "exec colon runs");
     chunk_free(chunk);
-
     chunk = chunk_new();
     idx = chunk_const(chunk, value_str(str_from_c("missing/mod")));
     chunk_emit(chunk, OP_IMPORT, 1);
@@ -195,7 +179,6 @@ static void test_exec_and_import(void) {
     check(run_limited(chunk, 40) == 2, "import misses");
     chunk_free(chunk);
 }
-
 static void test_random(void) {
     int n;
     for (n = 0; n < 200; n++) {
@@ -231,26 +214,21 @@ static void test_random(void) {
         chunk_free(chunk);
     }
 }
-
 static unsigned char host_called[BI_COUNT];
 static unsigned char host_ok[BI_COUNT];
-
 static void emit_str(Chunk *chunk, const char *text, size_t n) {
     uint32_t idx = chunk_const(chunk, value_str(str_new(text, n)));
     chunk_emit(chunk, OP_CONST, 1);
     chunk_emit_u16(chunk, (uint16_t)idx, 1);
 }
-
 static void emit_cstr(Chunk *chunk, const char *text) {
     emit_str(chunk, text, strlen(text));
 }
-
 static void emit_bi(Chunk *chunk, int id, int argc) {
     chunk_emit(chunk, OP_BUILTIN, 1);
     chunk_emit(chunk, (uint8_t)id, 1);
     chunk_emit(chunk, (uint8_t)argc, 1);
 }
-
 /* Capture stdout. Stderr is discarded. stdin_fd replaces fd 0 when >= 0. */
 static int run_out(Chunk *chunk, Jobs *jobs, int argc, char **argv, int stdin_fd, char **out,
                    size_t *out_len) {
@@ -346,37 +324,36 @@ static int run_out(Chunk *chunk, Jobs *jobs, int argc, char **argv, int stdin_fd
     *out_len = len;
     return status;
 }
-
 static int host_arity(int id) {
-    if (id == BI_WRITEFILE || id == BI_SETENV) {
+    if (id == BI_MAP_SET) {
+        return 3;
+    }
+    if (id == BI_WRITEFILE || id == BI_SETENV || id == BI_FS_APPEND || id == BI_FS_SAVE ||
+        id == BI_PIPE_WRITE || id == BI_PIPE_READ) {
         return 2;
     }
     if (id == BI_MATHF) {
         return 2;
     }
-    if (id == BI_READLN || id == BI_TERM_READ || id == BI_TERM_POLL || id == BI_TERM_COLS ||
-        id == BI_TERM_ROWS || id == BI_TERM_TTY) {
+    if (id == BI_READLN || id == BI_READALL || id == BI_TERM_READ || id == BI_TERM_POLL ||
+        id == BI_TERM_COLS || id == BI_TERM_ROWS || id == BI_TERM_TTY) {
         return 0;
     }
     return 1;
 }
-
 static void push_nulls(Chunk *chunk, int n) {
     int i;
     for (i = 0; i < n; i++) {
         chunk_emit(chunk, OP_NULL, 1);
     }
 }
-
 static void finish_pop(Chunk *chunk) {
     chunk_emit(chunk, OP_POP, 1);
 }
-
 static void finish_print(Chunk *chunk) {
     emit_bi(chunk, BI_PRINTLN, 1);
     chunk_emit(chunk, OP_POP, 1);
 }
-
 static int call_built(Jobs *jobs, int id, Chunk *chunk, int print, int stdin_fd, char **out, size_t *out_len) {
     char *av[] = {"host-arg", "second", NULL};
     if (print) {
@@ -387,7 +364,6 @@ static int call_built(Jobs *jobs, int id, Chunk *chunk, int print, int stdin_fd,
     host_called[id] = 1;
     return run_out(chunk, jobs, 2, av, stdin_fd, out, out_len);
 }
-
 static void expect_status(Jobs *jobs, int id, Chunk *chunk, int want, const char *what) {
     char *out = NULL;
     size_t n = 0;
@@ -401,7 +377,6 @@ static void expect_status(Jobs *jobs, int id, Chunk *chunk, int want, const char
     free(out);
     chunk_free(chunk);
 }
-
 static void expect_text(Jobs *jobs, int id, Chunk *chunk, const char *want, size_t want_n, int stdin_fd,
                         const char *what) {
     char *out = NULL;
@@ -418,7 +393,6 @@ static void expect_text(Jobs *jobs, int id, Chunk *chunk, const char *want, size
     free(out);
     chunk_free(chunk);
 }
-
 static int feed_fd(const char *text, size_t n) {
     int fds[2];
     if (pipe(fds) != 0) {
@@ -432,7 +406,6 @@ static int feed_fd(const char *text, size_t n) {
     close(fds[1]);
     return fds[0];
 }
-
 static void reject_matrix(Jobs *jobs) {
     int id;
     for (id = BI_CAPTURE; id < BI_COUNT; id++) {
@@ -449,12 +422,17 @@ static void reject_matrix(Jobs *jobs) {
         chunk = chunk_new();
         push_nulls(chunk, arity);
         emit_bi(chunk, id, arity);
-        expect_status(jobs, id, chunk, 2, "type");
+        expect_status(jobs, id, chunk, id == BI_KIND ? 0 : 2, "type");
         chunk = chunk_new();
         raw[0] = 'a';
         raw[1] = '\0';
         raw[2] = 'b';
-        if (id == BI_WRITEFILE || id == BI_SETENV) {
+        if (id == BI_MAP_SET) {
+            emit_str(chunk, raw, 3);
+            emit_cstr(chunk, "x");
+            chunk_emit(chunk, OP_NULL, 1);
+        } else if (id == BI_WRITEFILE || id == BI_SETENV || id == BI_FS_APPEND || id == BI_FS_SAVE ||
+                   id == BI_PIPE_WRITE || id == BI_PIPE_READ) {
             emit_str(chunk, raw, 3);
             emit_cstr(chunk, "x");
         } else if (id == BI_MATHF) {
@@ -463,14 +441,64 @@ static void reject_matrix(Jobs *jobs) {
             chunk_emit_i64(chunk, 1, 1);
         } else if (id == BI_CHR || id == BI_ARG || id == BI_TERM_RAW) {
             emit_str(chunk, raw, 3);
+        } else if (id == BI_BYTES) {
+            chunk_emit(chunk, OP_CONST_INT, 1);
+            chunk_emit_i64(chunk, 1, 1);
         } else {
             emit_str(chunk, raw, 3);
         }
         emit_bi(chunk, id, arity);
-        expect_status(jobs, id, chunk, 2, "nul");
+        expect_status(jobs, id, chunk, id == BI_KIND ? 0 : 2, "nul");
     }
 }
-
+static void push_id(Chunk *chunk, int id) {
+    chunk_emit(chunk, OP_CONST_INT, 1);
+    chunk_emit_i64(chunk, (int64_t)id, 1);
+}
+static void happy_pipe(Jobs *jobs) {
+    Chunk *chunk = chunk_new();
+    char *out = NULL;
+    size_t n = 0;
+    int status;
+    int id;
+    emit_cstr(chunk, "printf ab; cat >/dev/null");
+    emit_bi(chunk, BI_PIPE_OPEN, 1);
+    finish_print(chunk);
+    host_called[BI_PIPE_OPEN] = 1;
+    status = run_out(chunk, jobs, 0, NULL, -1, &out, &n);
+    chunk_free(chunk);
+    id = status == 0 && out ? atoi(out) : 0;
+    free(out);
+    if (id < 1) {
+        fprintf(stderr, "FAIL pipe_open\n");
+        fails++;
+        return;
+    }
+    host_ok[BI_PIPE_OPEN] = 1;
+    chunk = chunk_new();
+    push_id(chunk, id);
+    emit_cstr(chunk, "z");
+    emit_bi(chunk, BI_PIPE_WRITE, 2);
+    expect_text(jobs, BI_PIPE_WRITE, chunk, "true\n", 5, -1, "write");
+    chunk = chunk_new();
+    push_id(chunk, id);
+    chunk_emit(chunk, OP_CONST_INT, 1);
+    chunk_emit_i64(chunk, 500, 1);
+    emit_bi(chunk, BI_PIPE_READ, 2);
+    expect_text(jobs, BI_PIPE_READ, chunk, "ab\n", 3, -1, "read");
+    chunk = chunk_new();
+    push_id(chunk, id);
+    emit_bi(chunk, BI_PIPE_CLOSE, 1);
+    expect_text(jobs, BI_PIPE_CLOSE, chunk, "null\n", 5, -1, "close");
+    chunk = chunk_new();
+    chunk_emit(chunk, OP_MAP, 1);
+    chunk_emit_u16(chunk, 0, 1);
+    emit_cstr(chunk, "a");
+    chunk_emit(chunk, OP_CONST_INT, 1);
+    chunk_emit_i64(chunk, 7, 1);
+    emit_bi(chunk, BI_MAP_SET, 3);
+    expect_text(jobs, BI_MAP_SET, chunk, "{a: 7}\n", 7, -1, "set");
+}
 static void happy_files(Jobs *jobs) {
     char dir[64];
     char path[96];
@@ -508,6 +536,47 @@ static void happy_files(Jobs *jobs) {
     expect_text(jobs, BI_READFILE, chunk, "hello\n", 6, -1, "read");
     chunk = chunk_new();
     emit_cstr(chunk, path);
+    emit_cstr(chunk, "!");
+    emit_bi(chunk, BI_FS_APPEND, 2);
+    expect_status(jobs, BI_FS_APPEND, chunk, 0, "append");
+    chunk = chunk_new();
+    emit_cstr(chunk, path);
+    emit_bi(chunk, BI_READFILE, 1);
+    expect_text(jobs, BI_READFILE, chunk, "hello!\n", 7, -1, "read append");
+    chunk = chunk_new();
+    emit_cstr(chunk, path);
+    emit_bi(chunk, BI_FS_KIND, 1);
+    expect_text(jobs, BI_FS_KIND, chunk, "file\n", 5, -1, "kind file");
+    chunk = chunk_new();
+    emit_cstr(chunk, path);
+    emit_bi(chunk, BI_FS_SIZE, 1);
+    expect_text(jobs, BI_FS_SIZE, chunk, "6\n", 2, -1, "size");
+    chunk = chunk_new();
+    emit_cstr(chunk, dir);
+    emit_bi(chunk, BI_FS_KIND, 1);
+    expect_text(jobs, BI_FS_KIND, chunk, "dir\n", 4, -1, "kind dir");
+    chunk = chunk_new();
+    emit_cstr(chunk, dir);
+    emit_bi(chunk, BI_FS_LIST, 1);
+    expect_text(jobs, BI_FS_LIST, chunk, "[note]\n", 7, -1, "list");
+    {
+        char sub[128];
+        snprintf(sub, sizeof sub, "%s/sub", dir);
+        chunk = chunk_new();
+        emit_cstr(chunk, sub);
+        emit_bi(chunk, BI_FS_MKDIR, 1);
+        expect_status(jobs, BI_FS_MKDIR, chunk, 0, "mkdir");
+        chunk = chunk_new();
+        emit_cstr(chunk, dir);
+        emit_bi(chunk, BI_FS_LIST, 1);
+        expect_text(jobs, BI_FS_LIST, chunk, "[note, sub]\n", 12, -1, "list two");
+        chunk = chunk_new();
+        emit_cstr(chunk, sub);
+        emit_bi(chunk, BI_FS_RMDIR, 1);
+        expect_status(jobs, BI_FS_RMDIR, chunk, 0, "rmdir");
+    }
+    chunk = chunk_new();
+    emit_cstr(chunk, path);
     emit_bi(chunk, BI_FS_EXISTS, 1);
     expect_text(jobs, BI_FS_EXISTS, chunk, "true\n", 5, -1, "exists");
     chunk = chunk_new();
@@ -528,6 +597,39 @@ static void happy_files(Jobs *jobs) {
     emit_bi(chunk, BI_FS_REMOVE, 1);
     expect_status(jobs, BI_FS_REMOVE, chunk, 2, "remove empty");
     chunk = chunk_new();
+    emit_cstr(chunk, "");
+    emit_bi(chunk, BI_FS_KIND, 1);
+    expect_text(jobs, BI_FS_KIND, chunk, "null\n", 5, -1, "kind missing");
+    chunk = chunk_new();
+    emit_cstr(chunk, "");
+    emit_bi(chunk, BI_FS_SIZE, 1);
+    expect_status(jobs, BI_FS_SIZE, chunk, 2, "size missing");
+    {
+        char saved[128];
+        char missing[128];
+        snprintf(saved, sizeof saved, "%s/kept", dir);
+        snprintf(missing, sizeof missing, "%s/none", dir);
+        chunk = chunk_new();
+        emit_cstr(chunk, saved);
+        emit_cstr(chunk, "ab");
+        emit_bi(chunk, BI_FS_SAVE, 2);
+        expect_text(jobs, BI_FS_SAVE, chunk, "true\n", 5, -1, "save");
+        chunk = chunk_new();
+        emit_cstr(chunk, saved);
+        emit_bi(chunk, BI_FS_LOAD, 1);
+        expect_text(jobs, BI_FS_LOAD, chunk, "ab\n", 3, -1, "load");
+        chunk = chunk_new();
+        emit_cstr(chunk, dir);
+        emit_cstr(chunk, "x");
+        emit_bi(chunk, BI_FS_SAVE, 2);
+        expect_text(jobs, BI_FS_SAVE, chunk, "false\n", 6, -1, "save dir");
+        chunk = chunk_new();
+        emit_cstr(chunk, missing);
+        emit_bi(chunk, BI_FS_LOAD, 1);
+        expect_text(jobs, BI_FS_LOAD, chunk, "null\n", 5, -1, "load missing");
+        unlink(saved);
+    }
+    chunk = chunk_new();
     emit_cstr(chunk, path);
     emit_bi(chunk, BI_FS_REMOVE, 1);
     expect_status(jobs, BI_FS_REMOVE, chunk, 0, "remove");
@@ -539,7 +641,6 @@ static void happy_files(Jobs *jobs) {
     unlink(path);
     rmdir(dir);
 }
-
 static void happy_proc(Jobs *jobs) {
     Chunk *chunk = chunk_new();
     int in;
@@ -633,8 +734,14 @@ static void happy_proc(Jobs *jobs) {
     if (in >= 0) {
         close(in);
     }
+    in = feed_fd("a\0b", 3);
+    chunk = chunk_new();
+    emit_bi(chunk, BI_READALL, 0);
+    expect_text(jobs, BI_READALL, chunk, "a\0b\n", 4, in, "readall");
+    if (in >= 0) {
+        close(in);
+    }
 }
-
 static void happy_text(Jobs *jobs) {
     Chunk *chunk = chunk_new();
     chunk_emit(chunk, OP_CONST_INT, 1);
@@ -645,7 +752,17 @@ static void happy_text(Jobs *jobs) {
     chunk_emit(chunk, OP_CONST_INT, 1);
     chunk_emit_i64(chunk, 256, 1);
     emit_bi(chunk, BI_CHR, 1);
+    expect_text(jobs, BI_CHR, chunk, "\xc4\x80\n", 3, -1, "chr 256");
+    chunk = chunk_new();
+    chunk_emit(chunk, OP_CONST_INT, 1);
+    chunk_emit_i64(chunk, 1114112, 1);
+    emit_bi(chunk, BI_CHR, 1);
     expect_status(jobs, BI_CHR, chunk, 2, "chr range");
+    chunk = chunk_new();
+    chunk_emit(chunk, OP_CONST_INT, 1);
+    chunk_emit_i64(chunk, 55296, 1);
+    emit_bi(chunk, BI_CHR, 1);
+    expect_status(jobs, BI_CHR, chunk, 2, "chr surrogate");
     chunk = chunk_new();
     emit_cstr(chunk, "A");
     emit_bi(chunk, BI_ORD, 1);
@@ -664,8 +781,44 @@ static void happy_text(Jobs *jobs) {
     chunk_emit_i64(chunk, 9, 1);
     emit_bi(chunk, BI_ARG, 1);
     expect_text(jobs, BI_ARG, chunk, "null\n", 5, -1, "arg missing");
+    chunk = chunk_new();
+    emit_cstr(chunk, "Ab");
+    emit_bi(chunk, BI_BYTES, 1);
+    expect_text(jobs, BI_BYTES, chunk, "[65, 98]\n", 9, -1, "bytes");
+    chunk = chunk_new();
+    {
+        char raw[3];
+        raw[0] = 'A';
+        raw[1] = '\0';
+        raw[2] = 'B';
+        emit_str(chunk, raw, 3);
+    }
+    emit_bi(chunk, BI_BYTES, 1);
+    expect_text(jobs, BI_BYTES, chunk, "[65, 0, 66]\n", 12, -1, "bytes nul");
+    chunk = chunk_new();
+    chunk_emit(chunk, OP_CONST_INT, 1);
+    chunk_emit_i64(chunk, 65, 1);
+    chunk_emit(chunk, OP_CONST_INT, 1);
+    chunk_emit_i64(chunk, 0, 1);
+    chunk_emit(chunk, OP_CONST_INT, 1);
+    chunk_emit_i64(chunk, 66, 1);
+    chunk_emit(chunk, OP_ARRAY, 1);
+    chunk_emit_u16(chunk, 3, 1);
+    emit_bi(chunk, BI_UNBYTES, 1);
+    expect_text(jobs, BI_UNBYTES, chunk, "A\0B\n", 4, -1, "unbytes");
+    chunk = chunk_new();
+    chunk_emit(chunk, OP_ARRAY, 1);
+    chunk_emit_u16(chunk, 0, 1);
+    emit_bi(chunk, BI_UNBYTES, 1);
+    expect_text(jobs, BI_UNBYTES, chunk, "\n", 1, -1, "unbytes empty");
+    chunk = chunk_new();
+    chunk_emit(chunk, OP_CONST_INT, 1);
+    chunk_emit_i64(chunk, 256, 1);
+    chunk_emit(chunk, OP_ARRAY, 1);
+    chunk_emit_u16(chunk, 1, 1);
+    emit_bi(chunk, BI_UNBYTES, 1);
+    expect_status(jobs, BI_UNBYTES, chunk, 2, "unbytes range");
 }
-
 static void happy_term(Jobs *jobs) {
     Chunk *chunk;
     int master = -1;
@@ -811,7 +964,6 @@ static void happy_term(Jobs *jobs) {
         waitpid(drain, &st, 0);
     }
 }
-
 static void test_host(void) {
     Jobs *jobs = jobs_new();
     int id;
@@ -820,6 +972,7 @@ static void test_host(void) {
     happy_proc(jobs);
     happy_text(jobs);
     happy_term(jobs);
+    happy_pipe(jobs);
     jobs_free(jobs);
     term_shutdown();
     for (id = BI_CAPTURE; id < BI_COUNT; id++) {
@@ -829,7 +982,6 @@ static void test_host(void) {
         }
     }
 }
-
 int main(void) {
     test_finite();
     test_self_jump();

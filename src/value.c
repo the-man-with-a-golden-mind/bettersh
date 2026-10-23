@@ -3,18 +3,11 @@
 #include "arena.h"
 #include "array.h"
 #include "map.h"
+#include "trace.h"
+#include "value_priv.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-struct IEnv {
-    unsigned refs;
-    IEnv *parent;
-    const char **names;
-    Value **vals;
-    int len;
-    int cap;
-};
 
 static unsigned self_refs(const Value *value);
 static void release_cycle(Value *start);
@@ -23,7 +16,7 @@ static int collect_env_graph(IEnv *root);
 /* release_cycle is not re-entered. A pin on trial_env is hidden from the
    internal-environment test so the collector can free that environment
    after the walk, not during it. */
-static int collecting;
+int value_collecting;
 static IEnv *trial_env;
 static unsigned trial_hide;
 
@@ -216,7 +209,7 @@ void ienv_unref(IEnv *env) {
     if (env->refs > 1) {
         env->refs--;
         if (env->refs > env_backrefs(env)) {
-            if (!collecting && collect_env_graph(env)) {
+            if (!value_collecting && collect_env_graph(env)) {
                 return;
             }
             if (env->refs > env_backrefs(env)) {
@@ -225,7 +218,7 @@ void ienv_unref(IEnv *env) {
         }
     }
     if (!env_fns_ready(env)) {
-        if (!collecting && collect_env_graph(env)) {
+        if (!value_collecting && collect_env_graph(env)) {
             return;
         }
         return;
@@ -308,6 +301,10 @@ Value *ienv_value_at(const IEnv *env, int index) {
         return NULL;
     }
     return env->vals[index];
+}
+
+IEnv *ienv_parent(const IEnv *env) {
+    return env ? env->parent : NULL;
 }
 
 void value_ref(Value *value) {
@@ -873,16 +870,16 @@ static void g_drop(Graph *g) {
 static int collect_env_graph(IEnv *root) {
     Graph g;
     uint32_t i;
-    if (!root || collecting) {
+    if (!root || value_collecting) {
         return 0;
     }
     memset(&g, 0, sizeof g);
     g_walk_env(&g, root, root);
     if (!g_closed(&g)) {
         g_drop(&g);
-        return 0;
+        return trace_env(root);
     }
-    collecting = 1;
+    value_collecting = 1;
     for (i = 0; i < g.nenvs; i++) {
         g.envs[i]->refs = 0;
     }
@@ -908,7 +905,7 @@ static int collect_env_graph(IEnv *root) {
         free(env);
     }
     g_drop(&g);
-    collecting = 0;
+    value_collecting = 0;
     return 1;
 }
 
@@ -935,21 +932,21 @@ static void release_cycle(Value *start) {
     uint32_t n = 0;
     uint32_t cap = 0;
     uint32_t i;
-    if (collecting || !cycle_node(start)) {
+    if (value_collecting || !cycle_node(start)) {
         return;
     }
-    collecting = 1;
+    value_collecting = 1;
     cycle_reach(&set, &n, &cap, start);
     if (n < 2) {
         free(set);
-        collecting = 0;
+        value_collecting = 0;
         collect_fn_env(start);
         return;
     }
     for (i = 0; i < n; i++) {
         if (set[i]->refs != cycle_inbound(set, n, set[i])) {
             free(set);
-            collecting = 0;
+            value_collecting = 0;
             collect_fn_env(start);
             return;
         }
@@ -962,7 +959,7 @@ static void release_cycle(Value *start) {
         value_unref(set[i]);
     }
     free(set);
-    collecting = 0;
+    value_collecting = 0;
 }
 
 void value_unref(Value *value) {

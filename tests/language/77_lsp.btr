@@ -1,0 +1,80 @@
+#!/usr/bin/env bettersh
+import std/json
+import std/theme
+import std/lsp
+import std/ui
+import std/edit
+
+println(json.parse("null") == null)
+println(json.parse("true"))
+println(json.parse("01") == null)
+println(json.parse("[1,2]")[1])
+let obj = json.parse("{\"b\":1,\"a\":2}")
+println(obj.keys().join(","))
+println(json.stringify(obj))
+println(kind(json.stringify(null)))
+println(json.stringify(null))
+let big = json.parse("9223372036854775807")
+println(kind(big))
+println(big)
+println(json.parse("{\"a\":\"\\u0041\"}").a)
+println(json.parse("\"\\uD800\\uDC00\"") == chr(65536))
+
+println(kind(null))
+println(kind(1))
+let m = map_set({}, "a", 7)
+println(m.a)
+println(kind(m))
+
+let cfg = theme.load("theme name dark\ntheme gutter red\nserver py python3 -u other.py\nserver py python3 -u last.py\nroot /tmp/proj\n")
+println(cfg.gutter)
+println(cfg.keyword)
+println(cfg.servers[1].cmd)
+println(cfg.root)
+println(theme.themed(cfg))
+println(theme.themed(theme.plain()))
+println(theme.themed(null))
+println(theme.wrap("red", "ab"))
+println(theme.load("nope") == null)
+println(theme.load("server .btr x") == null)
+let tabbed = theme.load("server\tzz\tcmd here\n")
+println(tabbed.servers[0].ext)
+println(tabbed.servers[0].cmd)
+println(theme.themed(tabbed))
+let empty = theme.load("")
+println(empty.servers.length)
+println(empty.root)
+println(empty.gutter)
+
+println(lsp.language("btr"))
+println(lsp.language("py"))
+println(lsp.language("rs"))
+println(lsp.language("js"))
+println(lsp.language("zz"))
+println(lsp.file_uri("/tmp/a b.btr"))
+println(lsp.uri_path("file:///tmp/a%20b.btr"))
+let wide = "@{ chr(65536) }x"
+println(lsp.to_utf16(wide, 2))
+println(lsp.from_utf16(wide, 1))
+println(lsp.from_utf16(wide, 2))
+
+let ev = ui.feed("", chr(21))
+println(ev.key)
+let ev = ui.feed("", chr(24))
+println(ev.key)
+
+let b = edit.buffer("let name\n", "sample.btr")
+let hint = b.hint
+let b = edit.press(b, "K")
+println(b.hint == hint)
+let b = edit.press(b, "g")
+let b = edit.press(b, "d")
+println(b.hint == hint)
+println(b.pending)
+println(edit.text(b))
+println(edit.frame(map_set(b, "theme", theme.dark()), 24, 6).contains(chr(27)))
+
+let id = pipe_open("printf ab; cat >/dev/null")
+println(pipe_write(id, "z"))
+println(pipe_read(id, 500))
+println(pipe_close(id) == null)

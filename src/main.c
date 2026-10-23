@@ -1,5 +1,6 @@
 #include "arena.h"
 #include "ast.h"
+#include "bcode.h"
 #include "chunk.h"
 #include "disasm.h"
 #include "error.h"
@@ -27,6 +28,8 @@ extern char **environ;
 static void usage(FILE *out) {
     fputs("usage: bettersh [options] [file [argument...]]\n"
           "       bettersh [options] -c command [name [argument...]]\n"
+          "       bettersh --compile --output image file\n"
+          "       bettersh --bytecode image [argument...]\n"
           "       bettersh --help\n"
           "       bettersh --version\n",
           out);
@@ -44,8 +47,20 @@ static int base_is(const char *text, size_t len, const char *name) {
     return blen == nlen && memcmp(text + start, name, nlen) == 0;
 }
 
-/* Shebang selects the mode. Only bettersh, or env bettersh, is modern.
-   Anything else, including a missing shebang, stays strict. */
+/* A .btr file is the modern language. A .sh file is strict unless its
+   shebang is bettersh or env bettersh. Any other path follows the shebang,
+   and a missing shebang stays strict. */
+static int path_is_btr(const char *path) {
+    size_t n;
+    if (!path) {
+        return 0;
+    }
+    n = strlen(path);
+    return n >= 4 && memcmp(path + n - 4, ".btr", 4) == 0;
+}
+
+/* Shebang selects the mode when the path does not. Only bettersh, or env
+   bettersh, is modern. Anything else, including a missing shebang, stays strict. */
 static int shebang_is_modern(const char *src, size_t len) {
     if (len < 2 || src[0] != '#' || src[1] != '!') {
         return 0;
@@ -294,6 +309,9 @@ struct Invoke {
     int dump_bc;
     int trace_bc;
     int do_interp;
+    int compile;
+    int bytecode;
+    const char *output;
     int cflag;
     int sflag;
     int monitor_set;
@@ -347,6 +365,25 @@ static int parse_invoke(int argc, char **argv, struct Invoke *inv) {
             }
             if (strcmp(arg, "--interp") == 0) {
                 inv->do_interp = 1;
+                i++;
+                continue;
+            }
+            if (strcmp(arg, "--compile") == 0) {
+                inv->compile = 1;
+                i++;
+                continue;
+            }
+            if (strcmp(arg, "--bytecode") == 0) {
+                inv->bytecode = 1;
+                i++;
+                continue;
+            }
+            if (strcmp(arg, "--output") == 0) {
+                if (i + 1 >= argc) {
+                    fprintf(stderr, "bettersh: --output requires an argument\n");
+                    return 2;
+                }
+                inv->output = argv[++i];
                 i++;
                 continue;
             }
@@ -414,7 +451,7 @@ static int run_text(const char *path, char *src, size_t len, int argc, char **ar
     if (!src) {
         return 1;
     }
-    if (modern_ok && shebang_is_modern(src, len)) {
+    if (modern_ok && (path_is_btr(path) || shebang_is_modern(src, len))) {
         status = modern_script(path, src, len, argc, argv, environ, dump_ast, dump_bc, trace, do_interp, exe);
         free(src);
         return status;
@@ -508,6 +545,31 @@ int main(int argc, char **argv) {
         }
         av[nac] = NULL;
         inv.start.stdin_mode = 1;
+    }
+    if (inv.compile || inv.bytecode) {
+        if (!file) {
+            usage(stderr);
+            return 1;
+        }
+        if (inv.compile) {
+            size_t len = 0;
+            char *src = read_file(file, &len);
+            int modern;
+            int rc;
+            if (!inv.output) {
+                fprintf(stderr, "bettersh: --compile requires --output\n");
+                free(src);
+                return 2;
+            }
+            if (!src) {
+                return 1;
+            }
+            modern = path_is_btr(file) || shebang_is_modern(src, len);
+            rc = bcode_store(file, src, len, inv.output, modern);
+            free(src);
+            return rc;
+        }
+        return bcode_run(argv[0], file, nac, av, environ, &inv.start);
     }
     if (!inv.interactive_set && inv.start.stdin_mode && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO)) {
         inv.start.interactive = 1;

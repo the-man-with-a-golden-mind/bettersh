@@ -621,6 +621,28 @@ static char *take_mod_path(Parser *p) {
         buf = next;
         m_advance(p);
     }
+    /* A trailing .btr or .bsh is part of the path. The resolver rewrites .bsh. */
+    while (!p->sc.failed && p->sc.kind == TK_DOT) {
+        const char *part;
+        size_t a;
+        size_t b;
+        char *next;
+        m_advance(p);
+        if (p->sc.kind != TK_IDENT) {
+            m_fail(p, "expected name");
+            return NULL;
+        }
+        part = p->sc.text ? p->sc.text : "";
+        a = strlen(buf);
+        b = strlen(part);
+        next = arena_alloc(p->arena, a + b + 2);
+        memcpy(next, buf, a);
+        next[a] = '.';
+        memcpy(next + a + 1, part, b);
+        next[a + b + 1] = '\0';
+        buf = next;
+        m_advance(p);
+    }
     return p->sc.failed ? NULL : buf;
 }
 

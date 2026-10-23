@@ -91,5 +91,6 @@ void ienv_bind(IEnv *env, const char *name, Value *value);
 int ienv_len(const IEnv *env);
 const char *ienv_name_at(const IEnv *env, int index);
 Value *ienv_value_at(const IEnv *env, int index);
+IEnv *ienv_parent(const IEnv *env);
 
 #endif

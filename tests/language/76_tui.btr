@@ -1,0 +1,110 @@
+#!/usr/bin/env bettersh
+import std/tui
+
+let s = tui.screen(22, 9)
+let s = tui.place(s, tui.window("Files", 16, 6), 0, 0)
+let s = tui.place(s, tui.list(["one", "two", "three"], 12, 3), 2, 2)
+let s = tui.place(s, tui.field(10), 0, 6)
+let s = tui.place(s, tui.button("Save"), 11, 6)
+let s = tui.place(s, tui.label("a\tb"), 0, 8)
+println(s.focus)
+println(tui.paint(s))
+
+let s = tui.press(s, "down")
+let s = tui.press(s, "enter")
+println(s.items[1].widget.at)
+println(s.items[1].widget.hit)
+println(s.items[1].widget.top)
+
+let s = tui.press(s, "tab")
+let kept = s
+let s = tui.press(s, "a")
+let s = tui.press(s, "b")
+let s = tui.press(s, chr(233))
+println(kept.items[2].widget.value)
+println(s.items[2].widget.value)
+println(s.focus)
+println(tui.paint(s))
+
+let s = tui.press(s, "tab")
+let s = tui.press(s, " ")
+println(s.items[3].widget.hit)
+let s = tui.press(s, "x")
+println(s.items[3].widget.hit)
+let s = tui.press(s, "tab")
+println(s.focus)
+
+let w = tui.write(tui.window("In", 12, 5), "gone")
+let w = tui.show(w, tui.field(8))
+let box = tui.place(tui.screen(14, 6), w, 1, 0)
+let box = tui.press(box, "Z")
+println(box.items[0].widget.child.value)
+println(tui.paint(box))
+
+let clip = tui.screen(4, 1)
+let clip = tui.place(clip, tui.label("XXXX"), 0, 0)
+let clip = tui.place(clip, tui.label("y"), 1, 0)
+println(tui.paint(clip))
+let off = tui.place(tui.screen(4, 1), tui.label("a\nb"), 0, 0 - 1)
+println(tui.paint(off))
+let side = tui.place(tui.screen(4, 1), tui.label("ab"), 0 - 1, 0)
+println(tui.paint(side))
+
+println(tui.window("T", 1, 1).cols)
+println(tui.window("T", 1, 1).rows)
+println(tui.field(1).cols)
+println(tui.screen(0, 0).cols)
+println(tui.paint(tui.screen(0, 0)))
+
+let empty = tui.place(tui.screen(6, 2), tui.list([], 4, 2), 0, 0)
+let empty = tui.press(empty, "enter")
+println(empty.items[0].widget.hit)
+println(empty.items[0].widget.at)
+let empty = tui.press(empty, "down")
+println(empty.items[0].widget.at)
+
+let named = tui.place(tui.screen(8, 1), tui.fill(tui.field(8), "abcd"), 0, 0)
+println(tui.paint(named))
+let named = tui.press(named, "home")
+let named = tui.press(named, "delete")
+let named = tui.press(named, "end")
+let named = tui.press(named, "backspace")
+let named = tui.press(named, "enter")
+let named = tui.press(named, "ctrl-c")
+println(named.items[0].widget.value)
+println(named.items[0].widget.cursor)
+
+let wide = tui.place(tui.screen(8, 1), tui.fill(tui.field(6), "abcdef"), 0, 0)
+println(tui.paint(wide))
+
+let menu = tui.list(["a", "b", "c", "d", "e"], 4, 2)
+let menu = tui.place(tui.screen(4, 2), menu, 0, 0)
+let menu = tui.press(menu, "pagedown")
+println(menu.items[0].widget.at)
+println(menu.items[0].widget.top)
+println(tui.paint(menu))
+let menu = tui.press(menu, "up")
+println(menu.items[0].widget.at)
+println(menu.items[0].widget.top)
+let menu = tui.press(menu, "end")
+println(menu.items[0].widget.at)
+let menu = tui.press(menu, "pageup")
+println(menu.items[0].widget.at)
+
+let full = tui.field(4)
+let i = 0
+while i < 241 {
+  let full = tui.press(tui.place(tui.screen(4, 1), full, 0, 0), "a").items[0].widget
+  let i = i + 1
+}
+println(full.value.length)
+println(full.cursor)
+
+let plain = tui.screen(8, 3)
+let plain = tui.place(plain, tui.field(4), 0, 2)
+let plain = tui.place(plain, tui.label("x"), 5, 2)
+let plain = tui.place(plain, tui.write(tui.window("N", 8, 2), "hi"), 0, 0)
+println(plain.focus)
+let plain = tui.press(plain, "tab")
+println(plain.focus)
+println(tui.paint(plain))

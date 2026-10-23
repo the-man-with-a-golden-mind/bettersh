@@ -180,6 +180,10 @@ typedef struct EvalCtx {
     HistLine *hist;
     uint32_t nhist;
     uint32_t chist;
+    int hist_bad;
+    int hist_read_err;
+    int hist_write_err;
+    int hist_loading;
     /* Set by arith_get when a value is not an integer. Empty means no error. */
     char arith_msg[192];
     char scratch[32];

@@ -4,7 +4,8 @@ bin=${1:?}
 root=$(CDPATH= cd "$(dirname "$0")/../.." && pwd)
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
-python3 "$root/tests/differential/fuzz.py" "$d" 1000 || exit 1
+count=${BETTERSH_FUZZ_COUNT:-1000}
+python3 "$root/tests/differential/fuzz.py" "$d" "$count" || exit 1
 check() {
     f=$1
     "$bin" --interp "$f" >"$d/io" 2>"$d/ie"
@@ -19,16 +20,16 @@ check() {
     fi
 }
 n=0
-for f in "$d"/s*.bsh; do
+for f in "$d"/s*.btr; do
     [ -f "$f" ] || continue
     check "$f"
     n=$((n + 1))
 done
-if [ "$n" -ne 1000 ]; then
-    printf 'FAIL generated %s scripts\n' "$n" >&2
+if [ "$n" -ne "$count" ]; then
+    printf 'FAIL generated %s scripts, wanted %s\n' "$n" "$count" >&2
     exit 1
 fi
-for f in "$root"/tests/differential/corpus/*.bsh; do
+for f in "$root"/tests/differential/corpus/*.btr; do
     [ -f "$f" ] || continue
     check "$f"
 done

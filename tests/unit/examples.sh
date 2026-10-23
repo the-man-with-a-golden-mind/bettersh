@@ -39,7 +39,7 @@ posix() {
         diff -u "$d/de" "$d/be" | head -n 20 >&2
     fi
 }
-expect words.bsh <<'EOF'
+expect words.btr <<'EOF'
 one,fish,two,fish,red,fish,blue,fish
 4
 one...
@@ -47,12 +47,12 @@ one...
 true
 true
 EOF
-expect scores.bsh <<'EOF'
+expect scores.btr <<'EOF'
 ada,cam
 249
 ada 91
 EOF
-expect paths.bsh <<'EOF'
+expect paths.btr <<'EOF'
 /src/main.c
   base main.c
   dir /src
@@ -81,10 +81,10 @@ README
 /opt/bin
 README
 EOF
-expect primes.bsh <<'EOF'
+expect primes.btr <<'EOF'
 2,3,5,7,11,13,17,19
 EOF
-expect counter.bsh <<'EOF'
+expect counter.btr <<'EOF'
 11
 12
 13

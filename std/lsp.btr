@@ -1,0 +1,627 @@
+#!/usr/bin/env bettersh
+
+import std/json
+import std/path
+import std/strings
+
+# Speaks Language Server Protocol on a pipe. The editor attaches any server command.
+
+fn language(ext) {
+  if ext == null { return "" }
+  if ext == "btr" { return "bettersh" }
+  if ext == "py" { return "python" }
+  if ext == "rs" { return "rust" }
+  if ext == "js" { return "javascript" }
+  return ext
+}
+
+fn hex_byte(n) {
+  let digits = "0123456789ABCDEF"
+  return "@{ digits[n / 16] }@{ digits[n % 16] }"
+}
+
+fn hex_digit(ch) {
+  if ch >= "0" && ch <= "9" { return ord(ch) - 48 }
+  if ch >= "a" && ch <= "f" { return ord(ch) - 87 }
+  if ch >= "A" && ch <= "F" { return ord(ch) - 55 }
+  return 0 - 1
+}
+
+fn unreserved(n) {
+  if n >= 65 && n <= 90 { return true }
+  if n >= 97 && n <= 122 { return true }
+  if n >= 48 && n <= 57 { return true }
+  if n == 45 || n == 46 || n == 95 || n == 126 || n == 47 { return true }
+  return false
+}
+
+fn encode_path(text) {
+  let raw = bytes(text)
+  let parts = []
+  let i = 0
+  while i < raw.length {
+    let n = raw[i]
+    if unreserved(n) { let parts = parts.push(chr(n)) }
+    else {
+      let parts = parts.push("%")
+      let parts = parts.push(hex_byte(n))
+    }
+    let i = i + 1
+  }
+  return parts.join("")
+}
+
+fn file_uri(text) {
+  return "file://@{ encode_path(text) }"
+}
+
+fn uri_path(uri) {
+  if uri == null || !strings.starts(uri, "file://") { return uri }
+  let rest = uri.slice(7, uri.length)
+  let raw = []
+  let i = 0
+  while i < rest.length {
+    if rest[i] == "%" && i + 2 < rest.length {
+      let hi = hex_digit(rest[i + 1])
+      let lo = hex_digit(rest[i + 2])
+      if hi >= 0 && lo >= 0 {
+        let raw = raw.push(hi * 16 + lo)
+        let i = i + 3
+      } else {
+        let chunk = bytes(rest[i])
+        let j = 0
+        while j < chunk.length {
+          let raw = raw.push(chunk[j])
+          let j = j + 1
+        }
+        let i = i + 1
+      }
+    } else {
+      let chunk = bytes(rest[i])
+      let j = 0
+      while j < chunk.length {
+        let raw = raw.push(chunk[j])
+        let j = j + 1
+      }
+      let i = i + 1
+    }
+  }
+  return unbytes(raw)
+}
+
+fn absolute(text, root) {
+  if text.length > 0 && text[0] == "/" { return text }
+  if root.length > 0 && root[0] == "/" { return path.join(root, text) }
+  let pwd = capture("pwd")
+  if pwd == null { return text }
+  return path.join(pwd.trim(), text)
+}
+
+fn unit(ch) {
+  if ord(ch) > 65535 { return 2 }
+  return 1
+}
+
+fn to_utf16(line, col) {
+  if line == null { return 0 }
+  if col < 0 { let col = 0 }
+  if col > line.length { let col = line.length }
+  let n = 0
+  let i = 0
+  while i < col {
+    let n = n + unit(line[i])
+    let i = i + 1
+  }
+  return n
+}
+
+fn from_utf16(line, units) {
+  if line == null { return 0 }
+  if units < 0 { let units = 0 }
+  let n = 0
+  let i = 0
+  while i < line.length {
+    let w = unit(line[i])
+    if n + w > units { return i }
+    let n = n + w
+    let i = i + 1
+  }
+  return i
+}
+
+fn one_line(text) {
+  if text == null || kind(text) != "string" { return "" }
+  return text.replace("\r", " ").replace("\n", " ").trim()
+}
+
+fn take_len(val) {
+  if val.length == 0 { return 0 - 1 }
+  let n = 0
+  let i = 0
+  while i < val.length {
+    let ch = val[i]
+    if ch < "0" || ch > "9" { return 0 - 1 }
+    let n = n * 10 + (ord(ch) - 48)
+    if n > 8388608 { return 0 - 1 }
+    let i = i + 1
+  }
+  return n
+}
+
+fn header_len(header) {
+  let lines = header.split("\r\n")
+  let found = false
+  let n = 0 - 1
+  let i = 0
+  while i < lines.length {
+    let line = lines[i]
+    let i = i + 1
+    let c = line.index(":")
+    if c > 0 {
+      let name = line.slice(0, c).trim().lower()
+      if name == "content-length" {
+        let n = take_len(line.slice(c + 1, line.length).trim())
+        let found = true
+      }
+    }
+  }
+  if !found { return 0 - 1 }
+  return n
+}
+
+fn fresh(id, full, text, root, file) {
+  return {
+    id: id,
+    next: 1,
+    inbox: "",
+    path: file,
+    uri: file_uri(full),
+    lang: language(path.ext(file)),
+    text: text,
+    version: 1,
+    diags: [],
+    items: [],
+    pick: 0,
+    shown: "",
+    ready: false,
+    dead: false,
+    shut: false,
+    got: false,
+    wait: 0,
+    result: null,
+    hover: "",
+    jump_uri: "",
+    jump_line: 0,
+    jump_col: 0,
+    jump_ok: false,
+    hold: false,
+    fail: "",
+    root: root
+  }
+}
+
+fn send_json(session, text) {
+  if session == null || session.dead || session.shut { return session }
+  if text == null { return map_set(session, "dead", true) }
+  let n = bytes(text).length
+  let frame = "Content-Length: @{ n }\r\n\r\n@{ text }"
+  if pipe_write(session.id, frame) != true { return map_set(session, "dead", true) }
+  return session
+}
+
+fn note(method, params) {
+  let msg = {}
+  let msg = map_set(msg, "jsonrpc", "2.0")
+  let msg = map_set(msg, "method", method)
+  if params != null { let msg = map_set(msg, "params", params) }
+  return json.stringify(msg)
+}
+
+fn rpc(id, method, params) {
+  let msg = {}
+  let msg = map_set(msg, "jsonrpc", "2.0")
+  let msg = map_set(msg, "id", id)
+  let msg = map_set(msg, "method", method)
+  let msg = map_set(msg, "params", params)
+  return json.stringify(msg)
+}
+
+fn reply_ok(id) {
+  let msg = {}
+  let msg = map_set(msg, "jsonrpc", "2.0")
+  let msg = map_set(msg, "id", id)
+  let msg = map_set(msg, "result", null)
+  return json.stringify(msg)
+}
+
+fn reply_err(id) {
+  let err = {}
+  let err = map_set(err, "code", 0 - 32601)
+  let err = map_set(err, "message", "method not found")
+  let msg = {}
+  let msg = map_set(msg, "jsonrpc", "2.0")
+  let msg = map_set(msg, "id", id)
+  let msg = map_set(msg, "error", err)
+  return json.stringify(msg)
+}
+
+fn init_params(session) {
+  let sync = {}
+  let sync = map_set(sync, "didSave", true)
+  let item = {}
+  let item = map_set(item, "snippetSupport", false)
+  let comp = {}
+  let comp = map_set(comp, "completionItem", item)
+  let hover_caps = {}
+  let hover_caps = map_set(hover_caps, "contentFormat", ["plaintext"])
+  let td = {}
+  let td = map_set(td, "synchronization", sync)
+  let td = map_set(td, "completion", comp)
+  let td = map_set(td, "hover", hover_caps)
+  let td = map_set(td, "definition", {})
+  let caps = {}
+  let caps = map_set(caps, "textDocument", td)
+  let root_uri = null
+  if session.root.length > 0 && session.root[0] == "/" { let root_uri = file_uri(session.root) }
+  let params = {}
+  let params = map_set(params, "processId", null)
+  let params = map_set(params, "rootUri", root_uri)
+  return map_set(params, "capabilities", caps)
+}
+
+fn open_params(session) {
+  let td = {}
+  let td = map_set(td, "uri", session.uri)
+  let td = map_set(td, "languageId", session.lang)
+  let td = map_set(td, "version", session.version)
+  let td = map_set(td, "text", session.text)
+  let params = {}
+  return map_set(params, "textDocument", td)
+}
+
+fn note_ready(session) {
+  if session.ready { return session }
+  let session = map_set(session, "ready", true)
+  let session = send_json(session, note("initialized", {}))
+  return send_json(session, note("textDocument/didOpen", open_params(session)))
+}
+
+fn range_at(range) {
+  if range == null || kind(range) != "map" || !range.has("start") { return null }
+  let start = range.start
+  if start == null || kind(start) != "map" || !start.has("line") { return null }
+  let col = 0
+  if start.has("character") { let col = start.character }
+  return { line: start.line, col: col }
+}
+
+fn loc_of(result) {
+  if result == null { return null }
+  let item = result
+  if kind(result) == "array" {
+    if result.length == 0 { return null }
+    let item = result[0]
+  }
+  if kind(item) != "map" { return null }
+  if item.has("targetUri") {
+    let range = null
+    if item.has("targetSelectionRange") { let range = item.targetSelectionRange }
+    else if item.has("targetRange") { let range = item.targetRange }
+    let at = range_at(range)
+    if at == null { return null }
+    return { uri: item.targetUri, line: at.line, col: at.col }
+  }
+  if item.has("uri") && item.has("range") {
+    let at = range_at(item.range)
+    if at == null { return null }
+    return { uri: item.uri, line: at.line, col: at.col }
+  }
+  return null
+}
+
+fn items_of(result) {
+  if result == null { return [] }
+  let list = result
+  if kind(result) == "map" {
+    if !result.has("items") || kind(result.items) != "array" { return [] }
+    let list = result.items
+  }
+  if kind(list) != "array" { return [] }
+  let out = []
+  let i = 0
+  while i < list.length {
+    let item = list[i]
+    let i = i + 1
+    if kind(item) == "map" {
+      let text = ""
+      if item.has("insertText") && kind(item.insertText) == "string" { let text = item.insertText }
+      else if item.has("label") && kind(item.label) == "string" { let text = item.label }
+      if text != "" { let out = out.push(text) }
+    }
+  }
+  return out
+}
+
+fn flatten(value) {
+  if value == null { return "" }
+  let k = kind(value)
+  if k == "string" { return value }
+  if k == "map" && value.has("value") && kind(value.value) == "string" { return value.value }
+  if k == "array" {
+    let parts = []
+    let i = 0
+    while i < value.length {
+      let piece = flatten(value[i])
+      if piece != "" { let parts = parts.push(piece) }
+      let i = i + 1
+    }
+    return parts.join(" ")
+  }
+  return ""
+}
+
+fn take_diags(session, params) {
+  if params == null || kind(params) != "map" { return session }
+  if !params.has("uri") || params.uri != session.uri { return session }
+  if !params.has("diagnostics") || kind(params.diagnostics) != "array" { return session }
+  let list = params.diagnostics
+  let out = []
+  let i = 0
+  while i < list.length {
+    let d = list[i]
+    let i = i + 1
+    if kind(d) == "map" && d.has("message") && kind(d.message) == "string" && d.has("range") {
+      let at = range_at(d.range)
+      if at != null {
+        let endc = at.col + 1
+        if d.range.has("end") && kind(d.range.end) == "map" && d.range.end.has("character") { let endc = d.range.end.character }
+        if endc < at.col { let endc = at.col }
+        let out = out.push({ line: at.line, start: at.col, end: endc, message: one_line(d.message) })
+      }
+    }
+  }
+  return map_set(session, "diags", out)
+}
+
+fn on_request(session, id, method) {
+  if method == "workspace/configuration" || method == "window/workDoneProgress/create" { return send_json(session, reply_ok(id)) }
+  if method == "client/registerCapability" || method == "window/showMessageRequest" { return send_json(session, reply_ok(id)) }
+  return send_json(session, reply_err(id))
+}
+
+fn on_response(session, msg) {
+  let id = msg.id
+  if session.wait == 0 || id != session.wait { return session }
+  let session = map_set(session, "wait", 0)
+  let session = map_set(session, "got", true)
+  if msg.has("error") {
+    let fail = "stopped"
+    if msg.error != null && kind(msg.error) == "map" && msg.error.has("message") && kind(msg.error.message) == "string" {
+      let fail = one_line(msg.error.message)
+    }
+    let session = map_set(session, "fail", fail)
+    return map_set(session, "result", null)
+  }
+  let result = null
+  if msg.has("result") { let result = msg.result }
+  let session = map_set(session, "result", result)
+  if id == 1 { return note_ready(session) }
+  return session
+}
+
+fn dispatch(session, msg) {
+  if msg.has("method") {
+    let method = msg.method
+    if msg.has("id") && msg.id != null { return on_request(session, msg.id, method) }
+    if method == "textDocument/publishDiagnostics" && msg.has("params") { return take_diags(session, msg.params) }
+    return session
+  }
+  if msg.has("id") { return on_response(session, msg) }
+  return session
+}
+
+fn peel(session) {
+  let inbox = session.inbox
+  let at = inbox.index("\r\n\r\n")
+  if at < 0 { return { session: session, kind: "need", msg: null } }
+  let n = header_len(inbox.slice(0, at))
+  if n < 0 {
+    let session = map_set(session, "dead", true)
+    let session = map_set(session, "inbox", "")
+    return { session: session, kind: "bad", msg: null }
+  }
+  let raw = bytes(inbox)
+  let body_at = at + 4
+  if raw.length < body_at + n { return { session: session, kind: "need", msg: null } }
+  let body = unbytes(raw.slice(body_at, body_at + n))
+  let rest = unbytes(raw.slice(body_at + n, raw.length))
+  let session = map_set(session, "inbox", rest)
+  let msg = json.parse(body)
+  if msg == null || kind(msg) != "map" { return { session: session, kind: "skip", msg: null } }
+  return { session: session, kind: "ok", msg: msg }
+}
+
+fn consume(session) {
+  if session == null { return null }
+  let going = true
+  while going && !session.dead {
+    let got = peel(session)
+    let session = got.session
+    if got.kind == "need" || got.kind == "bad" { let going = false }
+    else if got.kind == "ok" { let session = dispatch(session, got.msg) }
+  }
+  return session
+}
+
+fn pull(session, ms) {
+  if session == null || session.dead || session.shut { return session }
+  let chunk = pipe_read(session.id, ms)
+  if chunk == null { return map_set(session, "dead", true) }
+  if chunk == "" { return session }
+  return map_set(session, "inbox", "@{ session.inbox }@{ chunk }")
+}
+
+fn wait_for(session, rounds) {
+  let n = 0
+  while n < rounds && !session.got && !session.dead {
+    let session = consume(session)
+    if !session.got && !session.dead {
+      let session = pull(session, 30)
+      let session = consume(session)
+    }
+    let n = n + 1
+  }
+  return session
+}
+
+# Reads whatever has already arrived. ms is the wait for one read. rounds is how many reads to try.
+fn pump(session, ms, rounds) {
+  if session == null { return null }
+  let n = 0
+  let empty = 0
+  while n < rounds && !session.dead && !session.shut {
+    let had = session.inbox.length
+    let session = pull(session, ms)
+    if session.inbox.length == had { let empty = empty + 1 }
+    else { let empty = 0 }
+    let session = consume(session)
+    let n = n + 1
+    if ms == 0 { return session }
+    if empty >= 5 && session.inbox.length == 0 { return session }
+  }
+  return session
+}
+
+fn pos_params(session, line, row, col) {
+  let pos = {}
+  let pos = map_set(pos, "line", row)
+  let pos = map_set(pos, "character", to_utf16(line, col))
+  let td = {}
+  let td = map_set(td, "uri", session.uri)
+  let params = {}
+  let params = map_set(params, "textDocument", td)
+  return map_set(params, "position", pos)
+}
+
+fn request(session, method, params, rounds) {
+  let id = session.next
+  let session = map_set(session, "next", id + 1)
+  let session = map_set(session, "got", false)
+  let session = map_set(session, "wait", id)
+  let session = map_set(session, "result", null)
+  let session = map_set(session, "fail", "")
+  let session = send_json(session, rpc(id, method, params))
+  return wait_for(session, rounds)
+}
+
+# Starts cmd and opens path. A missing reply leaves the session up so stop can close it.
+fn begin(cmd, file, text, root) {
+  if cmd == null || cmd == "" { return null }
+  if file == null { let file = "" }
+  if text == null { let text = "" }
+  if root == null { let root = "" }
+  let full = absolute(file, root)
+  let job = pipe_open(cmd)
+  let session = fresh(job, full, text, root, file)
+  let id = session.next
+  let session = map_set(session, "next", id + 1)
+  let session = map_set(session, "wait", id)
+  let session = map_set(session, "got", false)
+  let session = send_json(session, rpc(id, "initialize", init_params(session)))
+  let session = wait_for(session, 100)
+  if session.ready { return pump(session, 30, 20) }
+  return session
+}
+
+# Sends the whole document. Items from the previous completion are cleared.
+fn sync(session, text) {
+  if session == null || session.shut { return session }
+  let session = map_set(session, "text", text)
+  let session = map_set(session, "items", [])
+  let session = map_set(session, "pick", 0)
+  if !session.ready || session.dead { return session }
+  let ver = session.version + 1
+  let session = map_set(session, "version", ver)
+  let td = {}
+  let td = map_set(td, "uri", session.uri)
+  let td = map_set(td, "version", ver)
+  let change = {}
+  let change = map_set(change, "text", text)
+  let params = {}
+  let params = map_set(params, "textDocument", td)
+  let params = map_set(params, "contentChanges", [change])
+  return send_json(session, note("textDocument/didChange", params))
+}
+
+fn saved(session) {
+  if session == null || !session.ready || session.dead || session.shut { return session }
+  let td = {}
+  let td = map_set(td, "uri", session.uri)
+  let params = {}
+  let params = map_set(params, "textDocument", td)
+  return send_json(session, note("textDocument/didSave", params))
+}
+
+fn hover(session, line, row, col) {
+  if session == null || !session.ready || session.dead { return session }
+  let session = request(session, "textDocument/hover", pos_params(session, line, row, col), 20)
+  let text = ""
+  if session.got && session.result != null && kind(session.result) == "map" && session.result.has("contents") {
+    let text = one_line(flatten(session.result.contents))
+  }
+  return map_set(session, "hover", text)
+}
+
+fn complete(session, line, row, col) {
+  if session == null || !session.ready || session.dead { return session }
+  let session = request(session, "textDocument/completion", pos_params(session, line, row, col), 20)
+  let items = []
+  if session.got { let items = items_of(session.result) }
+  let session = map_set(session, "items", items)
+  return map_set(session, "pick", 0)
+}
+
+fn define(session, line, row, col) {
+  if session == null || !session.ready || session.dead { return session }
+  let session = request(session, "textDocument/definition", pos_params(session, line, row, col), 20)
+  let loc = null
+  if session.got { let loc = loc_of(session.result) }
+  if loc == null { return map_set(session, "jump_ok", false) }
+  let session = map_set(session, "jump_ok", true)
+  let session = map_set(session, "jump_uri", loc.uri)
+  let session = map_set(session, "jump_line", loc.line)
+  return map_set(session, "jump_col", loc.col)
+}
+
+# The diagnostic on line, or the first one, or "".
+fn line_message(session, line) {
+  if session == null { return "" }
+  let list = session.diags
+  let first = ""
+  let i = 0
+  while i < list.length {
+    let d = list[i]
+    if first == "" { let first = d.message }
+    if d.line == line { return d.message }
+    let i = i + 1
+  }
+  return first
+}
+
+# Closes the server once. A second call does nothing.
+fn stop(session) {
+  if session == null || session.shut { return null }
+  if session.ready && !session.dead {
+    let td = {}
+    let td = map_set(td, "uri", session.uri)
+    let params = {}
+    let params = map_set(params, "textDocument", td)
+    let session = send_json(session, note("textDocument/didClose", params))
+    let session = request(session, "shutdown", null, 5)
+    let session = send_json(session, note("exit", null))
+    let session = pump(session, 30, 10)
+  }
+  let session = map_set(session, "shut", true)
+  pipe_close(session.id)
+  return null
+}

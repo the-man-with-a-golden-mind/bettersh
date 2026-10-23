@@ -112,6 +112,23 @@ typedef enum BuiltinId {
     BI_TERM_COLS,
     BI_TERM_ROWS,
     BI_TERM_TTY,
+    BI_BYTES,
+    BI_UNBYTES,
+    BI_FS_APPEND,
+    BI_FS_MKDIR,
+    BI_FS_RMDIR,
+    BI_FS_LIST,
+    BI_FS_KIND,
+    BI_FS_SIZE,
+    BI_READALL,
+    BI_FS_LOAD,
+    BI_FS_SAVE,
+    BI_PIPE_OPEN,
+    BI_PIPE_WRITE,
+    BI_PIPE_READ,
+    BI_PIPE_CLOSE,
+    BI_KIND,
+    BI_MAP_SET,
     BI_COUNT
 } BuiltinId;
 

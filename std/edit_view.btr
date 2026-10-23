@@ -1,0 +1,296 @@
+#!/usr/bin/env bettersh
+
+import std/ui
+import std/strings
+import std/theme
+import std/edit_syntax
+
+# Screen for the editor. A theme with no colors draws the same text as before.
+
+fn gutter_cols(buf) {
+  let n = buf.lines.length
+  if n < 1 { let n = 1 }
+  let w = 1
+  let lim = 10
+  while n >= lim && w < 16 {
+    let w = w + 1
+    let lim = lim * 10
+  }
+  if w < 4 { let w = 4 }
+  return w + 1
+}
+
+fn carry(buf, row, top, left) {
+  return {
+    lines: buf.lines,
+    row: row,
+    col: buf.col,
+    mode: buf.mode,
+    top: top,
+    pending: buf.pending,
+    yank: buf.yank,
+    undo: buf.undo,
+    dirty: buf.dirty,
+    path: buf.path,
+    cmd: buf.cmd,
+    hint: buf.hint,
+    confirm: buf.confirm,
+    request: buf.request,
+    find: buf.find,
+    anchor: buf.anchor,
+    left: left,
+    eol: buf.eol,
+    redo: buf.redo,
+    lsp: buf.lsp,
+    theme: buf.theme
+  }
+}
+
+fn fit(buf, cols, rows) {
+  if cols < 1 { let cols = 1 }
+  if rows < 2 { let rows = 2 }
+  let view = rows - 2
+  if view < 1 { let view = 1 }
+  let row = buf.row
+  if row < 0 { let row = 0 }
+  if row >= buf.lines.length { let row = buf.lines.length - 1 }
+  let top = buf.top
+  if top < 0 { let top = 0 }
+  if row < top { let top = row }
+  if row >= top + view { let top = row - view + 1 }
+  if top < 0 { let top = 0 }
+  let gutter = gutter_cols(buf)
+  let room = cols - 1 - gutter
+  if room < 1 { let room = 1 }
+  let line = buf.lines[row].visible()
+  let caret = ui.width_at(line, buf.col)
+  let span = ui.span(line, buf.col)
+  let left = buf.left
+  if left < 0 { let left = 0 }
+  if caret < left { let left = caret }
+  if caret + span > left + room { let left = caret + span - room }
+  if left < 0 { let left = 0 }
+  if caret < left { let left = caret }
+  return carry(buf, row, top, left)
+}
+
+fn digits(n) {
+  let text = "@{ n } "
+  return strings.slice(text, 0, text.length - 1)
+}
+
+fn visible(text) {
+  let n = text.length
+  if n == 0 { return "" }
+  return text.visible()
+}
+
+fn gutter(buf, row) {
+  let w = gutter_cols(buf) - 1
+  return "@{ strings.pad_left(digits(row + 1), w, " ") } "
+}
+
+fn row_text(buf, row, room) {
+  return "@{ gutter(buf, row) }@{ ui.take(buf.lines[row], buf.left, room) }"
+}
+
+fn status_line(buf) {
+  let mark = ""
+  if buf.dirty { let mark = "*" }
+  return visible("@{ buf.path }@{ mark }  @{ buf.row + 1 }:@{ buf.col + 1 }  @{ buf.mode }")
+}
+
+fn bottom_line(buf) {
+  if buf.mode == "command" { return visible(":@{ buf.cmd }") }
+  if buf.mode == "search" { return visible("/@{ buf.cmd }") }
+  return buf.hint
+}
+
+fn frame(buf, cols, rows) {
+  let buf = fit(buf, cols, rows)
+  if cols < 1 { let cols = 1 }
+  if rows < 2 { let rows = 2 }
+  let view = rows - 2
+  if view < 1 { let view = 1 }
+  let room = cols - gutter_cols(buf)
+  if room < 1 { let room = 1 }
+  let screen = ui.blank(cols, rows)
+  let i = 0
+  while i < view {
+    let row = buf.top + i
+    if row < buf.lines.length { let screen = ui.put(screen, i, 0, row_text(buf, row, room)) }
+    let i = i + 1
+  }
+  let screen = ui.put(screen, rows - 2, 0, status_line(buf))
+  return ui.paint(ui.put(screen, rows - 1, 0, bottom_line(buf)))
+}
+
+fn esc(seq) {
+  print("@{ chr(27) }[@{ seq }")
+}
+
+fn simple(line) {
+  let i = 0
+  while i < line.length {
+    if line[i] == "\t" || ord(line[i]) > 127 { return false }
+    let i = i + 1
+  }
+  return true
+}
+
+fn paint_diag(marks, start, end) {
+  if start < 0 { let start = 0 }
+  if end <= start { let end = start + 1 }
+  if start >= marks.length { return marks }
+  if end > marks.length { let end = marks.length }
+  let parts = []
+  let i = 0
+  while i < marks.length {
+    let ch = marks[i]
+    if i >= start && i < end { let ch = "d" }
+    let parts = parts.push(ch)
+    let i = i + 1
+  }
+  return parts.join("")
+}
+
+fn diags_of(buf) {
+  if buf.lsp == null { return [] }
+  return buf.lsp.diags
+}
+
+fn marks(buf, row) {
+  let line = buf.lines[row]
+  let text = edit_syntax.line_marks(buf.lines, row, edit_syntax.lang(buf.path))
+  if !simple(line) { return text }
+  let diags = diags_of(buf)
+  let i = 0
+  while i < diags.length {
+    let d = diags[i]
+    if d.line == row { let text = paint_diag(text, d.start, d.end) }
+    let i = i + 1
+  }
+  return text
+}
+
+fn role_style(colors, role) {
+  if role == "c" { return colors.comment }
+  if role == "s" { return colors.string }
+  if role == "k" { return colors.keyword }
+  if role == "n" { return colors.number }
+  if role == "d" { return colors.diag }
+  if role == "f" { return colors.function }
+  if role == "t" { return colors.type }
+  if role == "o" { return colors.constant }
+  if role == "m" { return colors.macro }
+  if role == "v" { return colors.variable }
+  return colors.text
+}
+
+fn color_span(shown, marks, left, colors) {
+  let parts = []
+  let i = 0
+  while i < shown.length {
+    let role = "."
+    let at = left + i
+    if at >= 0 && at < marks.length { let role = marks[at] }
+    let j = i + 1
+    let same = true
+    while same && j < shown.length {
+      let role2 = "."
+      let at2 = left + j
+      if at2 >= 0 && at2 < marks.length { let role2 = marks[at2] }
+      if role2 != role { let same = false }
+      else { let j = j + 1 }
+    }
+    let parts = parts.push(theme.wrap(role_style(colors, role), shown.slice(i, j)))
+    let i = j
+  }
+  return parts.join("")
+}
+
+fn clip(text, limit) {
+  return ui.take(text, 0, limit)
+}
+
+fn draw_color(buf, cols, rows) {
+  let buf = fit(buf, cols, rows)
+  if cols < 1 { let cols = 1 }
+  if rows < 2 { let rows = 2 }
+  let view = rows - 2
+  if view < 1 { let view = 1 }
+  let limit = cols - 1
+  if limit < 1 { let limit = 1 }
+  let text_room = limit - gutter_cols(buf)
+  if text_room < 1 { let text_room = 1 }
+  let colors = buf.theme
+  let i = 0
+  while i < rows {
+    esc("@{ i + 1 };1H")
+    let text = ""
+    if i < view {
+      let row = buf.top + i
+      if row < buf.lines.length {
+        let body = ui.take(buf.lines[row], buf.left, text_room)
+        let text = "@{ theme.wrap(colors.gutter, gutter(buf, row)) }@{ color_span(body, marks(buf, row), buf.left, colors) }"
+      }
+    }
+    if i == rows - 2 { let text = theme.wrap(colors.status, clip(status_line(buf), limit)) }
+    if i == rows - 1 { let text = theme.wrap(colors.hint, clip(bottom_line(buf), limit)) }
+    print(text)
+    esc("K")
+    let i = i + 1
+  }
+  let crow = buf.row - buf.top
+  if crow < 0 { let crow = 0 }
+  if crow >= view { let crow = view - 1 }
+  let caret = ui.width_at(buf.lines[buf.row].visible(), buf.col)
+  let ccol = gutter_cols(buf) + caret - buf.left
+  if ccol >= limit { let ccol = limit - 1 }
+  if ccol < 0 { let ccol = 0 }
+  esc("@{ crow + 1 };@{ ccol + 1 }H")
+  esc("?25h")
+  return null
+}
+
+fn draw(buf, cols, rows) {
+  if theme.themed(buf.theme) {
+    draw_color(buf, cols, rows)
+    return null
+  }
+  let buf = fit(buf, cols, rows)
+  if cols < 1 { let cols = 1 }
+  if rows < 2 { let rows = 2 }
+  let view = rows - 2
+  if view < 1 { let view = 1 }
+  let limit = cols - 1
+  if limit < 1 { let limit = 1 }
+  let text_room = limit - gutter_cols(buf)
+  if text_room < 1 { let text_room = 1 }
+  let status = status_line(buf)
+  let bottom = bottom_line(buf)
+  let i = 0
+  while i < rows {
+    esc("@{ i + 1 };1H")
+    let text = ""
+    if i < view {
+      let row = buf.top + i
+      if row < buf.lines.length { let text = row_text(buf, row, text_room) }
+    }
+    if i == rows - 2 { let text = status }
+    if i == rows - 1 { let text = bottom }
+    print(ui.take(text, 0, limit))
+    esc("K")
+    let i = i + 1
+  }
+  let crow = buf.row - buf.top
+  if crow < 0 { let crow = 0 }
+  if crow >= view { let crow = view - 1 }
+  let caret = ui.width_at(buf.lines[buf.row].visible(), buf.col)
+  let ccol = gutter_cols(buf) + caret - buf.left
+  if ccol >= limit { let ccol = limit - 1 }
+  if ccol < 0 { let ccol = 0 }
+  esc("@{ crow + 1 };@{ ccol + 1 }H")
+  esc("?25h")
+  return null
+}
