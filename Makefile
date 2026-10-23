@@ -28,7 +28,7 @@ bindir   = $(PREFIX)/bin
 stdlibdir = $(PREFIX)/std
 STD = $(wildcard std/*.bsh)
 
-.PHONY: all test test-host debug clean install uninstall
+.PHONY: all test test-host bench debug clean install uninstall
 
 all: bettersh
 
@@ -53,6 +53,10 @@ test: bettersh tests/value_test tests/verify_test
 # Network, the absolute perf threshold, and Apple leaks. Not part of test.
 test-host: bettersh tests/value_test tests/verify_test
 	BETTERSH_NET=1 BETTERSH_PERF=1 BETTERSH_LEAKS=1 ./tests/run.sh
+
+# Wall times. Not part of test, and not the 0.2s perf check.
+bench: bettersh
+	sh bench/vs-sh.sh
 
 debug:
 	$(MAKE) clean

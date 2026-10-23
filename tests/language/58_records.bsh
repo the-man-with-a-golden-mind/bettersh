@@ -1,0 +1,24 @@
+#!/usr/bin/env bettersh
+let rows = [
+  { name: "ada", score: 91 },
+  { name: "bea", score: 70 },
+  { name: "cam", score: 88 }
+]
+let passed = rows.filter(fn(row) { (row.score >= 80) })
+println(passed.map(fn(row) { row.name }).join(","))
+println(rows.reduce(fn(acc, row) { (acc + row.score) }, 0))
+let best = rows.reduce(fn(acc, row) {
+  if row.score > acc.score { return row }
+  return acc
+})
+println("@{ best.name } @{ best.score }")
+let book = { title: "sh", tags: ["posix", "vm"] }
+println(book.tags.join("+"))
+let meta = { title: "sh", year: 2026 }
+println(meta.values.join(","))
+println(meta.keys.join(","))
+println(meta.has("title"))
+println(meta.has("missing"))
+println(meta.remove("title"))
+println(meta.keys.join(","))
+println(meta["year"])

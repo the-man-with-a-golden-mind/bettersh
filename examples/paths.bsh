@@ -1,0 +1,15 @@
+#!/usr/bin/env bettersh
+import std/path
+
+let files = ["/src/main.c", "lib/util.h", "/tmp/", "README"]
+for p in files {
+  println("@{ p }")
+  println("  base @{ path.base(p) }")
+  println("  dir @{ path.dir(p) }")
+  println("  ext @{ path.ext(p) }")
+  println("  stem @{ path.stem(p) }")
+  println("  abs @{ path.is_abs(p) }")
+}
+println(path.join("/opt", "bettersh"))
+println(path.join("/opt/", "bin"))
+println(path.join("", "README"))

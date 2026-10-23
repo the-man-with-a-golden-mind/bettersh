@@ -1,0 +1,8 @@
+#!/usr/bin/env bettersh
+println("A\nB\tC".visible())
+println(chr(65))
+println(chr(0).visible())
+println(ord("Z"))
+println(ord(chr(10)))
+println("ab".slice(0, 1).repeat(3))
+println("".visible())

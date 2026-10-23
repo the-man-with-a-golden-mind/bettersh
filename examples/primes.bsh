@@ -1,0 +1,21 @@
+#!/usr/bin/env bettersh
+
+fn prime(n) {
+  if n < 2 { return false }
+  let i = 2
+  while i * i <= n {
+    if n % i == 0 { return false }
+    let i = i + 1
+  }
+  return true
+}
+
+let found = []
+let n = 2
+while found.length < 8 {
+  if prime(n) {
+    let found = found.push(n)
+  }
+  let n = n + 1
+}
+println(found.join(","))

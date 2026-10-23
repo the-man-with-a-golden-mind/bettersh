@@ -1,0 +1,11 @@
+#!/usr/bin/env bettersh
+import std/strings
+
+let text = "  one fish two fish red fish blue fish  "
+let parts = strings.words(text)
+println(parts.join(","))
+println(strings.count(text, "fish"))
+println(strings.pad_right(parts[0], 6, "."))
+println(strings.pad_left(parts[1], 6, "."))
+println(strings.starts(parts[0], "on"))
+println(strings.ends(parts[parts.length - 1], "sh"))

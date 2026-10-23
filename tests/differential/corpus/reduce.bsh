@@ -1,0 +1,11 @@
+#!/usr/bin/env bettersh
+let nums = [1, 2, 3, 4]
+println(nums.reduce(fn(a, b) { (a + b) }))
+println(nums.reduce(fn(a, b) { (a + b) }, 10))
+println(nums.filter(fn(n) { (n % 2 == 0) }).join(","))
+println(nums.map(fn(n) { (n * n) }).join(","))
+println(nums.slice(1, 3))
+println(nums.slice(0, 0))
+println(nums.pop())
+println(nums.join(","))
+println([].pop() == null)
