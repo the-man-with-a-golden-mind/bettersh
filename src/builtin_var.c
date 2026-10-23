@@ -83,8 +83,12 @@ static void list_marked(EvalCtx *ctx, int want_export) {
         }
         fputs(want_export ? "export " : "readonly ", stdout);
         fputs(var->name, stdout);
+        if (!var->value) {
+            fputc('\n', stdout);
+            continue;
+        }
         fputc('=', stdout);
-        shell_quote(var->value ? var->value : "");
+        shell_quote(var->value);
         fputc('\n', stdout);
     }
 }
@@ -155,10 +159,6 @@ int cmd_export(EvalCtx *ctx, int argc, char **argv) {
                 shell_err(ctx, 0, "export: %s: bad variable name", argv[i]);
                 shell_abort(ctx, 2);
                 return 2;
-            }
-            const char *cur = NULL;
-            if (!env_get(&ctx->env, argv[i], &cur)) {
-                env_set(&ctx->env, argv[i], "");
             }
             env_export(&ctx->env, argv[i], 1);
         }

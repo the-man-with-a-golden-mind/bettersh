@@ -60,7 +60,8 @@ void env_import(Env *env, char **envp) {
 
 int env_get(const Env *env, const char *name, const char **value) {
     int index = find_var(env, name);
-    if (index < 0) {
+    /* A null value is exported but unset. It is not a set empty string. */
+    if (index < 0 || !env->vars[index].value) {
         return 0;
     }
     if (value) {
@@ -115,12 +116,23 @@ int env_set(Env *env, const char *name, const char *value) {
 void env_export(Env *env, const char *name, int on) {
     int index = find_var(env, name);
     if (index < 0) {
-        env_set(env, name, "");
-        index = find_var(env, name);
+        if (!on) {
+            return;
+        }
+        if (env->nvars >= env->cvars) {
+            uint32_t cap = env->cvars ? env->cvars * 2 : 16;
+            env->vars = xrealloc(env->vars, cap * sizeof(EnvVar));
+            env->cvars = cap;
+        }
+        /* Exported and unset. export -p prints the name with no value. */
+        env->vars[env->nvars].name = dup_text(name);
+        env->vars[env->nvars].value = NULL;
+        env->vars[env->nvars].exported = 1;
+        env->vars[env->nvars].readonly = 0;
+        env->nvars++;
+        return;
     }
-    if (index >= 0) {
-        env->vars[index].exported = on ? 1 : 0;
-    }
+    env->vars[index].exported = on ? 1 : 0;
 }
 
 int env_exported(const Env *env, const char *name) {
@@ -182,7 +194,7 @@ char **env_build(const Env *env, char **overlay_names, char **overlay_vals, int 
     char **out = xmalloc(cap * sizeof(char *));
     uint32_t n = 0;
     for (uint32_t i = 0; i < env->nvars; i++) {
-        if (!env->vars[i].exported) {
+        if (!env->vars[i].exported || !env->vars[i].value) {
             continue;
         }
         int skip = 0;

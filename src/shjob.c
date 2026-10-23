@@ -97,6 +97,23 @@ void shjob_free_waits(EvalCtx *ctx) {
     ctx->waited = NULL;
     ctx->nwaited = 0;
     ctx->cwaited = 0;
+    free(ctx->owned);
+    ctx->owned = NULL;
+    ctx->nowned = 0;
+    ctx->cowned = 0;
+}
+
+void shjob_own(EvalCtx *ctx, pid_t pid) {
+    uint32_t cap;
+    if (pid <= 0) {
+        return;
+    }
+    if (ctx->nowned == ctx->cowned) {
+        cap = ctx->cowned ? ctx->cowned * 2 : 8;
+        ctx->owned = xrealloc(ctx->owned, cap * sizeof(pid_t));
+        ctx->cowned = cap;
+    }
+    ctx->owned[ctx->nowned++] = pid;
 }
 
 static void on_chld(int sig) {
@@ -246,6 +263,7 @@ void shjob_parent(pid_t pid, pid_t pgid) {
 }
 
 void shjob_add(EvalCtx *ctx, pid_t pid, char *text) {
+    shjob_own(ctx, pid);
     if (ctx->njobs >= ctx->cjobs) {
         uint32_t cap = ctx->cjobs ? ctx->cjobs * 2 : 4;
         ctx->jobs = xrealloc(ctx->jobs, cap * sizeof(BgJob));

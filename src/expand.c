@@ -2,6 +2,7 @@
 
 #include "process.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fnmatch.h>
 #include <glob.h>
@@ -99,17 +100,113 @@ static int ifs_ws(const char *ifs, char c) {
     return (c == ' ' || c == '\t' || c == '\n') && ifs_has(ifs, c);
 }
 
-static void tilde_sbuf(EvalCtx *ctx, Sbuf *buf) {
-    if (ctx->no_tilde || buf->len == 0 || buf->mask[0] || buf->data[0] != '~') {
-        return;
-    }
-    size_t i = 1;
-    while (i < buf->len && buf->data[i] != '/') {
-        if (buf->mask[i]) {
-            return;
+static int delim_ws(const Sbuf *buf, size_t i, const char *ifs) {
+    return buf->mask[i] == 2 && ifs_ws(ifs, buf->data[i]);
+}
+
+static int delim_nws(const Sbuf *buf, size_t i, const char *ifs) {
+    return buf->mask[i] == 2 && ifs_has(ifs, buf->data[i]) && !ifs_ws(ifs, buf->data[i]);
+}
+
+static int tilde_home(EvalCtx *ctx, const char *user, size_t n, const char **home, char **owned) {
+    *home = NULL;
+    *owned = NULL;
+    if (n == 0) {
+        if (!env_get(&ctx->env, "HOME", home) || !*home) {
+            return 0;
         }
+        return 1;
+    }
+    char *name = dup_n(user, n);
+    struct passwd *pw = getpwnam(name);
+    free(name);
+    if (!pw) {
+        return 0;
+    }
+    *owned = dup_c(pw->pw_dir);
+    *home = *owned;
+    return 1;
+}
+
+/* Tilde expansion sees the original word, before parameter expansion and
+   command substitution. A '~' or ':' from those results (mask 2), or a
+   quoted character (mask 1), is not a login name. */
+static int tilde_end(const Sbuf *buf, size_t i, int assign) {
+    while (i < buf->len && buf->mask[i] == 0 && buf->data[i] != '/' &&
+           !(assign && buf->data[i] == ':')) {
         i++;
     }
+    if (i < buf->len && buf->mask[i] != 0) {
+        return -1;
+    }
+    return (int)i;
+}
+
+/* An assignment expands an unquoted literal tilde at the start and after
+   each literal colon. */
+static void tilde_assign_sbuf(EvalCtx *ctx, Sbuf *buf) {
+    size_t i = 0;
+    if (ctx->no_tilde || buf->len == 0 || !buf->data) {
+        return;
+    }
+    while (i < buf->len) {
+        int boundary = i == 0 || (buf->data[i - 1] == ':' && buf->mask[i - 1] == 0);
+        int j;
+        const char *home = NULL;
+        char *owned = NULL;
+        if (!boundary || buf->data[i] != '~' || buf->mask[i] != 0) {
+            i++;
+            continue;
+        }
+        j = tilde_end(buf, i + 1, 1);
+        if (j < 0) {
+            i++;
+            continue;
+        }
+        if (!tilde_home(ctx, buf->data + i + 1, j - (i + 1), &home, &owned)) {
+            i = j;
+            continue;
+        }
+        {
+            size_t hlen = strlen(home);
+            size_t rest = buf->len - j;
+            size_t nlen = i + hlen + rest;
+            char *data = xmalloc(nlen + 1);
+            unsigned char *mask = xmalloc(nlen + 1);
+            if (i > 0) {
+                memcpy(data, buf->data, i);
+                memcpy(mask, buf->mask, i);
+            }
+            memcpy(data + i, home, hlen);
+            /* The home is quoted: it is not split or pathname-expanded. */
+            memset(mask + i, 1, hlen);
+            if (rest > 0) {
+                memcpy(data + i + hlen, buf->data + j, rest);
+                memcpy(mask + i + hlen, buf->mask + j, rest);
+            }
+            data[nlen] = '\0';
+            free(buf->data);
+            free(buf->mask);
+            free(owned);
+            buf->data = data;
+            buf->mask = mask;
+            buf->len = nlen;
+            buf->cap = nlen + 1;
+            i += hlen;
+        }
+    }
+}
+
+static void tilde_sbuf(EvalCtx *ctx, Sbuf *buf) {
+    int end;
+    if (ctx->no_tilde || buf->len == 0 || buf->mask[0] != 0 || buf->data[0] != '~') {
+        return;
+    }
+    end = tilde_end(buf, 1, 0);
+    if (end < 0) {
+        return;
+    }
+    size_t i = (size_t)end;
     const char *home = NULL;
     char *owned = NULL;
     if (i == 1) {
@@ -132,7 +229,8 @@ static void tilde_sbuf(EvalCtx *ctx, Sbuf *buf) {
     char *data = xmalloc(nlen + 1);
     unsigned char *mask = xmalloc(nlen + 1);
     memcpy(data, home, hlen);
-    memset(mask, 0, hlen);
+    /* The home is quoted: it is not split or pathname-expanded. */
+    memset(mask, 1, hlen);
     if (rest > 0) {
         memcpy(data + hlen, buf->data + i, rest);
         memcpy(mask + hlen, buf->mask + i, rest);
@@ -172,6 +270,42 @@ static int has_meta(const Sbuf *buf) {
     return 0;
 }
 
+static int cmp_field(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+/* macOS glob() misses POSIX classes such as [[:alpha:]] and [[=-=]].
+   fnmatch implements them. Scan one directory when glob finds nothing. */
+static int glob_fallback(const char *pat, Fields *out) {
+    DIR *dp;
+    struct dirent *de;
+    uint32_t start;
+    int found = 0;
+    if (!pat || strchr(pat, '/')) {
+        return 0;
+    }
+    dp = opendir(".");
+    if (!dp) {
+        return 0;
+    }
+    start = out->n;
+    while ((de = readdir(dp)) != NULL) {
+        if (de->d_name[0] == '.' && pat[0] != '.') {
+            continue;
+        }
+        if (fnmatch(pat, de->d_name, 0) != 0) {
+            continue;
+        }
+        fields_push(out, dup_c(de->d_name));
+        found = 1;
+    }
+    closedir(dp);
+    if (found > 1) {
+        qsort(out->v + start, out->n - start, sizeof(char *), cmp_field);
+    }
+    return found;
+}
+
 static void push_sbuf(EvalCtx *ctx, const Sbuf *buf, Fields *out, int doglob, int quote_meta) {
     /* Quoted pattern characters are literal for fnmatch. \* is one star. */
     if (quote_meta) {
@@ -184,15 +318,20 @@ static void push_sbuf(EvalCtx *ctx, const Sbuf *buf, Fields *out, int doglob, in
         glob_t matches;
         memset(&matches, 0, sizeof matches);
         int rc = glob(pat, 0, NULL, &matches);
-        free(pat);
         if (rc == 0) {
             for (size_t i = 0; i < matches.gl_pathc; i++) {
                 fields_push(out, dup_c(matches.gl_pathv[i]));
             }
             globfree(&matches);
+            free(pat);
             return;
         }
         globfree(&matches);
+        if (glob_fallback(pat, out)) {
+            free(pat);
+            return;
+        }
+        free(pat);
     }
     fields_push(out, dup_n(buf->data ? buf->data : "", buf->len));
 }
@@ -212,35 +351,49 @@ static void split_sbuf(EvalCtx *ctx, Sbuf *buf, int dosplit, int doglob, int quo
         }
         return;
     }
-    Sbuf cur;
-    memset(&cur, 0, sizeof cur);
-    int started = 0;
-    for (size_t i = 0; i < buf->len; i++) {
-        char c = buf->data[i];
-        int mask = buf->mask[i];
-        /* Literals and quoted text stay, even when they are IFS characters. */
-        if (mask == 2 && ifs_ws(ifs, c)) {
-            if (started) {
-                push_sbuf(ctx, &cur, out, doglob, quote_meta);
-                sbuf_free(&cur);
-                started = 0;
-            }
-            continue;
-        }
-        if (mask == 2 && ifs_has(ifs, c)) {
-            push_sbuf(ctx, &cur, out, doglob, quote_meta);
-            sbuf_free(&cur);
-            started = 0;
-            continue;
-        }
-        char ch = c;
-        sbuf_add(&cur, &ch, 1, mask);
-        started = 1;
+    /* IFS white space does not make empty fields. A non-white IFS byte does.
+       White space next to that byte is part of the same delimiter. */
+    size_t i = 0;
+    while (i < buf->len && delim_ws(buf, i, ifs)) {
+        i++;
     }
-    if (started) {
+    while (i < buf->len) {
+        Sbuf cur;
+        memset(&cur, 0, sizeof cur);
+        while (i < buf->len && !delim_ws(buf, i, ifs) && !delim_nws(buf, i, ifs)) {
+            char ch = buf->data[i];
+            sbuf_add(&cur, &ch, 1, buf->mask[i]);
+            i++;
+        }
         push_sbuf(ctx, &cur, out, doglob, quote_meta);
+        sbuf_free(&cur);
+        if (i >= buf->len) {
+            break;
+        }
+        if (delim_ws(buf, i, ifs)) {
+            while (i < buf->len && delim_ws(buf, i, ifs)) {
+                i++;
+            }
+            if (i < buf->len && delim_nws(buf, i, ifs)) {
+                i++;
+                while (i < buf->len && delim_ws(buf, i, ifs)) {
+                    i++;
+                }
+            }
+            if (i >= buf->len) {
+                break;
+            }
+        } else {
+            i++;
+            while (i < buf->len && delim_ws(buf, i, ifs)) {
+                i++;
+            }
+            /* A delimiter at the end does not add an empty field. */
+            if (i >= buf->len) {
+                break;
+            }
+        }
     }
-    sbuf_free(&cur);
 }
 
 int lookup_param(EvalCtx *ctx, const char *name, const char **value, int *isset, int line) {
@@ -374,6 +527,9 @@ char *capture_node(EvalCtx *ctx, Node *node) {
         close(fds[1]);
         shell_at_fork(ctx, 0);
         ctx->forked = 1;
+        if (shell_can_exec(node)) {
+            ctx->can_exec = 1;
+        }
         /* This subshell is not the caller's if/&&/||/! exemption.
            set -e still applies to the commands inside it. */
         int st = eval_node(ctx, node, 1);
@@ -717,7 +873,11 @@ static int expand_fields(EvalCtx *ctx, const Word *word, int dosplit, int doglob
         }
     }
     if (nlist == 0) {
-        tilde_sbuf(ctx, &cur);
+        if (ctx->assign_tilde) {
+            tilde_assign_sbuf(ctx, &cur);
+        } else {
+            tilde_sbuf(ctx, &cur);
+        }
     }
     for (uint32_t i = 0; i < nlist; i++) {
         split_sbuf(ctx, &list[i], dosplit, doglob, quote_meta, out);

@@ -1,5 +1,6 @@
 #!/usr/bin/env bettersh
 
+# Returns the bytes of p from start up to, but not including, end. A start below 0 is 0. An end past the length is the length. An empty span is "".
 fn slice(p, start, end) {
   if start < 0 { let start = 0 }
   if end > p.length { let end = p.length }
@@ -13,6 +14,7 @@ fn slice(p, start, end) {
   return out
 }
 
+# Returns the text after the last slash, or p when there is none.
 fn base(p) {
   let i = p.length
   while i > 0 {
@@ -22,6 +24,7 @@ fn base(p) {
   return p
 }
 
+# Returns the text before the last slash. A path with no slash is "". The root is "/".
 fn dir(p) {
   let i = p.length
   while i > 0 {
@@ -34,6 +37,7 @@ fn dir(p) {
   return ""
 }
 
+# Returns the suffix after the last dot in the base name. A leading dot, or no dot, is "".
 fn ext(p) {
   let name = base(p)
   let i = name.length
@@ -47,6 +51,7 @@ fn ext(p) {
   return ""
 }
 
+# Returns the base name without its extension or the dot before it.
 fn stem(p) {
   let name = base(p)
   let e = ext(name)
@@ -54,12 +59,14 @@ fn stem(p) {
   return slice(name, 0, name.length - e.length - 1)
 }
 
+# Joins a and b with one slash. An empty a is b. A trailing slash on a is kept.
 fn join(a, b) {
   if a.length == 0 { return b }
   if a[a.length - 1] == "/" { return "@{ a }@{ b }" }
   return "@{ a }/@{ b }"
 }
 
+# Returns true when p begins with "/".
 fn is_abs(p) {
   if p.length == 0 { return false }
   return p[0] == "/"

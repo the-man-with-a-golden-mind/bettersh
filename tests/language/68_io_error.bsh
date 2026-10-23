@@ -1,0 +1,4 @@
+#!/usr/bin/env bettersh
+import std/io
+io.write("ab")
+io.error("zz")

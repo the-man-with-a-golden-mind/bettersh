@@ -10,7 +10,7 @@ Noted while building M1. These are deferred on purpose.
 - Compound commands, function definitions, subshells, and evaluation run in strict mode. A modern shebang compiles and runs. Brace `if`, `while`, `for`, `case`, `return`, and `import` are implemented. A module is cached by its canonical path and evaluated once per run. `std` is BetterSh code over host builtins for files, the environment, libm, and process jobs. Async waits on those processes. It does not start threads. The terminal screen is BetterSh too: it paints a grid and names keys. The host only puts the tty in raw mode and reads one byte, and it restores the tty on the way out. `std/edit.bsh` is a modal editor on that screen. A modern local is not a shell variable. Closures capture the environment where the function was defined.
 - The modern tree is a separate node type. eval_sh.c cannot grow the strict node enum, so a shell statement is reparsed from its source span.
 - `@{ ... }` inside a quoted here-document is still interpolated.
-- Array, map, function, environment, and upvalue cycles are freed when nothing outside the cycle holds them. There is no tracing garbage collector.
+- An array, map, function, or environment cycle is freed when nothing outside the cycle holds it and no function in it has an upvalue. A function that captures an upvalue keeps that cycle. There is no tracing garbage collector.
 - A missing here-document delimiter at end of file is the rest of the script. An interactive prompt still waits.
 - A script is parsed before any of it runs. A later `Missing '}'` leaves stdout empty. dash runs the commands that came before that error.
 - There is no `--eval`. Arguments after the script path are positional parameters.

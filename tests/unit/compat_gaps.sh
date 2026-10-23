@@ -669,6 +669,79 @@ wait $pid
 echo a:$?'
 same 'fg abort' 'python3 -c "import os; os.abort()"
 echo st:$?'
+same 'enoexec' 'dir=$(mktemp -d)
+cd "$dir" || exit 1
+foo=parent
+export bar=ok
+f() { echo func; }
+cat > s.sh << END
+echo "0=[\$0]"
+echo "n=\$#"
+echo "1=[\$1]"
+echo "foo=[\$foo]"
+echo "bar=[\$bar]"
+if f >/dev/null 2>&1; then echo fn=yes; else echo fn=no; fi
+if [ "\$PPID" = $$ ]; then echo ppid=parent; else echo ppid=other; fi
+END
+chmod +x s.sh
+./s.sh ARG
+set -e
+printf "%s\n" false "echo after" > e.sh
+chmod +x e.sh
+./e.sh
+echo out:$?
+cat > i.sh << END
+printf "[%s]\\n" "\$IFS"
+END
+chmod +x i.sh
+IFS=:
+./i.sh
+echo "parent=[$IFS]"
+cd /
+rm -rf "$dir"'
+same 'bg pipe wait' '(sleep 1; echo late) | true &
+wait
+echo done'
+
+printf '%s\n' 'echo hi' '{ sleep 1 ; echo derp ; } &' 'echo bye' 'wait' 'echo done' >"$d/inh.sh"
+run_inh() {
+    shell=$1
+    out=$2
+    err=$3
+    pidf=$d/sleep.pid
+    rm -f "$pidf"
+    (
+        sleep 30 &
+        echo $! > "$pidf"
+        exec "$shell" "$d/inh.sh"
+    ) >"$out" 2>"$err" &
+    wp=$!
+    n=0
+    while kill -0 "$wp" 2>/dev/null && [ "$n" -lt 6 ]; do
+        sleep 1
+        n=$((n + 1))
+    done
+    if kill -0 "$wp" 2>/dev/null; then
+        kill -9 "$wp" 2>/dev/null
+        wait "$wp" 2>/dev/null
+        echo 99
+    else
+        wait "$wp"
+        echo $?
+    fi
+    if [ -s "$pidf" ]; then
+        kill "$(cat "$pidf")" 2>/dev/null
+    fi
+}
+ds=$(run_inh dash "$d/do" "$d/de")
+bs=$(run_inh "$bin" "$d/bo" "$d/be")
+if [ "$ds" != "$bs" ] || ! cmp -s "$d/do" "$d/bo" || ! cmp -s "$d/de" "$d/be"; then
+    printf 'FAIL inherited wait\n' >&2
+    printf 'dash %s better %s\n' "$ds" "$bs" >&2
+    diff -u "$d/do" "$d/bo" >&2
+    diff -u "$d/de" "$d/be" >&2
+    fail=1
+fi
 
 printf '%s\n' 'cd .' 'pwd' >"$d/t.sh"
 env PWD=/tmp dash "$d/t.sh" >"$d/do" 2>"$d/de"; ds=$?

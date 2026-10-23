@@ -143,7 +143,14 @@ int eval_for(EvalCtx *ctx, Node *node, int chk) {
                 break;
             }
         }
-        env_set(&ctx->env, node->u.forloop.name, words.v[i]);
+        if (env_set(&ctx->env, node->u.forloop.name, words.v[i]) < 0) {
+            shell_err(ctx, node->line, "%s: is read only", node->u.forloop.name);
+            shell_abort(ctx, 2);
+            fields_free(&words);
+            ctx->loop_depth--;
+            redir_end(saved, nsaved);
+            return 2;
+        }
         st = eval_node(ctx, node->u.forloop.body, chk);
         if (ctx->cont_n) {
             ctx->cont_n--;

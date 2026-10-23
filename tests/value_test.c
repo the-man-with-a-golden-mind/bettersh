@@ -312,6 +312,31 @@ static void test_fn_env_cycle(void) {
     value_unref(fn);
 }
 
+/* The closure's environment points at the environment that stores the
+   closure. An outside ref keeps the group. Dropping it frees the group. */
+static void test_fn_parent_cycle(void) {
+    IEnv *root = ienv_new(NULL);
+    IEnv *frame;
+    Value *outer = value_fn(NULL, 0, 0);
+    Value *inner = value_fn(NULL, 0, 0);
+    ienv_ref(root);
+    outer->u.fn->ienv = root;
+    ienv_bind(root, "counter", outer);
+    value_unref(outer);
+    frame = ienv_new(root);
+    ienv_ref(frame);
+    inner->u.fn->ienv = frame;
+    ienv_bind(root, "next", inner);
+    value_unref(inner);
+    check(inner->refs == 1, "parent cycle held by root");
+    ienv_unref(frame);
+    check(inner->refs == 1, "frame stays behind the closure");
+    value_ref(inner);
+    ienv_unref(root);
+    check(inner->refs == 2, "outside keeps the parent cycle");
+    value_unref(inner);
+}
+
 /* A named function stored in the environment it captures. The call ref
    is the last outside owner. env_backrefs frees it. */
 static void test_fn_env_backref(void) {
@@ -355,6 +380,7 @@ int main(void) {
     test_fn_cycle();
     test_fn_array_cycle();
     test_fn_env_cycle();
+    test_fn_parent_cycle();
     test_fn_env_backref();
     test_nested();
     if (fails) {

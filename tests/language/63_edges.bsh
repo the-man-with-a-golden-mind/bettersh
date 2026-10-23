@@ -1,0 +1,150 @@
+#!/usr/bin/env bettersh
+import std/path
+import std/strings
+import std/math
+import std/ui
+import std/edit
+import std/io
+
+# A full-line comment is ignored.
+println(1) # so is a trailing comment
+#
+println("a#b")
+
+let nums = [1, 2, 3]
+println(nums.reverse())
+println(nums.join(","))
+println(["a", "b", "c"].reverse())
+println([].reverse())
+println([1].reverse())
+println([true, null, 2].reverse())
+
+println(12.repeat(2))
+println(true.repeat(2))
+println(null.repeat(1))
+println((0 - 3).repeat(2))
+println("ab".repeat(1.2))
+println("ab".repeat(2.0))
+println("ab".repeat(0 - 1.5))
+
+println("AbC!".upper())
+println("abcd".slice(0, 2.2))
+println("abcd".slice(0, 2.0))
+println([1, 2, 3, 4].slice(0, 2.2))
+println([1, 2, 3, 4].slice(0, 2.0).join(","))
+println("ab".slice(1.5, 1.5))
+println([1, 2].slice(3, 1).length)
+
+println(path.slice("abcdef", 1, 4))
+println(path.slice("ab", 0 - 3, 1))
+println(path.slice("ab", 5, 9))
+println(path.slice("ab", 2, 2))
+println(path.slice("", 0, 1))
+
+println(strings.words("a\tb  c").join("|"))
+println(strings.words("").length)
+println(strings.words("   ").length)
+
+println(math.gcd(0, 0))
+println(math.pow(0, 0))
+println(math.pow(3, 3))
+println(math.min(0 - 2, 0 - 5))
+println(math.max(0 - 2, 0 - 5))
+println(math.clamp(3, 3, 3))
+
+io.write("XY")
+io.writeln("Z")
+
+let screen = ui.blank(0, 0)
+println(screen.cols)
+println(screen.rows)
+println(ui.paint(screen))
+let base = ui.blank(4, 2)
+println(ui.paint(ui.box(base, 0, 0, 1, 4, "t")) == ui.paint(base))
+println(ui.paint(ui.box(ui.blank(6, 3), 0, 0, 3, 6, "toolong")))
+println(ui.paint(ui.put(ui.blank(4, 1), 0, 2, "abcdef")))
+println(ui.paint(ui.put(ui.blank(4, 2), 9, 0, "no")))
+
+println(ui.feed("", chr(9)).key)
+println(ui.feed("", chr(10)).key)
+fn finish(seq) {
+  let p = ""
+  let i = 0
+  let ev = { key: null, pending: "", extra: null }
+  while i < seq.length {
+    let ev = ui.feed(p, seq[i])
+    let p = ev.pending
+    let i = i + 1
+  }
+  return ev.key
+}
+let esc = chr(27)
+println(finish("@{ esc }[H"))
+println(finish("@{ esc }[F"))
+println(finish("@{ esc }[A"))
+println(finish("@{ esc }[B"))
+println(finish("@{ esc }[C"))
+println(finish("@{ esc }[D"))
+println(finish("@{ esc }[5~"))
+println(finish("@{ esc }[6~"))
+println(finish("@{ esc }[3~"))
+println(ui.feed("x", null).pending)
+println(ui.feed("", "").key == null)
+println(ui.flush("[").key == null)
+println(ui.flush("").key == null)
+
+let b = edit.buffer("abcdef\n", "t")
+let b = edit.press(b, "$")
+println(b.col)
+let b = edit.press(b, "0")
+println(b.col)
+let b = edit.press(b, "end")
+println(b.col)
+let b = edit.press(b, "home")
+println(b.col)
+let b = edit.press(b, "l")
+let b = edit.press(b, "h")
+println(b.col)
+let b = edit.press(b, "right")
+println(b.col)
+let b = edit.press(b, "left")
+println(b.col)
+let b = edit.press(b, "x")
+println(edit.text(b))
+
+let many = "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n"
+let b = edit.buffer(many, "t")
+let b = edit.press(b, "G")
+println(b.row)
+let b = edit.press(b, "pageup")
+println(b.row)
+let b = edit.press(b, "pagedown")
+println(b.row)
+
+let b = edit.buffer("cat\n", "t")
+let b = edit.press(b, "/")
+let b = edit.press(b, "z")
+let b = edit.press(b, "enter")
+println(b.hint)
+println(b.row)
+
+let b = edit.buffer("cat\n", "t")
+let b = edit.press(b, ":")
+let b = edit.press(b, "n")
+let b = edit.press(b, "backspace")
+let b = edit.press(b, "enter")
+println(b.hint)
+
+let b = edit.buffer("cat\n", "t")
+let b = edit.press(b, ":")
+let b = edit.press(b, "w")
+let b = edit.press(b, "q")
+let b = edit.press(b, "enter")
+println(b.request)
+
+let b = edit.buffer("ab\n", "t")
+let b = edit.press(b, "i")
+let b = edit.press(b, "delete")
+println(edit.text(b))
+let b = edit.press(b, "escape")
+println(b.mode)

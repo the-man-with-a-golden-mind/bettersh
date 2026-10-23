@@ -2,14 +2,17 @@
 
 import std/proc
 
+# Starts cmd and returns its job id.
 fn spawn(cmd) {
   return proc.spawn(cmd)
 }
 
+# Waits for id and returns that command's stdout.
 fn await(id) {
   return proc.await(id)
 }
 
+# Starts every command, then waits in that order. Returns those outputs. Does not start threads.
 fn gather(cmds) {
   let ids = []
   for c in cmds {

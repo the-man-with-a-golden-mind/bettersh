@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Redirections.
@@ -203,6 +204,14 @@ int apply_redirs(EvalCtx *ctx, Redirect **redirs, uint32_t nredirs, SavedFd **sa
                 flags = O_WRONLY | O_CREAT | O_EXCL;
             }
             opened = open(target, flags, 0666);
+            /* noclobber refuses an existing regular file. A device or fifo
+               is not a regular file, so /dev/null still opens. */
+            if (opened < 0 && errno == EEXIST && (flags & O_EXCL)) {
+                struct stat st;
+                if (stat(target, &st) == 0 && !S_ISREG(st.st_mode)) {
+                    opened = open(target, O_WRONLY | O_TRUNC, 0666);
+                }
+            }
         } else if (redir->op == REDIR_APPEND) {
             opened = open(target, O_WRONLY | O_CREAT | O_APPEND, 0666);
         } else if (redir->op == REDIR_RW) {

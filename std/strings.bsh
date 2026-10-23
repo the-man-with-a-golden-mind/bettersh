@@ -1,9 +1,11 @@
 #!/usr/bin/env bettersh
 
+# Returns the uppercased text followed by "!".
 fn shout(s) {
   return "@{ s.upper() }!"
 }
 
+# Returns the bytes of s from start up to, but not including, end. A start below 0 is 0. An end past the length is the length. An empty span is "".
 fn slice(s, start, end) {
   if start < 0 { let start = 0 }
   if end > s.length { let end = s.length }
@@ -11,6 +13,7 @@ fn slice(s, start, end) {
   return s.slice(start, end)
 }
 
+# Returns true when s begins with prefix.
 fn starts(s, prefix) {
   if prefix.length > s.length { return false }
   let i = 0
@@ -21,6 +24,7 @@ fn starts(s, prefix) {
   return true
 }
 
+# Returns true when s ends with suffix.
 fn ends(s, suffix) {
   if suffix.length > s.length { return false }
   let base = s.length - suffix.length
@@ -32,31 +36,37 @@ fn ends(s, suffix) {
   return true
 }
 
+# Returns the bytes of s from last to first.
 fn reverse(s) {
   let n = s.length
   if n == 0 { return "" }
   return s.reverse()
 }
 
+# Returns s repeated n times.
 fn repeat(s, n) {
   return s.repeat(n)
 }
 
+# Pads s on the left with copies of ch until it is width bytes. A string already that long is unchanged.
 fn pad_left(s, width, ch) {
   if s.length >= width { return s }
   return "@{ repeat(ch, width - s.length) }@{ s }"
 }
 
+# Pads s on the right with copies of ch until it is width bytes. A string already that long is unchanged.
 fn pad_right(s, width, ch) {
   if s.length >= width { return s }
   return "@{ s }@{ repeat(ch, width - s.length) }"
 }
 
+# Returns how many times part occurs in s. An empty part is 0.
 fn count(s, part) {
   if part.length == 0 { return 0 }
   return s.split(part).length - 1
 }
 
+# Trims s, splits on one space, and drops the empty pieces.
 fn words(s) {
   return s.trim().split(" ").filter(fn(w) { (w.length > 0) })
 }

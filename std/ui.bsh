@@ -2,11 +2,13 @@
 
 import std/strings
 
+# Returns n, or 1 when n is below 1.
 fn clamp_size(n) {
   if n < 1 { return 1 }
   return n
 }
 
+# Returns a screen of rows lines, each cols spaces. A size below 1 becomes 1.
 fn blank(cols, rows) {
   let cols = clamp_size(cols)
   let rows = clamp_size(rows)
@@ -20,6 +22,7 @@ fn blank(cols, rows) {
   return { cols: cols, rows: rows, grid: grid }
 }
 
+# Writes text into row at col and clips it to the row. A column outside the row leaves the row unchanged.
 fn splice(row, col, text) {
   if col < 0 || col >= row.length || text.length == 0 { return row }
   let room = row.length - col
@@ -28,6 +31,7 @@ fn splice(row, col, text) {
   return "@{ strings.slice(row, 0, col) }@{ text }@{ strings.slice(row, end, row.length) }"
 }
 
+# Returns a copy of screen with text written at row, col. A row outside the screen is unchanged.
 fn put(screen, row, col, text) {
   if row < 0 || row >= screen.rows { return screen }
   let grid = []
@@ -41,16 +45,19 @@ fn put(screen, row, col, text) {
   return { cols: screen.cols, rows: screen.rows, grid: grid }
 }
 
+# Returns "+" followed by inner dashes and "+".
 fn rule(inner) {
   return "+@{ strings.repeat("-", inner) }+"
 }
 
+# Returns a top rule with title. An empty title, or one that does not fit, is a plain rule.
 fn top_rule(inner, title) {
   if title.length == 0 || title.length + 2 > inner { return rule(inner) }
   let dashes = inner - title.length - 2
   return "+ @{ title } @{ strings.repeat("-", dashes) }+"
 }
 
+# Draws a box of height h and width w on a copy of screen. A size below 2 leaves the screen unchanged.
 fn box(screen, row, col, h, w, title) {
   if h < 2 || w < 2 { return screen }
   let inner = w - 2
@@ -64,14 +71,17 @@ fn box(screen, row, col, h, w, title) {
   return put(screen, row + h - 1, col, rule(inner))
 }
 
+# Joins the screen rows with newlines.
 fn paint(screen) {
   return screen.grid.join("\n")
 }
 
+# Returns one key event: key is the name, pending is an unfinished escape, and extra is a byte to feed again.
 fn event(key, pending, extra) {
   return { key: key, pending: pending, extra: extra }
 }
 
+# Names one byte. Enter, backspace, tab, Ctrl-C, and Ctrl-S have names. Escape starts a pending sequence.
 fn plain(byte) {
   let n = ord(byte)
   if n == 10 || n == 13 { return event("enter", "", null) }
@@ -84,6 +94,7 @@ fn plain(byte) {
   return event(null, "", null)
 }
 
+# Names a finished escape sequence, or "" when it is not a known key.
 fn named(seq) {
   let esc = chr(27)
   if seq == "@{ esc }[A" || seq == "@{ esc }OA" { return "up" }
@@ -98,6 +109,7 @@ fn named(seq) {
   return ""
 }
 
+# Feeds one byte into pending and returns the next event. A byte that is not one character leaves pending unchanged.
 fn feed(pending, byte) {
   if byte == null || byte.length != 1 { return event(null, pending, null) }
   let esc = chr(27)
@@ -114,6 +126,7 @@ fn feed(pending, byte) {
   return event(null, "", null)
 }
 
+# Turns a leftover escape into the escape key. Any other leftover is dropped.
 fn flush(pending) {
   if pending == chr(27) { return event("escape", "", null) }
   return event(null, "", null)

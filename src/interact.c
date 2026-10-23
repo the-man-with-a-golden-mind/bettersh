@@ -69,9 +69,14 @@ static int read_cooked(const char *prompt, char **out) {
     errno = 0;
     n = getline(&line, &cap, stdin);
     if (n < 0) {
+        int err = errno;
         free(line);
-        if (errno == EINTR || got_int) {
+        /* A caught signal interrupts the read. glibc then leaves the stream
+           failed, so the next getline returns immediately and an interactive
+           shell treats that as end of file. */
+        if (err == EINTR || got_int) {
             got_int = 0;
+            clearerr(stdin);
             fputc('\n', stderr);
             return 2;
         }

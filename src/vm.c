@@ -566,7 +566,8 @@ int vm_run_module(Arena *arena, const char *filename, const char *src, size_t sr
         for (i = 0; i < fr->nlocals; i++) {
             const char *name = "";
             Value *slot;
-            if (fr->chunk && (uint32_t)i < fr->chunk->local_len && fr->chunk->local_names[i]) {
+            if (fr->chunk && fr->chunk->local_names && (uint32_t)i < fr->chunk->local_len &&
+                fr->chunk->local_names[i]) {
                 name = fr->chunk->local_names[i]->data;
             }
             if (!name[0] || name[0] == '.') {

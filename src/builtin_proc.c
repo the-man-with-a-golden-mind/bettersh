@@ -228,9 +228,32 @@ int cmd_wait(EvalCtx *ctx, int argc, char **argv) {
         return 2;
     }
     if (i >= argc) {
-        pid_t got;
-        while ((got = waitpid(-1, &status, 0)) > 0) {
-            shjob_note_child(ctx, got, status, 1);
+        uint32_t j;
+        uint32_t kept = 0;
+        /* An inherited child, such as a test harness sleeper, is not ours. */
+        for (j = 0; j < ctx->nowned; j++) {
+            int w = 0;
+            pid_t pid = ctx->owned[j];
+            pid_t got;
+            if (pid <= 0) {
+                continue;
+            }
+            got = waitpid(pid, &w, 0);
+            if (got == pid) {
+                shjob_note_child(ctx, got, w, 1);
+                continue;
+            }
+            if (got < 0 && errno == ECHILD) {
+                continue;
+            }
+            ctx->owned[kept++] = pid;
+        }
+        ctx->nowned = kept;
+        {
+            pid_t got;
+            while ((got = waitpid(-1, &status, WNOHANG)) > 0) {
+                shjob_note_child(ctx, got, status, 1);
+            }
         }
         return 0;
     }

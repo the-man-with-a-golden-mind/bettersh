@@ -4,10 +4,12 @@ import std/ui
 import std/fs
 import std/strings
 
+# Returns the normal-mode hint line.
 fn hint_text() {
   return "i a o  x dd yy p  u  / n N  :w :q"
 }
 
+# Builds one editor buffer from these fields.
 fn pack(lines, row, col, mode, top, pending, yank, undo, dirty, path, cmd, hint, confirm, request, find, anchor) {
   return {
     lines: lines,
@@ -29,6 +31,7 @@ fn pack(lines, row, col, mode, top, pending, yank, undo, dirty, path, cmd, hint,
   }
 }
 
+# Returns a new array of the same line strings.
 fn copy_lines(lines) {
   let out = []
   for line in lines {
@@ -37,6 +40,7 @@ fn copy_lines(lines) {
   return out
 }
 
+# Returns lines with the line at index at replaced.
 fn replace_at(lines, at, line) {
   let out = []
   let i = 0
@@ -48,6 +52,7 @@ fn replace_at(lines, at, line) {
   return out
 }
 
+# Returns lines without the line at index at.
 fn remove_at(lines, at) {
   let out = []
   let i = 0
@@ -58,6 +63,7 @@ fn remove_at(lines, at) {
   return out
 }
 
+# Returns lines with line inserted after index at.
 fn insert_after(lines, at, line) {
   let out = []
   let i = 0
@@ -69,6 +75,7 @@ fn insert_after(lines, at, line) {
   return out
 }
 
+# Returns lines with the line at index at replaced by left and right.
 fn split_at(lines, at, left, right) {
   let out = []
   let i = 0
@@ -83,6 +90,7 @@ fn split_at(lines, at, left, right) {
   return out
 }
 
+# Returns lines with the line before at and the line at replaced by merged.
 fn join_at(lines, at, merged) {
   let out = []
   let i = 0
@@ -94,6 +102,7 @@ fn join_at(lines, at, merged) {
   return out
 }
 
+# Splits text on newlines and drops one trailing empty piece after a final newline. Null is "". An empty result is [""].
 fn split_lines(text) {
   if text == null { let text = "" }
   let parts = text.split("\n")
@@ -104,50 +113,62 @@ fn split_lines(text) {
   return parts
 }
 
+# Returns a normal-mode buffer for text at path.
 fn buffer(text, path) {
   return pack(split_lines(text), 0, 0, "normal", 0, "", "", [], false, path, "", hint_text(), false, "", "", false)
 }
 
+# Joins the buffer lines with newlines and does not add a final newline.
 fn text(buf) {
   return buf.lines.join("\n")
 }
 
+# Joins the buffer lines with newlines and adds a final newline.
 fn save_text(buf) {
   return "@{ buf.lines.join("\n") }\n"
 }
 
+# Returns a copy of buf with the given fields replaced. top, path, and find stay.
 fn re(buf, lines, row, col, mode, pending, yank, undo, dirty, cmd, hint, confirm, request, anchor) {
   return pack(lines, row, col, mode, buf.top, pending, yank, undo, dirty, buf.path, cmd, hint, confirm, request, buf.find, anchor)
 }
 
+# Returns buf with request set and confirm cleared.
 fn set_request(buf, request) {
   return re(buf, buf.lines, buf.row, buf.col, buf.mode, buf.pending, buf.yank, buf.undo, buf.dirty, buf.cmd, buf.hint, false, request, buf.anchor)
 }
 
+# Returns buf with hint set.
 fn set_hint(buf, hint) {
   return re(buf, buf.lines, buf.row, buf.col, buf.mode, buf.pending, buf.yank, buf.undo, buf.dirty, buf.cmd, hint, buf.confirm, buf.request, buf.anchor)
 }
 
+# Returns a normal-mode buffer whose yank is yank. The command line is cleared.
 fn set_yank(buf, yank) {
   return re(buf, buf.lines, buf.row, buf.col, "normal", "", yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
 }
 
+# Returns a normal-mode buffer waiting for the second key of a two-key command.
 fn set_pending(buf, pending) {
   return re(buf, buf.lines, buf.row, buf.col, "normal", pending, buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
 }
 
+# Returns buf with the command or search line set to cmd.
 fn set_cmd(buf, cmd) {
   return re(buf, buf.lines, buf.row, buf.col, buf.mode, "", buf.yank, buf.undo, buf.dirty, cmd, buf.hint, false, buf.request, buf.anchor)
 }
 
+# Returns a normal-mode buffer whose find pattern is find.
 fn set_find(buf, find) {
   return pack(buf.lines, buf.row, buf.col, "normal", buf.top, "", buf.yank, buf.undo, buf.dirty, buf.path, "", hint_text(), false, buf.request, find, false)
 }
 
+# Returns buf marked clean, with the command line and request cleared.
 fn mark_clean(buf) {
   return re(buf, buf.lines, buf.row, buf.col, buf.mode, "", buf.yank, buf.undo, false, "", hint_text(), false, "", false)
 }
 
+# Pushes a snapshot and drops the oldest once 32 are stored.
 fn snapshot(buf) {
   let snap = { lines: copy_lines(buf.lines), row: buf.row, col: buf.col, dirty: buf.dirty }
   let undo = buf.undo.push(snap)
@@ -161,6 +182,7 @@ fn snapshot(buf) {
   return next
 }
 
+# Records an undo point, unless this insert already has one, and returns the edited buffer.
 fn change(buf, lines, row, col) {
   let undo = buf.undo
   let anchor = false
@@ -173,6 +195,7 @@ fn change(buf, lines, row, col) {
   return re(buf, lines, row, col, buf.mode, "", buf.yank, undo, true, "", hint_text(), false, buf.request, anchor)
 }
 
+# Moves the cursor in normal mode. The column stays on a character.
 fn move(buf, row, col) {
   if buf.lines.length == 0 { return buf }
   if row < 0 { let row = 0 }
@@ -184,6 +207,7 @@ fn move(buf, row, col) {
   return re(buf, buf.lines, row, col, "normal", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
 }
 
+# Moves the cursor in insert mode. The column may sit past the last character.
 fn imove(buf, row, col) {
   if buf.lines.length == 0 { return buf }
   if row < 0 { let row = 0 }
@@ -193,10 +217,12 @@ fn imove(buf, row, col) {
   return re(buf, buf.lines, row, col, "insert", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
 }
 
+# Returns buf in insert mode at row, col.
 fn enter_insert(buf, row, col) {
   return re(buf, buf.lines, row, col, "insert", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
 }
 
+# Returns buf in normal mode. A cursor past the end of the line moves back one character.
 fn leave_insert(buf) {
   let row = buf.row
   let col = buf.col
@@ -207,6 +233,7 @@ fn leave_insert(buf) {
   return re(buf, buf.lines, row, col, "normal", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
 }
 
+# Inserts ch at the cursor.
 fn insert_char(buf, ch) {
   let line = buf.lines[buf.row]
   let col = buf.col
@@ -216,6 +243,7 @@ fn insert_char(buf, ch) {
   return change(buf, replace_at(buf.lines, buf.row, next), buf.row, col + 1)
 }
 
+# Splits the current line at the cursor and moves to the start of the new line.
 fn split_line(buf) {
   let line = buf.lines[buf.row]
   let col = buf.col
@@ -226,6 +254,7 @@ fn split_line(buf) {
   return change(buf, split_at(buf.lines, buf.row, left, right), buf.row + 1, 0)
 }
 
+# Deletes the character before the cursor, or joins with the previous line at column 0.
 fn backspace(buf) {
   if buf.col > 0 {
     let line = buf.lines[buf.row]
@@ -239,6 +268,7 @@ fn backspace(buf) {
   return change(buf, join_at(buf.lines, buf.row, merged), buf.row - 1, prev.length)
 }
 
+# Deletes the character at the cursor.
 fn delete_char(buf) {
   let line = buf.lines[buf.row]
   if line.length == 0 { return buf }
@@ -253,6 +283,7 @@ fn delete_char(buf) {
   return change(buf, replace_at(buf.lines, buf.row, next), buf.row, col)
 }
 
+# Deletes the current line, keeps it as the yank, and leaves at least one empty line.
 fn delete_line(buf) {
   let yanked = buf.lines[buf.row]
   let lines = remove_at(buf.lines, buf.row)
@@ -262,16 +293,19 @@ fn delete_line(buf) {
   return set_yank(change(buf, lines, row, 0), yanked)
 }
 
+# Inserts the yanked line below the cursor. An empty yank leaves buf unchanged.
 fn paste(buf) {
   if buf.yank.length == 0 { return buf }
   return change(buf, insert_after(buf.lines, buf.row, buf.yank), buf.row + 1, 0)
 }
 
+# Inserts an empty line below the cursor and enters insert mode.
 fn open_below(buf) {
   let buf = change(buf, insert_after(buf.lines, buf.row, ""), buf.row + 1, 0)
   return re(buf, buf.lines, buf.row, 0, "insert", "", buf.yank, buf.undo, true, "", hint_text(), false, buf.request, true)
 }
 
+# Restores the newest snapshot. An empty undo stack leaves buf unchanged.
 fn undo(buf) {
   if buf.undo.length == 0 { return buf }
   let snap = buf.undo.pop()
@@ -286,6 +320,7 @@ fn undo(buf) {
   return pack(snap.lines, row, col, "normal", 0, "", buf.yank, buf.undo, snap.dirty, buf.path, "", hint_text(), false, "", buf.find, false)
 }
 
+# Returns the index of pat in line at or after from, or -1.
 fn find_at(line, pat, from) {
   if pat.length == 0 { return 0 - 1 }
   if from < 0 { let from = 0 }
@@ -297,6 +332,7 @@ fn find_at(line, pat, from) {
   return 0 - 1
 }
 
+# Moves to the next match of the find pattern, wrapping around the buffer.
 fn search_next(buf, from_col) {
   let pat = buf.find
   if pat.length == 0 { return buf }
@@ -314,6 +350,7 @@ fn search_next(buf, from_col) {
   return set_hint(buf, "not found")
 }
 
+# Returns the last index of pat in line that starts before limit, or -1.
 fn last_before(line, pat, limit) {
   let last = 0 - 1
   let i = 0
@@ -324,6 +361,7 @@ fn last_before(line, pat, limit) {
   return last
 }
 
+# Moves to the previous match of the find pattern, wrapping around the buffer.
 fn search_back(buf) {
   let pat = buf.find
   if pat.length == 0 { return buf }
@@ -341,6 +379,7 @@ fn search_back(buf) {
   return set_hint(buf, "not found")
 }
 
+# Returns true when every byte of text is an ASCII digit. Empty text is false.
 fn is_digits(text) {
   if text.length == 0 { return false }
   let i = 0
@@ -352,6 +391,7 @@ fn is_digits(text) {
   return true
 }
 
+# Returns the integer value of a digit string.
 fn to_int(text) {
   let n = 0
   let i = 0
@@ -362,15 +402,18 @@ fn to_int(text) {
   return n
 }
 
+# Returns buf asking for a second q before quitting a dirty buffer.
 fn arm_quit(buf) {
   return re(buf, buf.lines, buf.row, buf.col, "normal", "", buf.yank, buf.undo, buf.dirty, "", "quit without saving? press q again", true, buf.request, false)
 }
 
+# Quits a clean buffer. A dirty buffer asks for confirmation.
 fn quit_soft(buf) {
   if buf.dirty { return arm_quit(buf) }
   return set_request(buf, "quit")
 }
 
+# Runs the command line: w, wq, q, q!, or a 1-based line number.
 fn run_command(buf) {
   let cmd = buf.cmd
   let buf = set_find(buf, buf.find)
@@ -382,6 +425,7 @@ fn run_command(buf) {
   return set_hint(buf, "unknown command")
 }
 
+# Handles one key while the command or search line is open.
 fn press_line(buf, key) {
   if key == "escape" { return set_find(buf, buf.find) }
   if key == "enter" {
@@ -399,6 +443,7 @@ fn press_line(buf, key) {
   return buf
 }
 
+# Handles one key in insert mode.
 fn press_insert(buf, key) {
   if key == "escape" { return leave_insert(buf) }
   if key == "enter" { return split_line(buf) }
@@ -412,6 +457,7 @@ fn press_insert(buf, key) {
   return buf
 }
 
+# Handles one key in normal mode, including the second key of d, y, and g.
 fn press_normal(buf, key) {
   if buf.confirm {
     if key == "q" { return set_request(buf, "quit") }
@@ -454,6 +500,7 @@ fn press_normal(buf, key) {
   return buf
 }
 
+# Handles one named key. Ctrl-C quits and Ctrl-S saves.
 fn press(buf, key) {
   if key == "ctrl-c" { return set_request(buf, "quit") }
   if key == "ctrl-s" { return set_request(buf, "save") }
@@ -462,6 +509,7 @@ fn press(buf, key) {
   return press_normal(buf, key)
 }
 
+# Returns the first visible line so the cursor stays on screen.
 fn view_top(buf, view) {
   let top = buf.top
   if buf.row < top { let top = buf.row }
@@ -471,34 +519,40 @@ fn view_top(buf, view) {
   return top
 }
 
+# Returns the decimal text of n.
 fn digits(n) {
   let text = "@{ n } "
   return strings.slice(text, 0, text.length - 1)
 }
 
+# Returns text with non-visible bytes replaced.
 fn visible(text) {
   let n = text.length
   if n == 0 { return "" }
   return text.visible()
 }
 
+# Returns a four-column line number and the visible text of line.
 fn gutter(row, line) {
   let num = strings.pad_left(digits(row + 1), 4, " ")
   return "@{ num } @{ visible(line) }"
 }
 
+# Returns the path, a star when the buffer is dirty, the cursor, and the mode.
 fn status_line(buf) {
   let mark = ""
   if buf.dirty { let mark = "*" }
   return visible("@{ buf.path }@{ mark }  @{ buf.row + 1 }:@{ buf.col + 1 }  @{ buf.mode }")
 }
 
+# Returns the command line, the search line, or the hint.
 fn bottom_line(buf) {
   if buf.mode == "command" { return visible(":@{ buf.cmd }") }
   if buf.mode == "search" { return visible("/@{ buf.cmd }") }
   return buf.hint
 }
 
+# Returns the screen text for cols by rows, including the status and the bottom line.
 fn frame(buf, cols, rows) {
   if cols < 1 { let cols = 1 }
   if rows < 2 { let rows = 2 }
@@ -517,16 +571,19 @@ fn frame(buf, cols, rows) {
   return ui.paint(ui.put(screen, rows - 1, 0, bottom_line(buf)))
 }
 
+# Writes an ANSI CSI sequence.
 fn esc(seq) {
   print("@{ chr(27) }[@{ seq }")
 }
 
+# Returns text clipped to room bytes. A room below 1 is an empty string.
 fn clip(text, room) {
   if room < 1 { return "" }
   if text.length <= room { return text }
   return strings.slice(text, 0, room)
 }
 
+# Draws the buffer on the terminal and places the cursor.
 fn draw(buf, cols, rows) {
   if cols < 1 { let cols = 1 }
   if rows < 2 { let rows = 2 }
@@ -560,12 +617,14 @@ fn draw(buf, cols, rows) {
   esc("?25h")
 }
 
+# Returns a buffer for path. A missing file starts empty.
 fn open(path) {
   let text = ""
   if fs.exists(path) { let text = fs.read(path) }
   return buffer(text, path)
 }
 
+# Writes the buffer when the request is save or save-quit, then clears the dirty mark.
 fn commit(buf) {
   if buf.request != "save" && buf.request != "save-quit" { return buf }
   let quit = buf.request == "save-quit"
@@ -577,6 +636,7 @@ fn commit(buf) {
   return buf
 }
 
+# Runs the editor on the terminal and returns null. Without a terminal it prints "not a terminal".
 fn run(path) {
   if !term_tty() {
     eprintln("not a terminal")
@@ -621,12 +681,14 @@ fn run(path) {
   return null
 }
 
+# Returns true when name is this editor file.
 fn is_editor(name) {
   if name == null { return false }
   if name == "edit.bsh" || name == "std/edit.bsh" { return true }
   return strings.ends(name, "/edit.bsh")
 }
 
+# When this file is the program, edit the path in arg(1).
 if is_editor(arg(0)) {
   if arg(1) == null {
     eprintln("usage: bettersh std/edit.bsh file")

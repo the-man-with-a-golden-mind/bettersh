@@ -1,13 +1,16 @@
 #!/usr/bin/env bettersh
 
+# Runs cmd and returns its stdout. A non-zero status is an error.
 fn run(cmd) {
   return capture(cmd)
 }
 
+# Starts cmd and returns a job id for this process.
 fn spawn(cmd) {
   return proc_spawn(cmd)
 }
 
+# Waits for id and returns its stdout. Waiting again is an error.
 fn await(id) {
   return proc_await(id)
 }

@@ -57,5 +57,27 @@ for i in range(48):
     run(path, "run")
     run(path, "ast")
 
+bodies = [
+    'x=ab; echo "${x}" "${x:-z}" "${#x}" "${x#a}"\n',
+    'unset x; echo "${x-z}" "${x:-z}"\n',
+    'echo $((1 + 2 * 3)) $((4 % 3))\n',
+    'echo $((1++))\n',
+    'echo $((1, 2))\n',
+    'echo hi > redir.out\n',
+    'echo more >> redir.out\ncat < redir.out\n',
+    'echo err 2> fd.out\n',
+    'true &\nwait\n',
+    'true & wait\n',
+    'echo a | tr a b\n',
+    'case ab in a*) echo caseok ;; esac\n',
+    'f() { echo "$1"; }; f hi\n',
+]
+for i, body in enumerate(bodies):
+    path = os.path.join(dest, "g%d.sh" % i)
+    with open(path, "w") as fh:
+        fh.write(body)
+    run(path, "run")
+    run(path, "ast")
+
 sys.exit(fail)
 PY

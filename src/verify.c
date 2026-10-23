@@ -318,6 +318,9 @@ static int check_meta(const Chunk *chunk, const char **msg) {
     if (chunk->consts_len > 0 && !chunk->consts) {
         return fail(msg, "bad const");
     }
+    if ((chunk->names_len > 0 && !chunk->names) || (chunk->local_len > 0 && !chunk->local_names)) {
+        return fail(msg, "bad name");
+    }
     for (i = 0; i < chunk->consts_len; i++) {
         const Value *value = chunk->consts[i];
         if (!value || (unsigned)value->kind > (unsigned)VAL_FN) {

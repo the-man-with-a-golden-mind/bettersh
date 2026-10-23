@@ -21,9 +21,9 @@ Arguments after a script path are positional parameters. `-c` reads the next arg
 
 ## Install
 
-`make install` copies the binary to `$(PREFIX)/bin/bettersh` and every `std/*.bsh` file to `$(PREFIX)/std/`. `PREFIX` defaults to `/usr/local`. `DESTDIR` is prepended to both destinations. `make uninstall` removes those files.
+`make install` copies the binary to `$(PREFIX)/bin/bettersh` and every `std/*.bsh` file to `$(PREFIX)/lib/bettersh/std`. `PREFIX` defaults to `/usr/local`. `DESTDIR` is prepended to both destinations. `make uninstall` removes those files.
 
-`import std/...` looks for the module on `BETTERSH_PATH` (a colon-separated list), then in `./std`, then in `std` next to the binary, then in `std` in the parent of that directory. An installed binary finds `$(PREFIX)/std` by that last step.
+`import std/...` looks for the module on `BETTERSH_PATH` (a colon-separated list; each entry is tried as the directory and as its `std` subdirectory), then in `./std`, then in `std` next to the binary, then in `../lib/bettersh/std`, then in `../std`.
 
 ## Modern language
 
@@ -73,7 +73,7 @@ Indexing is `s[i]` and `a[i]`.
 
 String methods: `upper`, `lower`, `trim`, `split`, `contains`, `replace`, `length`, `index`, `slice`, `repeat`, `reverse`, `visible`. `upper` and `lower` change ASCII letters. `length` is the byte length. `visible` replaces bytes below 32, except tab, and byte 127 with `?`.
 
-Array methods: `length`, `push`, `pop`, `map`, `filter`, `reduce`, `sort`, `join`, `index`, `contains`, `slice`. `reverse` on an array returns one string of the items from last to first. `repeat` stringifies its receiver and repeats that text.
+Array methods: `length`, `push`, `pop`, `map`, `filter`, `reduce`, `sort`, `join`, `index`, `contains`, `slice`. `slice` keeps the receiver. On a string it returns the bytes from the start index up to, but not including, the end. On an array it returns those items. A start below 0 is 0. An end past the length is the length. When the start is not before the end, a string slice is empty and an array slice is an empty array. `reverse` on an array returns one string of the items from last to first. `repeat` stringifies its receiver and repeats that text.
 
 Map methods: `keys`, `values`, `has`, `remove`. Fields are `user.name`.
 
@@ -110,9 +110,9 @@ A module is read from its canonical path, cached, and evaluated once in a run. I
 
 Closures capture the environment where the function was defined. A modern `let` is not a shell variable.
 
-Values are refcounted. A value that contains itself is freed. An array or map cycle is freed when every remaining reference comes from inside that cycle. Function upvalues are not part of that walk. There is no tracing garbage collector.
+Values are refcounted. A value that contains itself is freed. An array, map, function, or environment cycle is freed when every remaining reference comes from inside that cycle and no function in it has an upvalue. A function that captures an upvalue keeps that cycle. There is no tracing garbage collector.
 
-The verifier checks opcode boundaries, indexes, jump targets, stack depth, stack merges, closure flags, parameter counts, constant kinds, and source spans before execution. A capture of a parent upvalue is not bounded by the child function's own capture list.
+The verifier checks opcode boundaries, indexes, jump targets, stack depth, stack merges, closure flags, parameter counts, constant kinds, and source spans before execution. A capture index has to name a local of the parent chunk or one of that parent's captures.
 
 ## Strict sh
 
@@ -137,6 +137,6 @@ Differences that are left on purpose, with the detail in `TODO.md`:
 ## What this tree does not claim
 
 - Open Group conformance.
-- A test of every sh script, or a record of the GitHub Actions workflow having run. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS and Ubuntu, and an Ubuntu job builds with ASan and UBSan and runs `./tests/run.sh` with `ASAN_OPTIONS=detect_leaks=0`. Leak detection stays off because a function and its environment can keep each other alive. The Ubuntu jobs install dash and curl. This tree has no record of that workflow running.
+- A test of every sh script, or a record of the GitHub Actions workflow having run. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS and Ubuntu, an Ubuntu job builds with ASan and UBSan and runs `./tests/run.sh` with `ASAN_OPTIONS=detect_leaks=1` and `UBSAN_OPTIONS=halt_on_error=1`, and an Ubuntu job runs `make test CC=clang`. The Ubuntu jobs install dash and curl. This tree has no record of that workflow running.
 - Cross-compilation, or a 10,000-case fuzz run.
 - UTF-8 strings, interned strings, or an ordered hash map.

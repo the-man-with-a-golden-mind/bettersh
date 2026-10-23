@@ -456,6 +456,17 @@ exit
                 wpid, st = os.waitpid(pid, os.WNOHANG)
                 if wpid == pid:
                     status = st
+                    while True:
+                        ready, _, _ = select.select([fd], [], [], 0.2)
+                        if not ready:
+                            break
+                        try:
+                            chunk = os.read(fd, 4096)
+                        except OSError:
+                            chunk = b""
+                        if not chunk:
+                            break
+                        data += chunk
                     break
             else:
                 try:

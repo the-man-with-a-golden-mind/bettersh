@@ -179,6 +179,12 @@ static void test_null_image(void) {
     chunk = chunk_new();
     chunk->ups_len = 1;
     expect_fail(chunk, "bad capture", "null ups");
+    chunk = chunk_new();
+    chunk->names_len = 1;
+    expect_fail(chunk, "bad name", "null names");
+    chunk = chunk_new();
+    chunk->local_len = 1;
+    expect_fail(chunk, "bad name", "null local names");
 }
 
 static void test_bad_const(void) {

@@ -571,7 +571,7 @@ int vm_field_name(VM *vm, const char *key) {
 
 int vm_field(VM *vm, uint16_t name) {
     Frame *fr = &vm->frames[vm->nframes - 1];
-    if (!fr->chunk || name >= fr->chunk->names_len || !fr->chunk->names[name]) {
+    if (!fr->chunk || !fr->chunk->names || name >= fr->chunk->names_len || !fr->chunk->names[name]) {
         Value *recv = vm_pop(vm);
         value_unref(recv);
         vm_fail(vm, "undefined field");

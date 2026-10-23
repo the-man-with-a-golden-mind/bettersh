@@ -91,7 +91,7 @@ fi
 
 printf '%s\n' '#!/usr/bin/env bettersh' 'import std/proc' 'println(proc.await(proc.spawn("false")))' >"$d/bad.bsh"
 both 'failed command' "$d/bad.bsh" || true
-if [ "$st" -ne 2 ] || [ -s "$d/vo" ] || ! grep -q 'proc.bsh:12:1: command failed' "$d/ve"; then
+if [ "$st" -ne 2 ] || [ -s "$d/vo" ] || ! grep -q 'proc.bsh:15:1: command failed' "$d/ve"; then
     bad 'failed command'
 fi
 
@@ -99,7 +99,7 @@ printf '%s\n' '#!/usr/bin/env bettersh' 'import std/proc' 'let id = proc.spawn("
     'println(proc.await(id))' 'println(proc.await(id))' >"$d/twice.bsh"
 both 'double await' "$d/twice.bsh" || true
 printf 'hi\n' >"$d/want"
-if [ "$st" -ne 2 ] || ! cmp -s "$d/want" "$d/vo" || ! grep -q 'proc.bsh:12:1: bad job' "$d/ve"; then
+if [ "$st" -ne 2 ] || ! cmp -s "$d/want" "$d/vo" || ! grep -q 'proc.bsh:15:1: bad job' "$d/ve"; then
     bad 'double await'
 fi
 

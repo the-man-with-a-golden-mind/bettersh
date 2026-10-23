@@ -1,8 +1,10 @@
 #include "module.h"
 
+#include "array.h"
 #include "compiler.h"
 #include "host.h"
 #include "interp.h"
+#include "map.h"
 #include "verify.h"
 #include "vm.h"
 
@@ -67,25 +69,82 @@ ModCache *modcache_new(const char *exe) {
     return cache;
 }
 
+typedef struct {
+    Value **at;
+    int n;
+    int cap;
+} DropSeen;
+
+static int drop_seen(DropSeen *seen, Value *value) {
+    int i;
+    for (i = 0; i < seen->n; i++) {
+        if (seen->at[i] == value) {
+            return 1;
+        }
+    }
+    if (seen->n >= seen->cap) {
+        seen->cap = seen->cap > 0 ? seen->cap * 2 : 16;
+        seen->at = xrealloc(seen->at, (size_t)seen->cap * sizeof(Value *));
+    }
+    seen->at[seen->n++] = value;
+    return 0;
+}
+
+/* The export map and the module environment both hold each function.
+   Drop the map's slot so the environment pin is the last owner. Nested
+   maps are the other module's export; walk each one once. */
+static void drop_bound_fns(Value *value, DropSeen *seen) {
+    uint32_t i;
+    if (!value) {
+        return;
+    }
+    if (value->kind == VAL_ARRAY && value->u.arr) {
+        if (drop_seen(seen, value)) {
+            return;
+        }
+        for (i = 0; i < value->u.arr->len; i++) {
+            Value *item = value->u.arr->items[i];
+            if (item && item->kind == VAL_FN && item->u.fn && item->u.fn->ienv) {
+                value->u.arr->items[i] = NULL;
+                value_unref(item);
+            } else {
+                drop_bound_fns(item, seen);
+            }
+        }
+    } else if (value->kind == VAL_MAP && value->u.map) {
+        if (drop_seen(seen, value)) {
+            return;
+        }
+        for (i = 0; i < value->u.map->len; i++) {
+            Value *item = value->u.map->vals[i];
+            if (item && item->kind == VAL_FN && item->u.fn && item->u.fn->ienv) {
+                value->u.map->vals[i] = NULL;
+                value_unref(item);
+            } else {
+                drop_bound_fns(item, seen);
+            }
+        }
+    }
+}
+
 void modcache_free(ModCache *cache) {
     int i;
+    DropSeen seen;
     if (!cache) {
         return;
     }
-    /* One module can hold another's map. Clear those slots first so the
-       export map is not kept alive by the importer, then drop the pin.
-       Functions still stored in the map keep the environment until the
-       map itself is released. */
+    memset(&seen, 0, sizeof seen);
     for (i = 0; i < cache->len; i++) {
-        ienv_clear(cache->items[i].env);
+        drop_bound_fns(cache->items[i].value, &seen);
+    }
+    free(seen.at);
+    for (i = 0; i < cache->len; i++) {
+        value_unref(cache->items[i].value);
+        cache->items[i].value = NULL;
     }
     for (i = 0; i < cache->len; i++) {
         ienv_unref(cache->items[i].env);
         cache->items[i].env = NULL;
-    }
-    for (i = 0; i < cache->len; i++) {
-        value_unref(cache->items[i].value);
-        cache->items[i].value = NULL;
         chunk_free(cache->items[i].chunk);
         cache->items[i].chunk = NULL;
         free(cache->items[i].key);

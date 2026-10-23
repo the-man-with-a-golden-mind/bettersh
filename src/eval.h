@@ -135,7 +135,11 @@ typedef struct EvalCtx {
     int dot_depth;
     int loop_depth;
     int no_tilde;
+    /* Assignment values expand a tilde after each unquoted colon. */
+    int assign_tilde;
     int forked;
+    /* This process exits after one simple command. An external is exec'd. */
+    int can_exec;
     int skip_func;
     /* command -p looks up the default path and ignores the hash. */
     int skip_hash;
@@ -183,6 +187,10 @@ typedef struct EvalCtx {
     WaitNote *waited;
     uint32_t nwaited;
     uint32_t cwaited;
+    /* Background pids this shell forked. Bare wait blocks on these only. */
+    pid_t *owned;
+    uint32_t nowned;
+    uint32_t cowned;
 } EvalCtx;
 
 int eval_node(EvalCtx *ctx, Node *node, int chk);
@@ -202,6 +210,11 @@ void shell_err(EvalCtx *ctx, int line, const char *fmt, ...);
 /* Record a special-builtin failure and ask the shell to exit. */
 void shell_abort(EvalCtx *ctx, int status);
 void shell_exit(int status);
+/* 1 when this node is one simple command, so a forked child may exec it. */
+int shell_can_exec(const Node *node);
+/* ENOEXEC: this process becomes a new shell running path. av and envp are
+   the argv and environment that execve was given. */
+int shell_script(EvalCtx *ctx, const char *path, char **av, char **envp);
 
 /* execing is 1 for a child that is about to execve. Otherwise the child evaluates. */
 void shell_at_fork(EvalCtx *ctx, int execing);

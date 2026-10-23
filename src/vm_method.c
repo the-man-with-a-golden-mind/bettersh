@@ -648,6 +648,8 @@ static int append_item(VM *vm, Str **acc, const Value *item) {
     return 0;
 }
 
+/* A string slice copies bytes [a, b). An array slice returns a new array
+   and shares each item. An empty span is an empty string or an empty array. */
 static int method_slice(VM *vm, Value *recv, Value **args) {
     int64_t len = 0;
     int64_t a = 0;
@@ -667,6 +669,10 @@ static int method_slice(VM *vm, Value *recv, Value **args) {
     }
     span = slice_span(args[0], args[1], len, &a, &b);
     if (span == 1) {
+        if (recv->kind == VAL_ARRAY) {
+            vm_push(vm, value_array(array_new()));
+            return 0;
+        }
         return push_empty(vm);
     }
     if (span == -2) {
@@ -687,17 +693,14 @@ static int method_slice(VM *vm, Value *recv, Value **args) {
         return 0;
     }
     {
-        Str *acc = NULL;
+        Array *out = array_new();
         int64_t i;
         for (i = a; i < b; i++) {
-            if (append_item(vm, &acc, recv->u.arr->items[(uint32_t)i]) != 0) {
-                return -1;
-            }
+            Value *item = recv->u.arr->items[(uint32_t)i];
+            value_ref(item);
+            array_push(out, item);
         }
-        if (!acc) {
-            acc = str_make(0);
-        }
-        vm_push(vm, value_str(acc));
+        vm_push(vm, value_array(out));
         return 0;
     }
 }

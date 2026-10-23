@@ -4,6 +4,7 @@
 #include "parser.h"
 #include "shjob.h"
 
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -456,6 +457,9 @@ void shell_at_fork(EvalCtx *ctx, int execing) {
         ctx->loop_depth = 0;
         ctx->break_n = 0;
         ctx->cont_n = 0;
+        /* A subshell is not inside the parent's trap. Its own EXIT trap runs. */
+        ctx->trapping = 0;
+        ctx->in_trap = 0;
     }
     /* The interactive prompt catches SIGINT. A child keeps the default
        unless the parent was ignoring it or a trap owns the signal. */
@@ -475,6 +479,77 @@ void child_exit(EvalCtx *ctx, int status) {
         status = ctx->status;
     }
     shell_exit(status);
+}
+
+int shell_can_exec(const Node *node) {
+    if (!node) {
+        return 0;
+    }
+    if (node->kind == NODE_SIMPLE) {
+        return 1;
+    }
+    if (node->kind == NODE_PIPELINE && node->u.pipeline.n == 1 && !node->u.pipeline.bang) {
+        return shell_can_exec(node->u.pipeline.cmds[0]);
+    }
+    if (node->kind == NODE_PROGRAM && node->u.program.n == 1 &&
+        node->u.program.items[0].sep != SEP_AMP) {
+        return shell_can_exec(node->u.program.items[0].node);
+    }
+    return 0;
+}
+
+static void shell_drop(EvalCtx *ctx);
+
+int shell_script(EvalCtx *ctx, const char *path, char **av, char **envp) {
+    FILE *fp;
+    char *buf = NULL;
+    size_t n = 0;
+    char tmp[1024];
+    size_t got;
+    Diag diag;
+    Node *root = NULL;
+    Arena *arena;
+    int argc;
+    int st;
+    fp = fopen(path, "rb");
+    if (!fp) {
+        shell_err(ctx, 0, "%s: %s", path, strerror(errno));
+        return 126;
+    }
+    while ((got = fread(tmp, 1, sizeof tmp, fp)) > 0) {
+        buf = xrealloc(buf, n + got + 1);
+        memcpy(buf + n, tmp, got);
+        n += got;
+    }
+    fclose(fp);
+    if (!buf) {
+        buf = xmalloc(1);
+    }
+    buf[n] = '\0';
+    diag_init(&diag, ctx->arena);
+    if (parse_script(ctx->arena, path, buf, n, &root, &diag) != 0) {
+        diag_print_sh(&diag, stderr, NULL);
+        free(buf);
+        return 2;
+    }
+    /* execve failed with ENOEXEC. Become the script, not a subshell. */
+    arena = ctx->arena;
+    argc = 0;
+    if (av) {
+        while (av[argc]) {
+            argc++;
+        }
+    }
+    shell_drop(ctx);
+    eval_begin(ctx, arena, path, argc, av, envp, buf, n);
+    st = eval_node(ctx, root, 1);
+    ctx->src = NULL;
+    ctx->src_len = 0;
+    free(buf);
+    if (ctx->exit_req || ctx->returning) {
+        st = ctx->status;
+    }
+    return st;
 }
 
 /* PWD is trusted only when it names this process's directory. */
@@ -523,14 +598,17 @@ void eval_begin(EvalCtx *ctx, Arena *arena, const char *filename, int argc, char
             snprintf(buf, sizeof buf, "%ld", (long)getppid());
             env_set(&ctx->env, "PPID", buf);
         }
+        /* Unset IFS still splits on space, tab, and newline, but "$IFS" is
+           empty until the shell sets the variable. Dash sets it. */
+        if (!env_get(&ctx->env, "IFS", &ppid)) {
+            env_set(&ctx->env, "IFS", " \t\n");
+        }
     }
     clear_pending();
     signal(SIGPIPE, SIG_IGN);
 }
 
-void eval_end(EvalCtx *ctx) {
-    traps_run(ctx);
-    run_exit_trap(ctx);
+static void shell_drop(EvalCtx *ctx) {
     for (uint32_t i = 0; i < ctx->nfuncs; i++) {
         free(ctx->funcs[i].name);
     }
@@ -567,6 +645,12 @@ void eval_end(EvalCtx *ctx) {
     }
     shell_state_free(ctx);
     env_free(&ctx->env);
+}
+
+void eval_end(EvalCtx *ctx) {
+    traps_run(ctx);
+    run_exit_trap(ctx);
+    shell_drop(ctx);
 }
 
 void shell_apply_start(EvalCtx *ctx, const ShellStart *start) {

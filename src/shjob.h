@@ -9,6 +9,8 @@ int shjob_monitor(EvalCtx *ctx, int on, int from_set);
 void shjob_child(pid_t pgid);
 void shjob_parent(pid_t pid, pid_t pgid);
 void shjob_add(EvalCtx *ctx, pid_t pid, char *text);
+/* Remember a background child so bare wait can block on it. */
+void shjob_own(EvalCtx *ctx, pid_t pid);
 /* Last process status. *stopped is 1 when the group stops.
    *failed is the rightmost non-zero status among pids. */
 int shjob_wait_fg(EvalCtx *ctx, pid_t pgid, const pid_t *pids, int n, int *stopped, int *sig,

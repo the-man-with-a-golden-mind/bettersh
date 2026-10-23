@@ -5,6 +5,7 @@
 #include "shjob.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,11 +13,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* Run an AST.
-   eval_node walks lists, compounds, and simple commands. A simple command
-   expands words, applies redirections, then runs a builtin, a function, or
-   an external program. Forked children call shell_at_fork and child_exit.
-   Expansion buffers live in expand.c. The path cache lives in hash.c. */
+/* Run an AST. Forked children call shell_at_fork and child_exit. */
 
 static void shell_prefix(EvalCtx *ctx, int line) {
     int shown = line;
@@ -239,6 +236,50 @@ static void job_in_child(EvalCtx *ctx, pid_t pgid) {
     }
 }
 
+/* Does not return. ENOEXEC means the file is a shell script. */
+static void exec_or_script(EvalCtx *ctx, const char *path, char **av, char **envp, const char *name) {
+    execve(path, av, envp);
+    if (errno == ENOEXEC) {
+        int st;
+        shell_at_fork(ctx, 0);
+        st = shell_script(ctx, path, av, envp);
+        child_exit(ctx, st);
+    }
+    fprintf(stderr, "bettersh: %s: %s\n", name, strerror(errno));
+    shell_exit(errno == ENOENT ? 127 : 126);
+}
+
+/* Index past `command [ -p ] exec`, or -1. Equals argc when exec has no args. */
+static int command_exec_at(char **argv, uint32_t argc, int *defpath) {
+    uint32_t i = 1;
+    int query = 0;
+    *defpath = 0;
+    if (argc < 2 || strcmp(argv[0], "command") != 0) {
+        return -1;
+    }
+    while (i < argc && argv[i][0] == '-' && argv[i][1] != '\0') {
+        const char *s;
+        if (strcmp(argv[i], "--") == 0) {
+            i++;
+            break;
+        }
+        for (s = argv[i] + 1; *s; s++) {
+            if (*s == 'p') {
+                *defpath = 1;
+            } else if (*s == 'v' || *s == 'V') {
+                query = 1;
+            } else {
+                return -1;
+            }
+        }
+        i++;
+    }
+    if (query || i >= argc || strcmp(argv[i], "exec") != 0) {
+        return -1;
+    }
+    return (int)(i + 1);
+}
+
 static void trace_simple(EvalCtx *ctx, char **aname, char **aval, int nassign, char **argv,
                          int argc) {
     const char *ps4 = NULL;
@@ -291,11 +332,13 @@ int launch(EvalCtx *ctx, int argc, char **argv, int chk) {
     if (!ctx->skip_func) {
         int index = func_index(ctx, argv[0]);
         if (index >= 0) {
+            ctx->can_exec = 0;
             return call_func(ctx, ctx->funcs[index].body, argc, argv, ctx->funcs[index].line, chk);
         }
     }
     int found = 0;
     if (builtin_is(argv[0]) && strcmp(argv[0], "exec") != 0) {
+        ctx->can_exec = 0;
         return builtin_call(ctx, argc, argv, &found);
     }
     const char *path_env = NULL;
@@ -326,6 +369,10 @@ int launch(EvalCtx *ctx, int argc, char **argv, int chk) {
     char **envp = env_build(&ctx->env, NULL, NULL, 0);
     char **av = argv_term(argc, argv);
     fflush(NULL);
+    if (ctx->can_exec) {
+        ctx->can_exec = 0;
+        exec_or_script(ctx, path, av, envp, argv[0]);
+    }
     pid_t pid = fork();
     if (pid < 0) {
         free(av);
@@ -340,10 +387,7 @@ int launch(EvalCtx *ctx, int argc, char **argv, int chk) {
         if (job_top(ctx)) {
             shjob_child(0);
         }
-        shell_at_fork(ctx, 1);
-        execve(path, av, envp);
-        fprintf(stderr, "bettersh: %s: %s\n", argv[0], strerror(errno));
-        shell_exit(errno == ENOENT ? 127 : 126);
+        exec_or_script(ctx, path, av, envp, argv[0]);
     }
     free(av);
     free(path);
@@ -365,15 +409,24 @@ int launch(EvalCtx *ctx, int argc, char **argv, int chk) {
         }
         return st;
     }
+    /* Other children reaped here stay quiet for a later explicit wait. */
     int status = 0;
     for (;;) {
-        pid_t got = waitpid(pid, &status, 0);
-        if (got < 0 && errno == EINTR && ctx->interactive) {
-            continue;
+        int w = 0;
+        pid_t got = waitpid(-1, &w, 0);
+        if (got < 0) {
+            if (errno == EINTR && ctx->interactive) {
+                continue;
+            }
+            break;
         }
-        break;
+        if (got == pid) {
+            status = w;
+            wait_show_signal(status);
+            break;
+        }
+        shjob_note_child(ctx, got, w, 1);
     }
-    wait_show_signal(status);
     return wait_status(status);
 }
 
@@ -434,47 +487,66 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
     }
     for (int i = 0; i < nassign; i++) {
         Word *word = node->u.simple.assigns[i];
-        int old_glob = ctx->noglob;
         aname[i] = dup_c(word->assign_name ? word->assign_name : "");
-        /* The value is expanded. It is not pathname-expanded. */
-        ctx->noglob = 1;
-        aval[i] = expand_flat(ctx, word);
-        ctx->noglob = old_glob;
-        if (!aval[i]) {
-            fields_free(&args);
-            for (int j = 0; j <= i; j++) {
-                free(aname[j]);
-                free(aval[j]);
+        aval[i] = NULL;
+        aold[i] = NULL;
+        ahad[i] = 0;
+        aexp[i] = 0;
+    }
+    /* Redirections run before assignment values, so ${x=redir} happens first. */
+    int keep = args.n == 0 || (args.n > 0 && builtin_special(args.v[0]));
+    SavedFd *saved = NULL;
+    int nsaved = 0;
+    int redir_fail =
+        apply_redirs(ctx, node->u.simple.redirs, node->u.simple.nredirs, &saved, &nsaved, node->line) <
+        0;
+    if (!redir_fail || keep) {
+        for (int i = 0; i < nassign; i++) {
+            Word *word = node->u.simple.assigns[i];
+            int old_glob = ctx->noglob;
+            const char *old = NULL;
+            ctx->noglob = 1;
+            ctx->assign_tilde = 1;
+            aval[i] = expand_flat(ctx, word);
+            ctx->assign_tilde = 0;
+            ctx->noglob = old_glob;
+            if (!aval[i]) {
+                restore_fds(saved, nsaved);
+                fields_free(&args);
+                for (int j = 0; j <= i; j++) {
+                    free(aname[j]);
+                    free(aval[j]);
+                    free(aold[j]);
+                }
+                free(aname);
+                free(aval);
+                free(aold);
+                free(ahad);
+                free(aexp);
+                return ctx->status;
             }
-            free(aname);
-            free(aval);
-            free(aold);
-            free(ahad);
-            free(aexp);
-            return ctx->status;
-        }
-        const char *old = NULL;
-        ahad[i] = env_get(&ctx->env, aname[i], &old);
-        aold[i] = ahad[i] ? dup_c(old) : NULL;
-        aexp[i] = env_exported(&ctx->env, aname[i]);
-        if (env_set(&ctx->env, aname[i], aval[i]) < 0) {
-            shell_err(ctx, node->line, "%s: is read only", aname[i]);
-            shell_abort(ctx, 2);
-            fields_free(&args);
-            for (int j = 0; j <= i; j++) {
-                free(aname[j]);
-                free(aval[j]);
-                free(aold[j]);
+            ahad[i] = env_get(&ctx->env, aname[i], &old);
+            aold[i] = ahad[i] ? dup_c(old) : NULL;
+            aexp[i] = env_exported(&ctx->env, aname[i]);
+            if (env_set(&ctx->env, aname[i], aval[i]) < 0) {
+                shell_err(ctx, node->line, "%s: is read only", aname[i]);
+                shell_abort(ctx, 2);
+                restore_fds(saved, nsaved);
+                fields_free(&args);
+                for (int j = 0; j <= i; j++) {
+                    free(aname[j]);
+                    free(aval[j]);
+                    free(aold[j]);
+                }
+                free(aname);
+                free(aval);
+                free(aold);
+                free(ahad);
+                free(aexp);
+                return 2;
             }
-            free(aname);
-            free(aval);
-            free(aold);
-            free(ahad);
-            free(aexp);
-            return 2;
         }
     }
-    int keep = args.n == 0 || (args.n > 0 && builtin_special(args.v[0]));
     if (keep) {
         for (int i = 0; i < nassign; i++) {
             if (strcmp(aname[i], "LINENO") == 0) {
@@ -487,21 +559,8 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
             env_export(&ctx->env, aname[i], 1);
         }
     }
-    SavedFd *saved = NULL;
-    int nsaved = 0;
     trace_simple(ctx, aname, aval, nassign, args.v, (int)args.n);
-    if (apply_redirs(ctx, node->u.simple.redirs, node->u.simple.nredirs, &saved, &nsaved, node->line) <
-        0) {
-        fields_free(&args);
-        if (!keep) {
-            for (int i = 0; i < nassign; i++) {
-                if (ahad[i]) {
-                    env_set(&ctx->env, aname[i], aold[i]);
-                } else {
-                    env_unset(&ctx->env, aname[i]);
-                }
-            }
-        }
+    if (redir_fail) {
         for (int i = 0; i < nassign; i++) {
             free(aname[i]);
             free(aval[i]);
@@ -512,6 +571,7 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
         free(aold);
         free(ahad);
         free(aexp);
+        fields_free(&args);
         restore_fds(saved, nsaved);
         note(ctx, ctx->status, chk);
         return ctx->status;
@@ -522,39 +582,60 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
         }
     }
     int status = 0;
-    int is_exec = args.n > 0 && strcmp(args.v[0], "exec") == 0;
+    int defpath = 0;
+    int exec_at = args.n > 0 ? command_exec_at(args.v, args.n, &defpath) : -1;
+    int plain_exec = exec_at >= 0;
+    int is_exec = (args.n > 0 && strcmp(args.v[0], "exec") == 0) || plain_exec;
     if (is_exec) {
+        int arg0 = plain_exec ? exec_at : 1;
         commit_fds(saved, nsaved);
         saved = NULL;
         nsaved = 0;
-        if (args.n == 1) {
+        if (arg0 >= (int)args.n) {
             status = 0;
         } else {
             const char *path_env = NULL;
-            env_get(&ctx->env, "PATH", &path_env);
-            char *path = path_lookup(args.v[1], path_env);
-            if (!path && strchr(args.v[1], '/') && access(args.v[1], F_OK) == 0) {
-                path = dup_c(args.v[1]);
-            }
-            char **envp = env_build(&ctx->env, aname, aval, nassign);
-            if (!path) {
-                shell_err(ctx, node->line, "exec: %s: not found", args.v[1]);
-                status = 127;
-                shell_abort(ctx, 127);
+            char *path;
+            if (defpath) {
+                path_env = "/usr/bin:/bin";
             } else {
-                char **av = argv_term(args.n - 1, args.v + 1);
+                env_get(&ctx->env, "PATH", &path_env);
+            }
+            path = path_lookup(args.v[arg0], path_env);
+            if (!path && strchr(args.v[arg0], '/') && access(args.v[arg0], F_OK) == 0) {
+                path = dup_c(args.v[arg0]);
+            }
+            if (!path) {
+                shell_err(ctx, node->line, "exec: %s: not found", args.v[arg0]);
+                status = 127;
+                if (!plain_exec) {
+                    shell_abort(ctx, 127);
+                }
+            } else {
+                char **av = argv_term((int)args.n - arg0, args.v + arg0);
+                char **envp = env_build(&ctx->env, aname, aval, nassign);
                 execve(path, av, envp);
+                if (errno == ENOEXEC) {
+                    int st;
+                    shell_at_fork(ctx, 0);
+                    st = shell_script(ctx, path, av, envp);
+                    child_exit(ctx, st);
+                }
                 free(av);
-                int err = errno;
-                shell_err(ctx, node->line, "exec: %s: %s", args.v[1], strerror(err));
-                status = err == ENOENT ? 127 : 126;
-                shell_abort(ctx, status);
+                {
+                    int err = errno;
+                    shell_err(ctx, node->line, "exec: %s: %s", args.v[arg0], strerror(err));
+                    status = err == ENOENT ? 127 : 126;
+                    if (!plain_exec) {
+                        shell_abort(ctx, status);
+                    }
+                }
                 free(path);
+                for (char **item = envp; item && *item; item++) {
+                    free(*item);
+                }
+                free(envp);
             }
-            for (char **item = envp; item && *item; item++) {
-                free(*item);
-            }
-            free(envp);
         }
     } else if (args.n == 0) {
         status = ctx->cmdsub_ran ? ctx->cmdsub_status : 0;
@@ -578,6 +659,9 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
             if (ahad[i]) {
                 env_set(&ctx->env, aname[i], aold[i]);
                 env_export(&ctx->env, aname[i], aexp[i]);
+            } else if (aexp[i]) {
+                env_unset(&ctx->env, aname[i]);
+                env_export(&ctx->env, aname[i], 1);
             } else {
                 env_unset(&ctx->env, aname[i]);
             }
@@ -598,13 +682,20 @@ static int eval_simple(EvalCtx *ctx, Node *node, int chk) {
     return status;
 }
 
-static int eval_pipeline(EvalCtx *ctx, Node *node, int chk) {
+static int eval_pipeline(EvalCtx *ctx, Node *node, int chk, int async) {
     uint32_t n = node->u.pipeline.n;
     if (n == 0) {
         return 0;
     }
-    if (n == 1 && !node->u.pipeline.bang) {
-        return eval_node(ctx, node->u.pipeline.cmds[0], chk);
+    if (n == 1) {
+        /* `!` does not fork one command. return, break, and continue stay here. */
+        int st = eval_node(ctx, node->u.pipeline.cmds[0], chk && !node->u.pipeline.bang);
+        if (node->u.pipeline.bang && !ctx->exit_req && !ctx->returning && !ctx->break_n &&
+            !ctx->cont_n) {
+            st = st == 0 ? 1 : 0;
+            note(ctx, st, 0);
+        }
+        return st;
     }
     /* A component keeps errexit unless this pipeline is exempt:
        it starts with !, or the caller is if/while or not the last AND-OR. */
@@ -640,6 +731,9 @@ static int eval_pipeline(EvalCtx *ctx, Node *node, int chk) {
                 close(fds[1]);
             }
             ctx->forked = 1;
+            if (shell_can_exec(node->u.pipeline.cmds[i])) {
+                ctx->can_exec = 1;
+            }
             int st = eval_node(ctx, node->u.pipeline.cmds[i], child_chk);
             child_exit(ctx, st);
         }
@@ -657,6 +751,17 @@ static int eval_pipeline(EvalCtx *ctx, Node *node, int chk) {
             prev = fds[0];
         }
         pids[i] = pid;
+    }
+    if (async) {
+        uint32_t k;
+        ctx->last_bg = pids[n - 1];
+        for (k = 0; k + 1 < n; k++) {
+            shjob_own(ctx, pids[k]);
+        }
+        job_add(ctx, pids[n - 1], node);
+        free(pids);
+        note(ctx, 0, 0);
+        return 0;
     }
     if (top) {
         int stopped = 0;
@@ -757,6 +862,11 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
             Item *item = &node->u.program.items[i];
             if (item->sep == SEP_AMP) {
                 fflush(NULL);
+                if (item->node && item->node->kind == NODE_PIPELINE &&
+                    item->node->u.pipeline.n > 1 && !job_top(ctx)) {
+                    st = eval_pipeline(ctx, item->node, 1, 1);
+                    continue;
+                }
                 pid_t pid = fork();
                 if (pid == 0) {
                     if (job_top(ctx)) {
@@ -764,6 +874,9 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
                     }
                     shell_at_fork(ctx, 0);
                     ctx->forked = 1;
+                    if (shell_can_exec(item->node)) {
+                        ctx->can_exec = 1;
+                    }
                     /* The async shell honors errexit. The parent does not. */
                     int child = eval_node(ctx, item->node, 1);
                     child_exit(ctx, child);
@@ -796,7 +909,7 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
         return eval_node(ctx, node->u.andor.right, chk);
     }
     case NODE_PIPELINE:
-        return eval_pipeline(ctx, node, chk);
+        return eval_pipeline(ctx, node, chk, 0);
     case NODE_SIMPLE:
         return eval_simple(ctx, node, chk);
     case NODE_BRACE:
@@ -814,6 +927,9 @@ int eval_node(EvalCtx *ctx, Node *node, int chk) {
             }
             shell_at_fork(ctx, 0);
             ctx->forked = 1;
+            if (shell_can_exec(node->u.group.body)) {
+                ctx->can_exec = 1;
+            }
             SavedFd *saved = NULL;
             int nsaved = 0;
             if (apply_redirs(ctx, node->u.group.redirs, node->u.group.nredirs, &saved, &nsaved,

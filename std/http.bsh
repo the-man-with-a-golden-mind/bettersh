@@ -1,5 +1,6 @@
 #!/usr/bin/env bettersh
 
+# Fetches url with curl and returns the body. Only http and https are allowed, with a 20 second limit. A single quote in url is quoted for the shell.
 fn get(url) {
   let q = url.replace("'", "'\\''")
   return capture("curl -fsS --proto =http,https --proto-redir =http,https --max-time 20 -- '@{ q }'")

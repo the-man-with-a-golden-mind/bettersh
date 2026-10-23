@@ -18,6 +18,7 @@ struct IEnv {
 
 static unsigned self_refs(const Value *value);
 static void release_cycle(Value *start);
+static int collect_env_graph(IEnv *root);
 
 /* release_cycle is not re-entered. A pin on trial_env is hidden from the
    internal-environment test so the collector can free that environment
@@ -189,35 +190,45 @@ void ienv_clear(IEnv *env) {
     env->refs--;
 }
 
+/* 1 when every function that captures env is held only by env's slots. */
+static int env_fns_ready(const IEnv *env) {
+    int i, j;
+    for (i = 0; i < env->len; i++) {
+        Value *value = env->vals[i];
+        int n = 0;
+        if (!value || value->kind != VAL_FN || !value->u.fn || value->u.fn->ienv != env) {
+            continue;
+        }
+        for (j = 0; j < env->len; j++) {
+            n += env->vals[j] == value;
+        }
+        if ((unsigned)n != value->refs) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 void ienv_unref(IEnv *env) {
-    int i;
     if (!env || env->refs == 0) {
         return;
     }
     if (env->refs > 1) {
         env->refs--;
         if (env->refs > env_backrefs(env)) {
-            /* A function reached through an array may be the remaining
-               owner. The pin keeps this environment allocated for the walk. */
-            if (!collecting && env->len > 0) {
-                env->refs++;
-                trial_env = env;
-                trial_hide = 1;
-                for (i = 0; i < env->len; i++) {
-                    if (env->vals[i]) {
-                        release_cycle(env->vals[i]);
-                    }
-                }
-                trial_env = NULL;
-                trial_hide = 0;
-                if (env->refs > 0) {
-                    env->refs--;
-                }
+            if (!collecting && collect_env_graph(env)) {
+                return;
             }
             if (env->refs > env_backrefs(env)) {
                 return;
             }
         }
+    }
+    if (!env_fns_ready(env)) {
+        if (!collecting && collect_env_graph(env)) {
+            return;
+        }
+        return;
     }
     env->refs = 0;
     for (int i = 0; i < env->len; i++) {
@@ -652,6 +663,269 @@ static void cycle_unlink(Value **set, uint32_t n) {
     free(seen_envs);
 }
 
+/* Values and environments reachable from root, including a child
+   environment a closure captured. Parent links stay inside this set. */
+typedef struct {
+    Value **vals;
+    uint32_t nvals;
+    uint32_t cvals;
+    IEnv **envs;
+    uint32_t nenvs;
+    uint32_t cenvs;
+} Graph;
+
+static int g_has_val(const Graph *g, const Value *value) {
+    uint32_t i;
+    for (i = 0; i < g->nvals; i++) {
+        if (g->vals[i] == value) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int g_has_env(const Graph *g, const IEnv *env) {
+    uint32_t i;
+    for (i = 0; i < g->nenvs; i++) {
+        if (g->envs[i] == env) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void g_add_val(Graph *g, Value *value) {
+    if (g->nvals == g->cvals) {
+        g->cvals = g->cvals ? g->cvals * 2 : 8;
+        g->vals = xrealloc(g->vals, (size_t)g->cvals * sizeof(Value *));
+    }
+    g->vals[g->nvals++] = value;
+}
+
+static void g_add_env(Graph *g, IEnv *env) {
+    if (g->nenvs == g->cenvs) {
+        g->cenvs = g->cenvs ? g->cenvs * 2 : 4;
+        g->envs = xrealloc(g->envs, (size_t)g->cenvs * sizeof(IEnv *));
+    }
+    g->envs[g->nenvs++] = env;
+}
+
+static int env_reaches(IEnv *env, IEnv *root) {
+    int guard = 0;
+    while (env && guard < 64) {
+        if (env == root) {
+            return 1;
+        }
+        env = env->parent;
+        guard++;
+    }
+    return 0;
+}
+
+static void g_walk_val(Graph *g, Value *value, IEnv *root);
+
+static void g_walk_env(Graph *g, IEnv *env, IEnv *root) {
+    int i;
+    if (!env || g_has_env(g, env) || !env_reaches(env, root)) {
+        return;
+    }
+    g_add_env(g, env);
+    for (i = 0; i < env->len; i++) {
+        g_walk_val(g, env->vals[i], root);
+    }
+}
+
+static void g_walk_val(Graph *g, Value *value, IEnv *root) {
+    if (!value || g_has_val(g, value)) {
+        return;
+    }
+    if (value->kind != VAL_ARRAY && value->kind != VAL_MAP && value->kind != VAL_FN) {
+        return;
+    }
+    g_add_val(g, value);
+    if (value->kind == VAL_ARRAY && value->u.arr) {
+        uint32_t i;
+        for (i = 0; i < value->u.arr->len; i++) {
+            g_walk_val(g, value->u.arr->items[i], root);
+        }
+    } else if (value->kind == VAL_MAP && value->u.map) {
+        uint32_t i;
+        for (i = 0; i < value->u.map->len; i++) {
+            g_walk_val(g, value->u.map->vals[i], root);
+        }
+    } else if (value->kind == VAL_FN && value->u.fn && value->u.fn->ienv) {
+        g_walk_env(g, value->u.fn->ienv, root);
+    }
+}
+
+static unsigned g_inbound(const Graph *g, const Value *target) {
+    unsigned n = 0;
+    uint32_t i;
+    for (i = 0; i < g->nenvs; i++) {
+        IEnv *env = g->envs[i];
+        int s;
+        for (s = 0; s < env->len; s++) {
+            if (env->vals[s] == target) {
+                n++;
+            }
+        }
+    }
+    for (i = 0; i < g->nvals; i++) {
+        Value *value = g->vals[i];
+        uint32_t j;
+        if (value->kind == VAL_ARRAY && value->u.arr) {
+            for (j = 0; j < value->u.arr->len; j++) {
+                if (value->u.arr->items[j] == target) {
+                    n++;
+                }
+            }
+        } else if (value->kind == VAL_MAP && value->u.map) {
+            for (j = 0; j < value->u.map->len; j++) {
+                if (value->u.map->vals[j] == target) {
+                    n++;
+                }
+            }
+        }
+    }
+    return n;
+}
+
+static unsigned g_expect(const Graph *g, const IEnv *env) {
+    unsigned n = 0;
+    uint32_t i;
+    for (i = 0; i < g->nvals; i++) {
+        Value *value = g->vals[i];
+        if (value->kind == VAL_FN && value->u.fn && value->u.fn->ienv == env) {
+            n++;
+        }
+    }
+    for (i = 0; i < g->nenvs; i++) {
+        n += g->envs[i]->parent == env;
+    }
+    return n;
+}
+
+/* 1 when value or something it contains captures an environment in g.
+   -1 when the chain is deeper than the stack. 0 on a cycle. */
+static int g_keeps(const Graph *g, Value *value, Value **stack, int sp) {
+    uint32_t i;
+    uint32_t n = 0;
+    Value **kids = NULL;
+    if (!value || sp >= 64) {
+        return value ? -1 : 0;
+    }
+    for (i = 0; i < (uint32_t)sp; i++) {
+        if (stack[i] == value) {
+            return 0;
+        }
+    }
+    stack[sp++] = value;
+    if (value->kind == VAL_FN) {
+        return value->u.fn && value->u.fn->ienv && g_has_env(g, value->u.fn->ienv);
+    }
+    if (value->kind == VAL_ARRAY && value->u.arr) {
+        kids = value->u.arr->items;
+        n = value->u.arr->len;
+    } else if (value->kind == VAL_MAP && value->u.map) {
+        kids = value->u.map->vals;
+        n = value->u.map->len;
+    }
+    for (i = 0; i < n; i++) {
+        int kid = g_keeps(g, kids[i], stack, sp);
+        if (kid != 0) {
+            return kid;
+        }
+    }
+    return 0;
+}
+
+static int g_closed(const Graph *g) {
+    Value *stack[64];
+    uint32_t i;
+    if (g->nenvs == 0) {
+        return 0;
+    }
+    for (i = 0; i < g->nenvs; i++) {
+        if (g->envs[i]->refs != g_expect(g, g->envs[i])) {
+            return 0;
+        }
+    }
+    for (i = 0; i < g->nvals; i++) {
+        Value *value = g->vals[i];
+        int keeps;
+        if (value->kind == VAL_FN && value->u.fn && value->u.fn->nups != 0) {
+            return 0;
+        }
+        keeps = g_keeps(g, value, stack, 0);
+        if (keeps < 0 || (keeps == 1 && value->refs != g_inbound(g, value))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void g_drop(Graph *g) {
+    free(g->vals);
+    free(g->envs);
+    memset(g, 0, sizeof(*g));
+}
+
+static int collect_env_graph(IEnv *root) {
+    Graph g;
+    uint32_t i;
+    if (!root || collecting) {
+        return 0;
+    }
+    memset(&g, 0, sizeof g);
+    g_walk_env(&g, root, root);
+    if (!g_closed(&g)) {
+        g_drop(&g);
+        return 0;
+    }
+    collecting = 1;
+    for (i = 0; i < g.nenvs; i++) {
+        g.envs[i]->refs = 0;
+    }
+    for (i = 0; i < g.nenvs; i++) {
+        IEnv *env = g.envs[i];
+        int s;
+        for (s = 0; s < env->len; s++) {
+            Value *value = env->vals[s];
+            env->vals[s] = NULL;
+            value_unref(value);
+        }
+    }
+    for (i = 0; i < g.nenvs; i++) {
+        IEnv *env = g.envs[i];
+        IEnv *parent = env->parent;
+        env->parent = NULL;
+        env->len = 0;
+        free(env->names);
+        free(env->vals);
+        if (parent && !g_has_env(&g, parent)) {
+            ienv_unref(parent);
+        }
+        free(env);
+    }
+    g_drop(&g);
+    collecting = 0;
+    return 1;
+}
+
+static void collect_fn_env(Value *start) {
+    IEnv *top;
+    int guard = 0;
+    if (!start || start->kind != VAL_FN || !start->u.fn || !start->u.fn->ienv) {
+        return;
+    }
+    top = start->u.fn->ienv;
+    while (top->parent && guard < 64) {
+        top = top->parent;
+        guard++;
+    }
+    collect_env_graph(top);
+}
+
 /* Free a closed group. Returns after freeing start when every member's
    refs equal the pointers from inside the group. One outside ref keeps
    the whole group. Cross pointers are cleared without an unref so the
@@ -669,12 +943,14 @@ static void release_cycle(Value *start) {
     if (n < 2) {
         free(set);
         collecting = 0;
+        collect_fn_env(start);
         return;
     }
     for (i = 0; i < n; i++) {
         if (set[i]->refs != cycle_inbound(set, n, set[i])) {
             free(set);
             collecting = 0;
+            collect_fn_env(start);
             return;
         }
     }
