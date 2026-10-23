@@ -245,6 +245,86 @@ static void test_trio_cycle(void) {
     value_unref(c);
 }
 
+/* Two functions, each stored in the other's upvalue cell. The frame
+   ref is one cell_unref per cell. The last outside value ref frees both. */
+static void test_fn_cycle(void) {
+    Value *a = value_fn(NULL, 0, 0);
+    Value *b = value_fn(NULL, 0, 0);
+    Cell *ca = cell_new(a);
+    Cell *cb = cell_new(b);
+    Cell **ua = xmalloc(sizeof(Cell *));
+    Cell **ub = xmalloc(sizeof(Cell *));
+    cell_ref(cb);
+    ua[0] = cb;
+    a->u.fn->ups = ua;
+    a->u.fn->nups = 1;
+    cell_ref(ca);
+    ub[0] = ca;
+    b->u.fn->ups = ub;
+    b->u.fn->nups = 1;
+    cell_unref(ca);
+    cell_unref(cb);
+    check(ca->refs == 1 && cb->refs == 1, "fn cycle frame dropped");
+    check(a->refs == 2 && b->refs == 2, "fn cycle outside refs");
+    value_unref(a);
+    check(a->refs == 1, "fn cycle a held by b");
+    check(b->refs == 2, "fn cycle b still outside");
+    check(ca->value == a, "fn cycle link");
+    value_unref(b);
+}
+
+/* The function's only ref is the array. The array's only ref is the cell.
+   The cell's only ref is the function. Dropping the frame and the array's
+   outside ref frees the group. */
+static void test_fn_array_cycle(void) {
+    Value *box = value_array(array_new());
+    Value *fn = value_fn(NULL, 0, 0);
+    Cell *cell = cell_new(box);
+    Cell **ups = xmalloc(sizeof(Cell *));
+    cell_ref(cell);
+    ups[0] = cell;
+    fn->u.fn->ups = ups;
+    fn->u.fn->nups = 1;
+    array_push(box->u.arr, fn);
+    check(fn->refs == 1, "fn array holds the function");
+    check(box->refs == 2, "fn array outside plus cell");
+    cell_unref(cell);
+    check(cell->refs == 1, "fn array frame dropped");
+    check(box->refs == 2, "fn array still outside");
+    value_unref(box);
+}
+
+/* The function is reachable only through an array stored in its own
+   environment. Dropping the call ref frees the environment too. */
+static void test_fn_env_cycle(void) {
+    IEnv *env = ienv_new(NULL);
+    Value *box = value_array(array_new());
+    Value *fn = value_fn(NULL, 0, 0);
+    ienv_ref(env);
+    fn->u.fn->ienv = env;
+    ienv_bind(env, "box", box);
+    value_unref(box);
+    array_push(box->u.arr, fn);
+    check(fn->refs == 1, "fn env array holds the function");
+    value_ref(fn);
+    ienv_unref(env);
+    check(fn->refs == 2, "outside keeps the env cycle");
+    value_unref(fn);
+}
+
+/* A named function stored in the environment it captures. The call ref
+   is the last outside owner. env_backrefs frees it. */
+static void test_fn_env_backref(void) {
+    IEnv *env = ienv_new(NULL);
+    Value *fn = value_fn(NULL, 0, 0);
+    ienv_ref(env);
+    fn->u.fn->ienv = env;
+    ienv_bind(env, "f", fn);
+    value_unref(fn);
+    check(fn->refs == 1, "named function held by env");
+    ienv_unref(env);
+}
+
 static void test_nested(void) {
     Array *inner = array_new();
     array_push(inner, value_str(str_from_c("x")));
@@ -272,6 +352,10 @@ int main(void) {
     test_pair_cycle();
     test_map_cycle();
     test_trio_cycle();
+    test_fn_cycle();
+    test_fn_array_cycle();
+    test_fn_env_cycle();
+    test_fn_env_backref();
     test_nested();
     if (fails) {
         fprintf(stderr, "%d value checks failed\n", fails);

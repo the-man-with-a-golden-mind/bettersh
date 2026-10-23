@@ -28,20 +28,28 @@ static void grow_bytes(void **ptr, uint32_t *cap, uint32_t need, uint32_t elem) 
 static void chunk_clear(Chunk *chunk) {
     free(chunk->code);
     free(chunk->lines);
-    for (uint32_t i = 0; i < chunk->consts_len; i++) {
-        value_unref(chunk->consts[i]);
+    if (chunk->consts) {
+        for (uint32_t i = 0; i < chunk->consts_len; i++) {
+            value_unref(chunk->consts[i]);
+        }
     }
     free(chunk->consts);
-    for (uint32_t i = 0; i < chunk->names_len; i++) {
-        str_unref(chunk->names[i]);
+    if (chunk->names) {
+        for (uint32_t i = 0; i < chunk->names_len; i++) {
+            str_unref(chunk->names[i]);
+        }
     }
     free(chunk->names);
-    for (uint32_t i = 0; i < chunk->local_len; i++) {
-        str_unref(chunk->local_names[i]);
+    if (chunk->local_names) {
+        for (uint32_t i = 0; i < chunk->local_len; i++) {
+            str_unref(chunk->local_names[i]);
+        }
     }
     free(chunk->local_names);
-    for (uint32_t i = 0; i < chunk->children_len; i++) {
-        chunk_clear(&chunk->children[i]);
+    if (chunk->children) {
+        for (uint32_t i = 0; i < chunk->children_len; i++) {
+            chunk_clear(&chunk->children[i]);
+        }
     }
     free(chunk->children);
     free(chunk->words);
@@ -170,7 +178,7 @@ uint32_t chunk_word(Chunk *chunk, WordDesc word, const HoleDesc *holes, uint32_t
 }
 
 int chunk_width(const uint8_t *code, uint32_t code_len, uint32_t ip) {
-    if (ip >= code_len) {
+    if (!code || ip >= code_len) {
         return 0;
     }
     int width = 1;

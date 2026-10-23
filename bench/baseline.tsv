@@ -1,0 +1,12 @@
+# Informational times from one Mac, in seconds, for ./bettersh.
+# Not a gate. make bench prints the percent against this file and still
+# passes when the machine is slower.
+# The gap versus dash on parameter length, case, and functions is about
+# 3-5x on that machine. The hot paths are a linear variable scan, arithmetic
+# text that is reparsed, and a fresh allocation on assignment.
+arith.sh 0.069
+length.sh 0.205
+case.sh 0.194
+func.sh 0.231
+printf.sh 0.209
+squares.bsh 0.168

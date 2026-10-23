@@ -10,10 +10,19 @@ if [ ! -x "$bin" ]; then
 fi
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
-python3 - "$bin" "$d" <<'PY'
-import subprocess, sys, time
+python3 - "$bin" "$d" "bench/baseline.tsv" <<'PY'
+import os, subprocess, sys, time
 
-bin, dest = sys.argv[1], sys.argv[2]
+bin, dest, base_path = sys.argv[1], sys.argv[2], sys.argv[3]
+base_times = {}
+if os.path.isfile(base_path):
+    for line in open(base_path, "r", encoding="utf-8"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) == 2:
+            base_times[parts[0]] = float(parts[1])
 shells = [bin, "/bin/sh", "dash"]
 
 posix = {
@@ -168,6 +177,9 @@ for label, name, shared in labels:
             rows.append((sh, best))
             shown = "bettersh" if sh == bin else sh
             print("  %-10s %7.3fs  rc=%s" % (shown, best[0], best[1]))
+            if sh == bin and name in base_times and base_times[name] > 0:
+                pct = (best[0] - base_times[name]) / base_times[name] * 100.0
+                print("             baseline %+6.1f%%" % pct)
         base = rows[0][1]
         for sh, row in rows:
             if row[1] != base[1] or row[2] != base[2] or row[3] != base[3]:
@@ -181,6 +193,9 @@ for label, name, shared in labels:
     else:
         best = min((once([bin, path]) for _ in range(3)), key=lambda row: row[0])
         print("  %-10s %7.3fs  rc=%s" % ("bettersh", best[0], best[1]))
+        if name in base_times and base_times[name] > 0:
+            pct = (best[0] - base_times[name]) / base_times[name] * 100.0
+            print("             baseline %+6.1f%%" % pct)
         if best[1] != 0 or best[2] != expect[name] or best[3]:
             failed = True
             sys.stderr.write("bad %s rc=%s out=%r err=%r\n" % (name, best[1], best[2], best[3]))

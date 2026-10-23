@@ -1,5 +1,7 @@
 /bettersh
 *.o
 *.dSYM
+/dist/
 /tests/value_test
 /tests/verify_test
+/tests/chunk_fuzz

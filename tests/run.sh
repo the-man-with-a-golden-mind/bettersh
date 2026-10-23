@@ -89,6 +89,15 @@ if [ -x tests/verify_test ]; then
 else
     bad tests/verify_test
 fi
+if [ -x tests/chunk_fuzz ]; then
+    if tests/chunk_fuzz; then
+        pass=$((pass + 1))
+    else
+        bad tests/chunk_fuzz
+    fi
+else
+    bad tests/chunk_fuzz
+fi
 for f in tests/language/*.bsh; do
     [ -f "$f" ] || continue
     base=${f%.bsh}
@@ -156,6 +165,15 @@ if [ "$asan" -eq 0 ] && [ "${BETTERSH_LEAKS:-0}" = 1 ] && command -v leaks >/dev
         pass=$((pass + 1))
     else
         bad "tests/verify_test leaks"
+        tail -n 30 "$out" >&2
+    fi
+    rm -f "$out"
+    out=$(mktemp)
+    if leaks --atExit -- tests/chunk_fuzz >"$out" 2>&1 &&
+        grep -q '0 leaks for 0 total leaked bytes' "$out"; then
+        pass=$((pass + 1))
+    else
+        bad "tests/chunk_fuzz leaks"
         tail -n 30 "$out" >&2
     fi
     rm -f "$out"

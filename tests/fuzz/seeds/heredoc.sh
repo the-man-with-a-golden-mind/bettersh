@@ -1,0 +1,2 @@
+cat <<END
+no delimiter

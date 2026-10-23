@@ -98,16 +98,87 @@ static void test_bad_capture(void) {
 }
 
 static void test_capture_ok(void) {
-    Chunk *chunk = chunk_new();
+    Chunk *root = chunk_new();
+    Chunk *mid = chunk_new();
+    Chunk *leaf = chunk_new();
     const char *msg = "set";
-    chunk->ups = xmalloc(2 * sizeof(UpDesc));
-    chunk->ups[0].index = 4;
-    chunk->ups[0].local = 0;
-    chunk->ups[1].index = 0;
-    chunk->ups[1].local = 1;
-    chunk->ups_len = 2;
-    check(verify_chunk(chunk, &msg) == 0, "parent capture");
-    chunk_free(chunk);
+    root->max_locals = 1;
+    mid->ups = xmalloc(sizeof(UpDesc));
+    mid->ups[0].index = 0;
+    mid->ups[0].local = 1;
+    mid->ups_len = 1;
+    leaf->ups = xmalloc(sizeof(UpDesc));
+    leaf->ups[0].index = 0;
+    leaf->ups[0].local = 0;
+    leaf->ups_len = 1;
+    chunk_child(mid, leaf);
+    chunk_child(root, mid);
+    check(verify_chunk(root, &msg) == 0, "parent capture");
+    chunk_free(root);
+}
+
+static void test_capture_root(void) {
+    Chunk *chunk = chunk_new();
+    chunk->max_locals = 1;
+    chunk->ups = xmalloc(sizeof(UpDesc));
+    chunk->ups[0].index = 0;
+    chunk->ups[0].local = 1;
+    chunk->ups_len = 1;
+    expect_fail(chunk, "bad capture", "root capture");
+}
+
+static void test_capture_past_local(void) {
+    Chunk *root = chunk_new();
+    Chunk *child = chunk_new();
+    root->max_locals = 1;
+    child->ups = xmalloc(sizeof(UpDesc));
+    child->ups[0].index = 1;
+    child->ups[0].local = 1;
+    child->ups_len = 1;
+    chunk_child(root, child);
+    expect_fail(root, "bad capture", "local past parent");
+}
+
+static void test_capture_past_up(void) {
+    Chunk *root = chunk_new();
+    Chunk *mid = chunk_new();
+    Chunk *leaf = chunk_new();
+    root->max_locals = 1;
+    mid->ups = xmalloc(sizeof(UpDesc));
+    mid->ups[0].index = 0;
+    mid->ups[0].local = 1;
+    mid->ups_len = 1;
+    leaf->ups = xmalloc(sizeof(UpDesc));
+    leaf->ups[0].index = 1;
+    leaf->ups[0].local = 0;
+    leaf->ups_len = 1;
+    chunk_child(mid, leaf);
+    chunk_child(root, mid);
+    expect_fail(root, "bad capture", "upvalue past parent");
+}
+
+static void test_capture_slot_256(void) {
+    Chunk *root = chunk_new();
+    Chunk *child = chunk_new();
+    root->max_locals = 300;
+    child->ups = xmalloc(sizeof(UpDesc));
+    child->ups[0].index = 256;
+    child->ups[0].local = 1;
+    child->ups_len = 1;
+    chunk_child(root, child);
+    expect_fail(root, "bad capture", "local capture past 255");
+}
+
+static void test_null_image(void) {
+    Chunk *chunk = chunk_new();
+    chunk->code_len = 4;
+    expect_fail(chunk, "bad opcode", "null code");
+    chunk = chunk_new();
+    chunk->children_len = 1;
+    expect_fail(chunk, "bad function", "null children");
+    chunk = chunk_new();
+    chunk->ups_len = 1;
+    expect_fail(chunk, "bad capture", "null ups");
 }
 
 static void test_bad_const(void) {
@@ -178,6 +249,11 @@ int main(void) {
     test_bad_params();
     test_bad_capture();
     test_capture_ok();
+    test_capture_root();
+    test_capture_past_local();
+    test_capture_past_up();
+    test_capture_slot_256();
+    test_null_image();
     test_bad_const();
     test_const_ok();
     test_bad_span();

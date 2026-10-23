@@ -9,10 +9,12 @@ typedef struct Jobs Jobs;
 struct ShellStart;
 
 /* Run a verified chunk. Returns the process status.
-   shstart is NULL for a modern program. */
+   shstart is NULL for a modern program.
+   step_limit 0 does not stop the loop. A positive limit sets stop
+   after that many dispatches and does not mark the run failed. */
 int vm_run(Arena *arena, const char *filename, const char *src, size_t src_len, Chunk *chunk,
            int argc, char **argv, char **envp, int trace, ModCache *mods, Jobs *jobs,
-           const struct ShellStart *shstart);
+           const struct ShellStart *shstart, int step_limit);
 
 /* Run a module chunk. On success *exported is one new reference of its map.
    The chunk stays owned by the caller. */

@@ -37,6 +37,9 @@ typedef struct VM {
     int failed;
     int stop;
     int status;
+    /* 0 means no limit. A positive limit stops the loop without failing. */
+    int step_limit;
+    int steps;
     int line;
     struct ModCache *mods;
     struct Jobs *jobs;

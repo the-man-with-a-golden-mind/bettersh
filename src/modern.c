@@ -61,7 +61,7 @@ static int modern_body(const char *filename, const char *src, size_t len, int ar
     {
         ModCache *mods = modcache_new(exe);
         Jobs *jobs = jobs_new();
-        int status = vm_run(&arena, file, src, len, chunk, argc, argv, envp, trace, mods, jobs, NULL);
+        int status = vm_run(&arena, file, src, len, chunk, argc, argv, envp, trace, mods, jobs, NULL, 0);
         chunk_free(chunk);
         modcache_free(mods);
         jobs_free(jobs);

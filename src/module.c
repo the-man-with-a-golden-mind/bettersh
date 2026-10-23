@@ -303,6 +303,22 @@ static int search_std(const char *file, const char *exe, char **out) {
     free(nested);
     free(under);
     under = join_path(dir, "..");
+    nested = join_path(under, "lib");
+    {
+        char *ns = join_path(nested, "bettersh");
+        char *stdp = join_path(ns, "std");
+        char *deep = join_path(stdp, file);
+        int rc = try_file(deep, out);
+        free(deep);
+        free(stdp);
+        free(ns);
+        free(nested);
+        if (rc == 0) {
+            free(under);
+            free(dir);
+            return 0;
+        }
+    }
     nested = join_path(under, "std");
     {
         char *deep = join_path(nested, file);
@@ -465,7 +481,8 @@ int module_load(ModCache *cache, Jobs *jobs, Arena *arena, const char *from_file
     char *src = NULL;
     size_t len = 0;
     int pushed = 0;
-    ModEntry *entry = NULL;
+    int slot = -1;
+    const char *key = NULL;
     ModEntry *hit;
     char miss[256];
     *out = NULL;
@@ -490,12 +507,15 @@ int module_load(ModCache *cache, Jobs *jobs, Arena *arena, const char *from_file
         free(canon);
         return -1;
     }
-    entry = cache_add(cache, canon);
+    /* A nested import reallocates cache->items. The slot stays; a pointer does not. */
+    slot = cache->len;
+    cache_add(cache, canon);
     canon = NULL;
-    entry->state = MOD_LOADING;
-    cache_push(cache, entry->key);
+    key = cache->items[slot].key;
+    cache->items[slot].state = MOD_LOADING;
+    cache_push(cache, key);
     pushed = 1;
-    if (read_whole(entry->key, &src, &len) != 0) {
+    if (read_whole(key, &src, &len) != 0) {
         mod_err(from_file, err_line, "cannot read module");
         goto fail;
     }
@@ -503,52 +523,51 @@ int module_load(ModCache *cache, Jobs *jobs, Arena *arena, const char *from_file
         Diag diag;
         MNode *root = NULL;
         diag_init(&diag, arena);
-        if (mod_parse(arena, &diag, entry->key, src, len, &root) != 0) {
+        if (mod_parse(arena, &diag, key, src, len, &root) != 0) {
             diag_print(&diag, stderr);
             goto fail;
         }
         if (use_interp) {
             IEnv *pin = NULL;
             Value *map = NULL;
-            if (interp_module(arena, entry->key, src, len, root, argc, argv, envp, cache, jobs, &map,
-                              &pin) != 0) {
+            if (interp_module(arena, key, src, len, root, argc, argv, envp, cache, jobs, &map, &pin) !=
+                0) {
                 goto fail;
             }
-            entry->env = pin;
-            entry->value = map;
+            cache->items[slot].env = pin;
+            cache->items[slot].value = map;
         } else {
             Chunk *chunk = NULL;
             Value *map = NULL;
             const char *why = NULL;
-            if (compile_program(arena, &diag, entry->key, root, &chunk) != 0) {
+            if (compile_program(arena, &diag, key, root, &chunk) != 0) {
                 diag_print(&diag, stderr);
                 goto fail;
             }
             if (verify_chunk(chunk, &why) != 0) {
-                fprintf(stderr, "%s:1:1: %s\n", entry->key, why ? why : "bad bytecode");
+                fprintf(stderr, "%s:1:1: %s\n", key, why ? why : "bad bytecode");
                 chunk_free(chunk);
                 goto fail;
             }
-            entry->chunk = chunk;
-            if (vm_run_module(arena, entry->key, src, len, chunk, argc, argv, envp, cache, jobs, &map) !=
-                0) {
+            cache->items[slot].chunk = chunk;
+            if (vm_run_module(arena, key, src, len, chunk, argc, argv, envp, cache, jobs, &map) != 0) {
                 goto fail;
             }
-            entry->value = map;
+            cache->items[slot].value = map;
         }
     }
-    entry->state = MOD_READY;
+    cache->items[slot].state = MOD_READY;
     cache_pop(cache);
-    value_ref(entry->value);
-    *out = entry->value;
+    value_ref(cache->items[slot].value);
+    *out = cache->items[slot].value;
     free(src);
     return 0;
 fail:
     if (pushed) {
         cache_pop(cache);
     }
-    if (entry) {
-        cache_remove(cache, entry);
+    if (slot >= 0) {
+        cache_remove(cache, &cache->items[slot]);
     }
     free(canon);
     free(src);

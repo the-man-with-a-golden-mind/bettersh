@@ -114,7 +114,7 @@ static int run_shell_vm(const char *path, const char *src, size_t len, int argc,
         return 0;
     }
     arena_init(&arena);
-    status = vm_run(&arena, path, src, len, chunk, argc, argv, envp, trace, NULL, NULL, start);
+    status = vm_run(&arena, path, src, len, chunk, argc, argv, envp, trace, NULL, NULL, start, 0);
     chunk_free(chunk);
     arena_free(&arena);
     return status;

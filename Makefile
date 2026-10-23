@@ -24,11 +24,13 @@ OBJ = $(SRC:.c=.o)
 
 PREFIX  ?= /usr/local
 bindir   = $(PREFIX)/bin
-# The binary finds std/ in its own directory and in the parent of that directory.
-stdlibdir = $(PREFIX)/std
+# The binary finds std/ in ./std, beside itself, under lib/bettersh/std
+# in the parent of its directory, and in the parent's std/.
+stdlibdir = $(PREFIX)/lib/bettersh/std
 STD = $(wildcard std/*.bsh)
+FUZZ_OBJ = $(filter-out src/main.o,$(OBJ))
 
-.PHONY: all test test-host bench debug clean install uninstall
+.PHONY: all test test-host bench debug clean install uninstall dist
 
 all: bettersh
 
@@ -44,14 +46,19 @@ tests/verify_test: tests/verify_test.c src/verify.o src/chunk.o src/value.o src/
 	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -iquote src -o $@ tests/verify_test.c \
 		src/verify.o src/chunk.o src/value.o src/string.o src/array.o src/map.o src/arena.o $(LDFLAGS)
 
+tests/chunk_fuzz: tests/chunk_fuzz.c $(FUZZ_OBJ)
+	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -iquote src -o $@ tests/chunk_fuzz.c \
+		$(FUZZ_OBJ) $(LDFLAGS) -lm
+
 src/%.o: src/%.c src/*.h
 	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -DBETTERSH_VERSION='"$(VERSION)"' -iquote src -c $< -o $@
 
-test: bettersh tests/value_test tests/verify_test
+test: bettersh tests/value_test tests/verify_test tests/chunk_fuzz
 	./tests/run.sh
 
-# Network, the absolute perf threshold, and Apple leaks. Not part of test.
-test-host: bettersh tests/value_test tests/verify_test
+# Network, the perf script, and Apple leaks. Not part of test.
+# The perf script prints a time. It fails only when BETTERSH_PERF_LIMIT is set.
+test-host: bettersh tests/value_test tests/verify_test tests/chunk_fuzz
 	BETTERSH_NET=1 BETTERSH_PERF=1 BETTERSH_LEAKS=1 ./tests/run.sh
 
 # Wall times. Not part of test, and not the 0.2s perf check.
@@ -61,10 +68,10 @@ bench: bettersh
 debug:
 	$(MAKE) clean
 	$(MAKE) CFLAGS="-O0 -g -fsanitize=address,undefined" \
-		LDFLAGS="-fsanitize=address,undefined" bettersh tests/value_test tests/verify_test
+		LDFLAGS="-fsanitize=address,undefined" bettersh tests/value_test tests/verify_test tests/chunk_fuzz
 
 clean:
-	rm -f $(OBJ) bettersh tests/value_test tests/verify_test
+	rm -f $(OBJ) bettersh tests/value_test tests/verify_test tests/chunk_fuzz
 
 install: bettersh
 	mkdir -p $(DESTDIR)$(bindir) $(DESTDIR)$(stdlibdir)
@@ -74,3 +81,12 @@ install: bettersh
 uninstall:
 	rm -f $(DESTDIR)$(bindir)/bettersh $(addprefix $(DESTDIR)$(stdlibdir)/,$(notdir $(STD)))
 	-rmdir $(DESTDIR)$(stdlibdir)
+	-rmdir $(DESTDIR)$(PREFIX)/lib/bettersh
+	-rmdir $(DESTDIR)$(PREFIX)/lib
+
+# Archive of HEAD. Run this after the release commit.
+dist:
+	mkdir -p dist
+	git archive --format=tar.gz --prefix=bettersh-$(VERSION)/ -o dist/bettersh-$(VERSION).tar.gz HEAD
+	(shasum -a 256 dist/bettersh-$(VERSION).tar.gz || sha256sum dist/bettersh-$(VERSION).tar.gz) \
+		> dist/bettersh-$(VERSION).tar.gz.sha256

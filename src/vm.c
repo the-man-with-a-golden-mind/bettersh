@@ -425,7 +425,15 @@ static void dispatch(VM *vm, Frame *fr, Chunk *chunk, uint32_t ip, int width, ui
 
 void vm_loop(VM *vm, int mark) {
     while (!vm->failed && !vm->stop && vm->nframes >= mark) {
-        Frame *fr = &vm->frames[vm->nframes - 1];
+        Frame *fr;
+        if (vm->step_limit > 0) {
+            vm->steps++;
+            if (vm->steps > vm->step_limit) {
+                vm->stop = 1;
+                return;
+            }
+        }
+        fr = &vm->frames[vm->nframes - 1];
         Chunk *chunk = fr->chunk;
         if (!chunk || fr->ip >= chunk->code_len) {
             if (vm->nframes == 1) {
@@ -465,9 +473,12 @@ void vm_loop(VM *vm, int mark) {
 
 int vm_run(Arena *arena, const char *filename, const char *src, size_t src_len, Chunk *chunk,
            int argc, char **argv, char **envp, int trace, ModCache *mods, Jobs *jobs,
-           const ShellStart *shstart) {
+           const ShellStart *shstart, int step_limit) {
     VM vm;
     memset(&vm, 0, sizeof vm);
+    if (step_limit > 0) {
+        vm.step_limit = step_limit;
+    }
     vm.arena = arena;
     vm.filename = filename ? filename : "bettersh";
     vm.src = src ? src : "";

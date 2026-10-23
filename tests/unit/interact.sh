@@ -395,6 +395,139 @@ exit
             sys.stderr.write("tty warning under a terminal stdio\n")
             return 1
         return 0
+    if kind == "endure":
+        env["PS1"] = "P "
+        env["PS2"] = "S "
+        steps = [
+            b"echo MARK\n",
+            b"sleep 30\n",
+            b"\x1a",
+            b"jobs\nbg\nkill %1\necho STOPOK\n",
+            b"sleep 1 &\njobs\nfg\necho FGOK\n",
+            b"fc -l\nexit\n",
+        ]
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ.update(env)
+            os.execv(bin, [bin, "-i"])
+            os._exit(127)
+        data = b""
+        step = 0
+        sent = 0
+        status = None
+        gap = 0.4
+        next_send = time.time() + gap
+        deadline = time.time() + 12
+        winches = 0
+        try:
+            while time.time() < deadline:
+                if winches < 3 and data:
+                    try:
+                        os.kill(pid, signal.SIGWINCH)
+                    except OSError:
+                        pass
+                    winches += 1
+                payload = steps[step] if step < len(steps) else b""
+                write_set = [fd] if step < len(steps) and time.time() >= next_send else []
+                ready, writable, _ = select.select([fd], write_set, [], 0.05)
+                if fd in ready:
+                    try:
+                        chunk = os.read(fd, 4096)
+                    except OSError:
+                        chunk = b""
+                    if chunk:
+                        data += chunk
+                    else:
+                        _, st = os.waitpid(pid, 0)
+                        status = st
+                        break
+                if writable and sent < len(payload):
+                    try:
+                        n = os.write(fd, payload[sent:sent + 64])
+                    except OSError:
+                        n = 0
+                    if n <= 0:
+                        break
+                    sent += n
+                    if sent >= len(payload):
+                        step += 1
+                        sent = 0
+                        next_send = time.time() + gap
+                wpid, st = os.waitpid(pid, os.WNOHANG)
+                if wpid == pid:
+                    status = st
+                    break
+            else:
+                try:
+                    os.kill(pid, 9)
+                except OSError:
+                    pass
+                os.waitpid(pid, 0)
+                status = None
+        finally:
+            os.close(fd)
+        body = text(data)
+        if exited(status) != 0 or "MARK" not in body or "STOPOK" not in body or "FGOK" not in body:
+            show("endure", status, data)
+            return 1
+        if "echo MARK" not in body:
+            show("endure-fc", status, data)
+            return 1
+        def until_eof(sig):
+            pid2, fd2 = pty.fork()
+            if pid2 == 0:
+                os.environ.update(env)
+                os.execv(bin, [bin, "-i"])
+                os._exit(127)
+            blob = b""
+            closed = False
+            end = time.time() + 3
+            sent2 = False
+            try:
+                while time.time() < end and not closed:
+                    ready, writable, _ = select.select([fd2], [] if sent2 else [fd2], [], 0.1)
+                    if writable and not sent2:
+                        try:
+                            os.write(fd2, b"echo HI\n")
+                        except OSError:
+                            pass
+                        sent2 = True
+                    if fd2 in ready:
+                        try:
+                            chunk = os.read(fd2, 4096)
+                        except OSError:
+                            chunk = b""
+                        if chunk:
+                            blob += chunk
+                            if b"HI" in blob:
+                                try:
+                                    os.kill(pid2, sig)
+                                except OSError:
+                                    pass
+                        else:
+                            closed = True
+                if not closed:
+                    try:
+                        os.kill(pid2, 9)
+                    except OSError:
+                        pass
+                os.waitpid(pid2, 0)
+            finally:
+                os.close(fd2)
+            return closed, blob
+        closed, blob = until_eof(signal.SIGKILL)
+        if not closed:
+            show("endure-kill", None, blob)
+            return 1
+        closed, blob = until_eof(signal.SIGTERM)
+        if not closed:
+            show("endure-term", None, blob)
+            return 1
+        st, data = run([bin, "-i"], b"echo RESTORED\nexit\n", 4, env)
+        if exited(st) != 0 or "RESTORED" not in text(data):
+            show("endure-restored", st, data)
+            return 1
+        return 0
     sys.stderr.write("unknown %s\n" % kind)
     return 1
 
@@ -407,7 +540,7 @@ printf 'echo EDITED\n' > "$1"
 EOF
 chmod +x "$d/ed.sh"
 dash_bin=$(command -v dash)
-for kind in prompt jobs vi fc jerr jlive eof fce stop; do
+for kind in prompt jobs vi fc jerr jlive eof fce stop endure; do
     if ! python3 "$d/drive.py" "$kind" "$bin" "$dash_bin" "$d/ed.sh"; then
         printf 'FAIL interact %s\n' "$kind" >&2
         fail=1

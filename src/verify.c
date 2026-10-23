@@ -282,22 +282,38 @@ static int verify_flow(const Chunk *chunk, const uint8_t *mark, const char **msg
     return rc;
 }
 
-/* Closure flags, parameter counts, constant kinds, and source spans.
-   A non-local capture is an index into the parent, which this chunk
-   does not store, so that index is not bounded here. */
-static int check_meta(const Chunk *chunk, const char **msg) {
+/* A local capture is a slot in the parent chunk. A non-local capture is
+   one of that parent's own captures. A chunk with captures and no parent
+   has nowhere to read them from. */
+static int check_captures(const Chunk *chunk, const Chunk *parent, const char **msg) {
     uint32_t i;
-    if (chunk->required_count > chunk->param_count || chunk->param_count > chunk->max_locals) {
-        return fail(msg, "bad params");
-    }
     if (chunk->ups_len > 0 && !chunk->ups) {
+        return fail(msg, "bad capture");
+    }
+    if (chunk->ups_len > 0 && !parent) {
         return fail(msg, "bad capture");
     }
     for (i = 0; i < chunk->ups_len; i++) {
         UpDesc up = chunk->ups[i];
-        if (up.local > 1 || (up.local && up.index >= 256)) {
+        if (up.local > 1) {
             return fail(msg, "bad capture");
         }
+        if (up.local) {
+            if (up.index >= 256 || up.index >= parent->max_locals) {
+                return fail(msg, "bad capture");
+            }
+        } else if (up.index >= parent->ups_len) {
+            return fail(msg, "bad capture");
+        }
+    }
+    return 0;
+}
+
+/* Closure flags, parameter counts, constant kinds, and source spans. */
+static int check_meta(const Chunk *chunk, const char **msg) {
+    uint32_t i;
+    if (chunk->required_count > chunk->param_count || chunk->param_count > chunk->max_locals) {
+        return fail(msg, "bad params");
     }
     if (chunk->consts_len > 0 && !chunk->consts) {
         return fail(msg, "bad const");
@@ -363,14 +379,28 @@ static int verify_one(const Chunk *chunk, const char **msg) {
     return rc;
 }
 
-int verify_chunk(const Chunk *chunk, const char **msg) {
+static int verify_at(const Chunk *chunk, const Chunk *parent, const char **msg) {
+    uint32_t i;
     if (!chunk) {
         return fail(msg, "bad chunk");
     }
-    for (uint32_t i = 0; i < chunk->children_len; i++) {
-        if (verify_chunk(&chunk->children[i], msg) != 0) {
+    if (chunk->code_len > 0 && !chunk->code) {
+        return fail(msg, "bad opcode");
+    }
+    if (chunk->children_len > 0 && !chunk->children) {
+        return fail(msg, "bad function");
+    }
+    if (check_captures(chunk, parent, msg) != 0) {
+        return -1;
+    }
+    for (i = 0; i < chunk->children_len; i++) {
+        if (verify_at(&chunk->children[i], chunk, msg) != 0) {
             return -1;
         }
     }
     return verify_one(chunk, msg);
+}
+
+int verify_chunk(const Chunk *chunk, const char **msg) {
+    return verify_at(chunk, NULL, msg);
 }
