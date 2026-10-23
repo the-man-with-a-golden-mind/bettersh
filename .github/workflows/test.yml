@@ -13,3 +13,26 @@ jobs:
         run: brew install dash
       - name: Test
         run: make test
+
+  ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dash and curl
+        run: sudo apt-get update && sudo apt-get install -y dash curl
+      - name: Test
+        run: make test
+
+  ubuntu-sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dash and curl
+        run: sudo apt-get update && sudo apt-get install -y dash curl
+      - name: Build with ASan and UBSan
+        run: make debug
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: halt_on_error=1
+        run: ./tests/run.sh

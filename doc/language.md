@@ -137,6 +137,6 @@ Differences that are left on purpose, with the detail in `TODO.md`:
 ## What this tree does not claim
 
 - Open Group conformance.
-- A test of every sh script, or of Linux. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS. This tree has no record of that workflow running.
+- A test of every sh script, or a record of the GitHub Actions workflow having run. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS and Ubuntu, and an Ubuntu job builds with ASan and UBSan and runs `./tests/run.sh` with `ASAN_OPTIONS=detect_leaks=0`. Leak detection stays off because a function and its environment can keep each other alive. The Ubuntu jobs install dash and curl. This tree has no record of that workflow running.
 - Cross-compilation, or a 10,000-case fuzz run.
 - UTF-8 strings, interned strings, or an ordered hash map.

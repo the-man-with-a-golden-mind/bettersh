@@ -69,5 +69,5 @@ Other checks in `make test`: parser goldens, modern-language goldens, unit scrip
 - A single AST for both languages. Strict code uses `Node`. Modern code uses `MNode`.
 - No global mutable state. Signal flags, the terminal restore state, and job-control signal state are process-lifetime data.
 - No dependencies of any kind. The binary links libm. `std/http.bsh` needs curl. The tests need dash and Python.
-- A Linux test, or a record of the GitHub Actions workflow having run. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS after installing dash. Linux is not a job in that file.
+- A record of the GitHub Actions workflow having run. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS and Ubuntu, and an Ubuntu job builds with ASan and UBSan and runs `./tests/run.sh` with `ASAN_OPTIONS=detect_leaks=0`. Leak detection stays off because a function and its environment can keep each other alive. The Ubuntu jobs install dash and curl. This tree has no record of that workflow running.
 - `plans/DESIGN.md` and `plans/PROMPT.md` are the original build brief. They are not a description of this tree. `README.md` and `doc/language.md` are.

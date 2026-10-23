@@ -10,7 +10,7 @@
 
 This is the original build brief, written before the code. It is not a description of a finished shell, and it is not a release note. `../README.md` says what the tree does today. Where they disagree, the source and `../README.md` win.
 
-Cross-compilation and a 10,000-case release fuzz were a plan. They are not in this repository. The license is MIT, in `../LICENSE`. The language manual is `../doc/language.md`. `make install` copies the binary and `std/`. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS. That workflow has not been executed from this tree.
+Cross-compilation and a 10,000-case release fuzz were a plan. They are not in this repository. The license is MIT, in `../LICENSE`. The language manual is `../doc/language.md`. `make install` copies the binary and `std/`. `.github/workflows/test.yml` runs `make test` on GitHub-hosted macOS and Ubuntu, and an Ubuntu job builds with ASan and UBSan and runs `./tests/run.sh` with `ASAN_OPTIONS=detect_leaks=0`. Leak detection stays off because a function and its environment can keep each other alive. The Ubuntu jobs install dash and curl. That workflow has not been executed from this tree.
 
 Section 2 used to state several of these as laws. The wording there now matches the code.
 
