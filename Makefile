@@ -106,10 +106,11 @@ install: bettersh
 	mkdir -p $(DESTDIR)$(bindir) $(DESTDIR)$(stdlibdir)
 	cp bettersh $(DESTDIR)$(bindir)/bettersh
 	cp bettersh $(DESTDIR)$(bindir)/btr
+	cp bettersh $(DESTDIR)$(bindir)/bsh
 	cp $(STD) $(DESTDIR)$(stdlibdir)/
 
 uninstall:
-	rm -f $(DESTDIR)$(bindir)/bettersh $(DESTDIR)$(bindir)/btr \
+	rm -f $(DESTDIR)$(bindir)/bettersh $(DESTDIR)$(bindir)/btr $(DESTDIR)$(bindir)/bsh \
 		$(addprefix $(DESTDIR)$(stdlibdir)/,$(notdir $(STD)))
 	-rmdir $(DESTDIR)$(stdlibdir)
 	-rmdir $(DESTDIR)$(PREFIX)/lib/bettersh

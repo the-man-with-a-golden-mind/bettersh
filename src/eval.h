@@ -79,8 +79,8 @@ typedef struct ShellStart {
     int debug;
     int vi;
     int emacs;
-    /* argv0 basename btr, or -btr for a login shell. The prompt kit is separate
-       from the plain interactive editor. */
+    /* argv0 basename btr or bsh, or -btr/-bsh for a login shell. The prompt kit
+       is separate from the plain interactive editor. */
     int btr;
     int interactive;
     int stdin_mode;

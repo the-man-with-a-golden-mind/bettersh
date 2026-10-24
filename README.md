@@ -63,11 +63,13 @@ That suite is a regression set written for this project. It shows which behavior
 
 The modern standard library lives in `std/` and is loaded from source at runtime. It includes filesystem, path, text, encoding, math, process, HTTP, JSON, terminal UI, editor, theme, and language-server modules. `std/http` invokes `curl`; asynchronous operations start child processes and do not create threads.
 
-`btr` is this program started under that name. It is the terminal shell: a two-line colored prompt with a small set of editor extras. The first line shows the working directory, shortened with `~` when it sits inside the home directory, and the git branch when the directory is a repository. A `*` marks a dirty tree. A command that ran for at least two seconds adds its duration. The second line is a green `❯` after success and a red `❯` plus the status after failure. The default theme is nord. The other themes are the editor themes: gruvbox, dracula, catppuccin, solarized, monokai, tokyonight, light, dark, and plain.
+`btr` and `bsh` are this program started under those names. Both are the terminal shell: a two-line colored prompt with a small set of editor extras. The first line shows the working directory, shortened with `~` when it sits inside the home directory, and the git branch when the directory is a repository. A `*` marks a dirty tree. A command that ran for at least two seconds adds its duration. The second line is a green `❯` after success and a red `❯` plus the status after failure. The default theme is nord. The other themes are the editor themes: gruvbox, dracula, catppuccin, solarized, monokai, tokyonight, light, dark, and plain.
 
-`~/.bettersh/btr.conf` holds settings as data, not as a script. `theme nord` selects a theme. A `segment` line names one prompt piece, and any such line replaces the default set: directory, git, status, and duration. A `plugin` line names one editor behavior. The defaults are suggestions, tab completion, and syntax color. Arrow keys, Home, and End move the cursor. Up and down walk history, and a typed prefix limits that search. Tab completes a command or a path. A dimmed history suggestion is accepted with Right or End. `set -o vi` uses vi bindings for that line.
+`~/.bettersh/btr.conf` holds settings as data, not as a script. `theme nord` selects a theme. A `segment` line names one prompt piece, and any such line replaces the default set: directory, git, status, and duration. A `plugin` line names one editor behavior. The defaults are suggestions, tab completion, and syntax color. Arrow keys, Home, and End move the cursor. Up and down walk history, and a typed prefix limits that search. Tab completes an unquoted command or file name. It does not complete options, and a name that contains a space is inserted without quotes. A dimmed history suggestion is accepted with Right or End. `set -o vi` uses vi bindings for that line.
 
-Add the installed path to `/etc/shells`, then `chsh -s /usr/local/bin/btr` makes `btr` the login shell. `chsh -s /bin/zsh` switches back to zsh.
+A login shell is this program started as `-btr` or `-bsh`. It reads `/etc/profile` and then `~/.profile` when those files can be read. It does not read a separate interactive startup file. The themed prompt does not use `PS1`. Put aliases and `PATH` changes in `~/.profile`, and put colors and prompt segments in `~/.bettersh/btr.conf`.
+
+Add the installed path to `/etc/shells`, then `chsh -s /usr/local/bin/bsh` makes `bsh` the login shell. `chsh -s /usr/local/bin/btr` selects the other name. `chsh -s /bin/zsh` switches back to zsh. The standard library is found from the running executable, including when the login name is `-bsh`.
 
 `bettersh -i` remains the plain interactive shell. It uses `PS1`, job control, `fc`, and vi or emacs line editing. When `HISTFILE` is set, commands are loaded from and appended to that file. The modal editor in `std/edit` is described in [doc/editor.md](doc/editor.md).
 
@@ -79,7 +81,7 @@ Install into `/usr/local` with:
 make install
 ```
 
-The binary is copied to `/usr/local/bin/bettersh` and `/usr/local/bin/btr`, and the standard library is copied to `/usr/local/lib/bettersh/std`. Set `PREFIX` to choose another location or `DESTDIR` to stage a package:
+The binary is copied to `/usr/local/bin/bettersh`, `/usr/local/bin/btr`, and `/usr/local/bin/bsh`, and the standard library is copied to `/usr/local/lib/bettersh/std`. Set `PREFIX` to choose another location or `DESTDIR` to stage a package:
 
 ```sh
 make install PREFIX="$HOME/.local"

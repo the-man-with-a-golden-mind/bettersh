@@ -70,6 +70,21 @@ fn safe_name(name) {
   return true
 }
 
+# Replaces terminal controls so a directory or branch cannot retitle the terminal.
+fn plain_text(text) {
+  let out = ""
+  let i = 0
+  if text == null { return "" }
+  while i < text.length {
+    let ch = text[i]
+    let o = ord(ch)
+    if o < 32 || (o >= 127 && o < 160) { let out = "@{ out }?" }
+    else { let out = "@{ out }@{ ch }" }
+    let i = i + 1
+  }
+  return out
+}
+
 fn home_of() {
   let h = getenv("BTR_HOME")
   if h == null || h == "" { let h = getenv("HOME") }
@@ -170,7 +185,7 @@ fn ahead_text(colors) {
 }
 
 fn git_piece(colors) {
-  let branch = capture("git rev-parse --abbrev-ref HEAD 2>/dev/null || true").trim()
+  let branch = plain_text(capture("git rev-parse --abbrev-ref HEAD 2>/dev/null || true").trim())
   let shown = ""
   if branch == "" || branch == "HEAD" { return "" }
   let shown = theme.wrap(colors.function, branch)
@@ -188,7 +203,7 @@ fn duration_piece(colors) {
 }
 
 fn time_piece(colors) {
-  let clock = capture("date +%H:%M 2>/dev/null || true").trim()
+  let clock = plain_text(capture("date +%H:%M 2>/dev/null || true").trim())
   if clock == "" { return "" }
   return theme.wrap(colors.hint, clock)
 }
@@ -264,7 +279,7 @@ fn emit_prompt(colors, segs, plugs) {
   let show_status = has_name(segs, "status")
   if pwd == null { let pwd = "" }
   if code == null || code == "" { let code = "0" }
-  let short = short_dir(pwd, home_of())
+  let short = plain_text(short_dir(pwd, home_of()))
   emit_header(colors, plugs)
   io.write(chr(30))
   while i < segs.length {

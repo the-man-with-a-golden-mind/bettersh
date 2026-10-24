@@ -32,11 +32,11 @@ static void usage(FILE *out) {
           "       bettersh --bytecode image [argument...]\n"
           "       bettersh --help\n"
           "       bettersh --version\n"
-          "A copy named btr starts the themed terminal shell.\n",
+          "A copy named btr or bsh starts the themed terminal shell.\n",
           out);
 }
 
-/* Login shells are invoked as -btr. The dash is not part of the name. */
+/* Login shells are invoked as -btr or -bsh. The dash is not part of the name. */
 static int invoked_as_btr(const char *argv0) {
     const char *base;
     const char *p;
@@ -52,7 +52,7 @@ static int invoked_as_btr(const char *argv0) {
     if (base[0] == '-') {
         base++;
     }
-    return strcmp(base, "btr") == 0;
+    return strcmp(base, "btr") == 0 || strcmp(base, "bsh") == 0;
 }
 
 static int base_is(const char *text, size_t len, const char *name) {

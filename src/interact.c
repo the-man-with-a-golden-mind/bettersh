@@ -1,6 +1,7 @@
 #include "interact.h"
 
 #include "btr_prompt.h"
+#include "builtin_priv.h"
 #include "eval_priv.h"
 #include "parser.h"
 #include "shjob.h"
@@ -261,6 +262,50 @@ static int is_func_only(const Node *root) {
     return body && body->kind == NODE_FUNC;
 }
 
+static int argv_is_login(const char *argv0) {
+    const char *base = argv0 ? argv0 : "";
+    const char *p;
+    for (p = base; *p; p++) {
+        if (*p == '/') {
+            base = p + 1;
+        }
+    }
+    return base[0] == '-' && base[1] != '\0';
+}
+
+static void source_file(EvalCtx *ctx, const char *path) {
+    char *args[3];
+    if (!path || path[0] == '\0' || access(path, R_OK) != 0) {
+        return;
+    }
+    args[0] = ".";
+    args[1] = (char *)path;
+    args[2] = NULL;
+    cmd_dot(ctx, 2, args);
+}
+
+/* A login shell reads the system profile, then the home profile. A missing
+   file is skipped. exit in either file ends the shell before the prompt. */
+static void source_login(EvalCtx *ctx) {
+    const char *home = NULL;
+    source_file(ctx, "/etc/profile");
+    if (ctx->exit_req) {
+        return;
+    }
+    if (!env_get(&ctx->env, "HOME", &home) || !home || !home[0]) {
+        return;
+    }
+    {
+        size_t n = strlen(home);
+        const char *tail = home[n - 1] == '/' ? ".profile" : "/.profile";
+        char *path = xmalloc(n + strlen(tail) + 1);
+        memcpy(path, home, n);
+        memcpy(path + n, tail, strlen(tail) + 1);
+        source_file(ctx, path);
+        free(path);
+    }
+}
+
 int interact_run(int argc, char **argv, char **envp, const ShellStart *start) {
     Arena arena;
     EvalCtx ctx;
@@ -271,6 +316,9 @@ int interact_run(int argc, char **argv, char **envp, const ShellStart *start) {
     shell_apply_start(&ctx, start);
     ctx.interactive = 1;
     ctx.stdin_mode = 1;
+    if (argv_is_login(name)) {
+        source_login(&ctx);
+    }
     hist_load(&ctx);
     if (!env_get(&ctx.env, "PS1", NULL)) {
         env_set(&ctx.env, "PS1", geteuid() == 0 ? "# " : "$ ");

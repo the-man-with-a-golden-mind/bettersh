@@ -205,7 +205,9 @@ See [editor.md](editor.md) for editor keys, themes, and language-server configur
 
 Start an interactive session with `bettersh -i`. `PS1` is used for a complete command and `PS2` when a quote, compound command, or here-document needs another line. Job control uses `/dev/tty` when available and otherwise tries the standard streams. If it cannot find a terminal, it reports that job control is disabled and continues without monitor mode.
 
-`btr` is the same binary started as the themed terminal shell. Its prompt is built by `std/btr.btr` from `~/.bettersh/btr.conf`, which names a theme, prompt segments, and editor plugins. `bettersh -i` does not read that file and keeps the plain `PS1` prompt.
+`btr` and `bsh` are the same binary started as the themed terminal shell. Its prompt is built by `std/btr.btr` from `~/.bettersh/btr.conf`, which names a theme, prompt segments, and editor plugins. Directory names and git branches are shown with terminal control characters replaced, so an untrusted path cannot retitle the terminal. `bettersh -i` does not read that file and keeps the plain `PS1` prompt.
+
+A login shell is started with the name `-btr` or `-bsh`. It reads `/etc/profile` and then `~/.profile` when those files can be read. There is no separate interactive startup file. The themed prompt ignores `PS1`.
 
 `set -o vi` and `set -o emacs` choose the command-line editor. `fc` reads or edits command history. With `HISTFILE` set, bettersh loads history at startup and appends new commands. Without it, history lasts for the current process.
 

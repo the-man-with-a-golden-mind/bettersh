@@ -7,7 +7,14 @@ root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 d=$(mktemp -d /tmp/btrtest.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 cp "$bin" "$d/btr"
-chmod +x "$d/btr"
+cp "$bin" "$d/bsh"
+chmod +x "$d/btr" "$d/bsh"
+prefix=$d/prefix
+mkdir -p "$prefix/bin" "$prefix/lib/bettersh"
+cp "$bin" "$prefix/bin/btr"
+cp "$bin" "$prefix/bin/bsh"
+chmod +x "$prefix/bin/btr" "$prefix/bin/bsh"
+cp -R "$root/std" "$prefix/lib/bettersh/std"
 home=$d/home
 plain=$d/plain
 repo=$d/repo
@@ -29,9 +36,11 @@ EOF
 cat >"$d/drive.py" << 'PY'
 import os, pty, select, subprocess, sys, time
 
-root, bin, btr, home, plain, repo, bindir = sys.argv[1:8]
+root, bin, btr, home, plain, repo, bindir, prefix = sys.argv[1:9]
 bin = os.path.abspath(bin)
 btr = os.path.abspath(btr)
+prefix = os.path.abspath(prefix)
+bsh = os.path.join(os.path.dirname(btr), "bsh")
 script = os.path.join(root, "std", "btr.btr")
 fail = 0
 
@@ -136,13 +145,13 @@ def check_script(label, extra, cwd, pred):
         note = "status=%s stdout=%r stderr=%r" % (got.returncode, got.stdout[:500], got.stderr[:500])
         bad(label, got.returncode, got.stdout, note)
 
-def run_steps(argv, steps, timeout, env, cwd):
+def run_steps(argv, steps, timeout, env, cwd, exe=None):
     pid, fd = pty.fork()
     if pid == 0:
         try:
             os.chdir(cwd)
             apply_env(env)
-            os.execv(argv[0], argv)
+            os.execv(exe or argv[0], argv)
         finally:
             os._exit(127)
     data = b""
@@ -204,8 +213,8 @@ def run_steps(argv, steps, timeout, env, cwd):
         os.close(fd)
     return status, data
 
-def check_pty(label, argv, steps, timeout, env, cwd, pred):
-    st, data = run_steps(argv, steps, timeout, env, cwd)
+def check_pty(label, argv, steps, timeout, env, cwd, pred, exe=None):
+    st, data = run_steps(argv, steps, timeout, env, cwd, exe)
     if not pred(st, data):
         bad(label, st, data, "pty output did not match")
 
@@ -237,6 +246,15 @@ check_script(
     plain,
     lambda got: got.returncode == 0 and "HELLO" in body_text(got.stdout),
 )
+write_conf(None)
+evil = home + "/evil\x1b]0;changed\x07dir"
+check_script(
+    "controls",
+    {"BTR_STATUS": "0", "BTR_MS": "0", "BTR_PWD": evil, "BTR_HOME": home},
+    plain,
+    lambda got: got.returncode == 0 and b"\x1b]" not in got.stdout.split(b"\x1e", 1)[-1]
+    and "evil?]0;changed?dir" in body_text(got.stdout),
+)
 write_conf("theme nope\n")
 check_script(
     "theme-script",
@@ -257,6 +275,7 @@ def plain_ok(st, data):
             and "demo" not in shown)
 
 check_pty("color", [btr], [(b"38;2;", b"exit 0\n")], 12, env, plain, plain_ok)
+check_pty("bsh", [bsh], [(b"38;2;", b"exit 0\n")], 12, env, plain, plain_ok)
 
 def cursor_ok(st, data):
     shown = text_of(data)
@@ -294,10 +313,26 @@ def theme_ok(st, data):
     return exited(st) == 0 and b"38;2;129;161;193" in data
 
 check_pty("theme", [btr], [(b"38;2;129;161;193", b"exit 0\n")], 12, base_env(), plain, theme_ok)
+
+with open(os.path.join(home, ".profile"), "w") as fh:
+    fh.write("echo LOGINMARK\n")
+login_env = base_env()
+login_env.pop("BETTERSH_PATH", None)
+login_env["PATH"] = os.path.join(prefix, "bin") + os.pathsep + login_env.get("PATH", "/usr/bin:/bin")
+
+def login_ok(st, data):
+    shown = text_of(data)
+    return (exited(st) == 0 and b"38;2;" in data and b"prompt program not found" not in data
+            and "LOGINMARK" in shown)
+
+check_pty("login-btr", ["-btr"], [(b"38;2;", b"exit 0\n")], 12, login_env, plain, login_ok,
+          exe=os.path.join(prefix, "bin", "btr"))
+check_pty("login-bsh", ["-bsh"], [(b"38;2;", b"exit 0\n")], 12, login_env, plain, login_ok,
+          exe=os.path.join(prefix, "bin", "bsh"))
 sys.exit(fail)
 PY
 
-if ! python3 "$d/drive.py" "$root" "$bin" "$d/btr" "$home" "$plain" "$repo" "$bindir"; then
+if ! python3 "$d/drive.py" "$root" "$bin" "$d/btr" "$home" "$plain" "$repo" "$bindir" "$prefix"; then
     echo FAIL btr >&2
     fail=1
 fi

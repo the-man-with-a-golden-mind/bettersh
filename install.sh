@@ -218,9 +218,11 @@ say "building with $make_bin -j$jobs"
 installed=$prefix/bin/bettersh
 [ -x "$installed" ] || die "install did not write $installed"
 [ -x "$prefix/bin/btr" ] || die "install did not write $prefix/bin/btr"
+[ -x "$prefix/bin/bsh" ] || die "install did not write $prefix/bin/bsh"
 "$installed" -c 'echo bettersh-ok' >/dev/null
 say "installed: $installed"
 say "installed: $prefix/bin/btr"
+say "installed: $prefix/bin/bsh"
 say "library: $prefix/lib/bettersh/std"
 case $prefix in
     "$HOME/.local")

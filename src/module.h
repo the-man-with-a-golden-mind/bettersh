@@ -21,6 +21,10 @@ int module_stem(const char *spec, char *buf, size_t cap);
 /* *out is a malloc'd path of a std file such as "btr.btr". exe is argv[0]. */
 int module_std_file(const char *file, const char *exe, char **out);
 
+/* Malloc'd canonical path of this executable. A login name such as -bsh is
+   not a file name, so the lookup uses the running image and then PATH. */
+char *module_exe_path(const char *argv0);
+
 /* On success *out is a new reference to the module map. On failure an
    error is already printed and *out is NULL. use_interp selects the
    tree-walker for this load and every module it imports. */

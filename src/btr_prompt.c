@@ -51,51 +51,6 @@ static void note_missing(int *warned) {
     }
 }
 
-static char *self_path(const char *argv0) {
-    const char *path;
-    const char *p;
-    if (!argv0 || !argv0[0]) {
-        return NULL;
-    }
-    if (strchr(argv0, '/')) {
-        return realpath(argv0, NULL);
-    }
-    path = getenv("PATH");
-    if (!path || !path[0]) {
-        return NULL;
-    }
-    p = path;
-    while (*p) {
-        const char *start = p;
-        size_t n;
-        char *cand;
-        char *full;
-        while (*p && *p != ':') {
-            p++;
-        }
-        n = (size_t)(p - start);
-        if (n == 0) {
-            cand = xmalloc(2 + strlen(argv0) + 1);
-            memcpy(cand, "./", 2);
-            memcpy(cand + 2, argv0, strlen(argv0) + 1);
-        } else {
-            cand = xmalloc(n + 1 + strlen(argv0) + 1);
-            memcpy(cand, start, n);
-            cand[n] = '/';
-            memcpy(cand + n + 1, argv0, strlen(argv0) + 1);
-        }
-        full = realpath(cand, NULL);
-        free(cand);
-        if (full) {
-            return full;
-        }
-        if (*p == ':') {
-            p++;
-        }
-    }
-    return NULL;
-}
-
 static int sgr_ok(const char *s, size_t n) {
     size_t i;
     if (n > 64) {
@@ -337,7 +292,7 @@ void btr_prompt_make(const char *argv0, int status, long elapsed_ms, int cont, i
         out->text = fallback_text(cont);
         return;
     }
-    self = self_path(argv0);
+    self = module_exe_path(argv0);
     if (!self) {
         note_missing(warned);
         free(script);

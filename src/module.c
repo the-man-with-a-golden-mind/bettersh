@@ -12,6 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 enum { MOD_LOADING = 1, MOD_READY = 2 };
 
@@ -245,42 +248,100 @@ static int try_file(const char *path, char **out) {
     return 0;
 }
 
-static char *exe_dir(const char *exe) {
-    char *full = NULL;
-    char *dir;
-    if (!exe || !exe[0]) {
+/* Login shells are invoked as -bsh. The dash is not part of the file name. */
+static const char *argv0_file(const char *argv0) {
+    if (!argv0 || !argv0[0]) {
         return NULL;
     }
-    if (strchr(exe, '/')) {
-        full = realpath(exe, NULL);
-    } else {
-        const char *path = getenv("PATH");
-        const char *p;
-        if (!path) {
-            return NULL;
+    if (argv0[0] == '-' && strchr(argv0, '/') == NULL) {
+        return argv0[1] ? argv0 + 1 : NULL;
+    }
+    return argv0;
+}
+
+static char *lookup_on_path(const char *name) {
+    const char *path;
+    const char *p;
+    if (!name || !name[0]) {
+        return NULL;
+    }
+    if (strchr(name, '/')) {
+        return realpath(name, NULL);
+    }
+    path = getenv("PATH");
+    if (!path || !path[0]) {
+        return NULL;
+    }
+    p = path;
+    while (*p) {
+        const char *start = p;
+        size_t n;
+        char *cand;
+        char *full;
+        while (*p && *p != ':') {
+            p++;
         }
-        p = path;
-        while (*p && !full) {
-            const char *start = p;
-            char *dirent;
-            char *cand;
-            while (*p && *p != ':') {
-                p++;
-            }
-            if (p > start) {
-                dirent = xmalloc((size_t)(p - start) + 1);
-                memcpy(dirent, start, (size_t)(p - start));
-                dirent[p - start] = '\0';
-                cand = join_path(dirent, exe);
-                full = realpath(cand, NULL);
-                free(cand);
-                free(dirent);
-            }
-            if (*p == ':') {
-                p++;
-            }
+        n = (size_t)(p - start);
+        if (n == 0) {
+            cand = xmalloc(2 + strlen(name) + 1);
+            memcpy(cand, "./", 2);
+            memcpy(cand + 2, name, strlen(name) + 1);
+        } else {
+            char *dir = xmalloc(n + 1);
+            memcpy(dir, start, n);
+            dir[n] = '\0';
+            cand = join_path(dir, name);
+            free(dir);
+        }
+        full = realpath(cand, NULL);
+        free(cand);
+        if (full) {
+            return full;
+        }
+        if (*p == ':') {
+            p++;
         }
     }
+    return NULL;
+}
+
+#ifdef __APPLE__
+static char *apple_exe(void) {
+    char stack[4096];
+    uint32_t n = (uint32_t)sizeof stack;
+    char *buf;
+    char *full;
+    if (_NSGetExecutablePath(stack, &n) == 0) {
+        return realpath(stack, NULL);
+    }
+    buf = xmalloc(n);
+    if (_NSGetExecutablePath(buf, &n) != 0) {
+        free(buf);
+        return NULL;
+    }
+    full = realpath(buf, NULL);
+    free(buf);
+    return full;
+}
+#endif
+
+char *module_exe_path(const char *argv0) {
+    char *full = realpath("/proc/self/exe", NULL);
+    if (full) {
+        return full;
+    }
+#ifdef __APPLE__
+    full = apple_exe();
+    if (full) {
+        return full;
+    }
+#endif
+    return lookup_on_path(argv0_file(argv0));
+}
+
+static char *exe_dir(const char *exe) {
+    char *full = module_exe_path(exe);
+    char *dir;
     if (!full) {
         return NULL;
     }

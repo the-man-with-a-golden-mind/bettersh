@@ -51,3 +51,13 @@ The VM and tree-walking interpreter share value, method, builtin, and shell help
 Strict-mode variable lookup is linear, arithmetic text is reparsed, and assignments allocate. The microbenchmarks should be used to identify regressions and guide profiling; their timings should not be treated as portable pass/fail numbers.
 
 Cross-build targets exist for Intel macOS and x86-64 and ARM64 musl Linux. A release still needs those binaries to be executed on their target systems, followed by the full hosted CI run on the exact release commit.
+
+The version in the tree is still 0.1.0. The local `v0.1.0` tag is an earlier commit and does not contain the themed shell. A release needs a new version, a tag on that commit, and a green hosted run of that same commit.
+
+## Interactive shell
+
+`btr` and `bsh` are a themed prompt and a small line editor, not a finished login-shell replacement. The login path reads `/etc/profile` and `~/.profile` only.
+
+In vi mode, several motions still step by byte, so a multibyte character can be split. The prompt redraw counts every Unicode scalar as one column, so wide characters and combining marks can leave the cursor in the wrong place.
+
+Tab completion splits words on spaces and tabs. It skips a quoted, escaped, or globbing word, does not complete command options, and inserts a file name that contains a space without quoting it.
