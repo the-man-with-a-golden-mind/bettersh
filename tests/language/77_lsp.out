@@ -16,7 +16,7 @@ int
 map
 red
 magenta
-python3 -u last.py
+bettersh
 /tmp/proj
 true
 false

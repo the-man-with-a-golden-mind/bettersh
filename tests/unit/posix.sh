@@ -285,14 +285,49 @@ test "\$b" -nt "\$a"; echo nt:\$?
 test "\$a" -ot "\$b"; echo ot:\$?
 test "\$a" -nt "\$a"; echo eqnt:\$?
 test "\$a" -ot "\$a"; echo eqot:\$?
-test "\$a" -nt $d/missing; echo ntmiss:\$?
-test $d/missing -nt "\$a"; echo ntno:\$?
-test $d/missing -ot "\$a"; echo otno:\$?
 [ -c /dev/null ]; echo br:\$?
 alias e='echo hi'
 e world > $d/out
 cat $d/out
 EOF
+
+# A missing file makes -nt true when the other file exists, and -ot true
+# the other way. Older dash reports both as false.
+cat >"$d/t.sh" << EOF
+a=$d/a
+: > "\$a"
+test "\$a" -nt $d/missing; echo ntmiss:\$?
+test $d/missing -nt "\$a"; echo ntno:\$?
+test "\$a" -ot $d/missing; echo otmiss:\$?
+test $d/missing -ot "\$a"; echo otno:\$?
+EOF
+printf '%s\n' 'ntmiss:0' 'ntno:1' 'otmiss:1' 'otno:0' >"$d/want"
+"$bin" "$d/t.sh" >"$d/bout" 2>"$d/berr"
+bs=$?
+"$bin" --interp "$d/t.sh" >"$d/iout" 2>"$d/ierr"
+is=$?
+if [ "$bs" != 0 ] || [ "$is" != 0 ] || ! cmp -s "$d/want" "$d/bout" || ! cmp -s "$d/want" "$d/iout" ||
+    [ -s "$d/berr" ] || [ -s "$d/ierr" ]; then
+    printf 'FAIL test -nt missing\n' >&2
+    diff -u "$d/want" "$d/bout" >&2
+    diff -u "$d/want" "$d/iout" >&2
+    fail=1
+fi
+
+check nosub <<'EOF'
+if false; then
+    echo ${NOT_AN_ARRAY[0]}
+fi
+echo ok
+EOF
+check subbad <<'EOF'
+echo ${NOT_AN_ARRAY[0]}
+echo no
+EOF
+if ! grep -F 'Bad substitution' "$d/berr" >/dev/null || ! grep -F 'Bad substitution' "$d/ierr" >/dev/null; then
+    printf 'FAIL subscript stderr\n' >&2
+    fail=1
+fi
 
 check nojob <<'EOF'
 bg
@@ -323,7 +358,8 @@ if [ "$bs" != 0 ] || [ "$is" != 0 ] || ! cmp -s "$d/want" "$d/bout" || ! cmp -s 
     fail=1
 fi
 
-# Dash's columns, in dash's order. pipefail is the one extra line.
+# pipefail is always listed. privileged is listed by some dash builds and
+# not others. Those two lines are the only ones allowed to differ.
 optlist() {
     name=$1
     body=$2
@@ -333,17 +369,25 @@ optlist() {
     "$bin" "$d/t.sh" >"$d/bo" 2>"$d/be"; bs=$?
     "$bin" --interp "$d/t.sh" >"$d/io" 2>"$d/ie"; is=$?
     if [ "$plus" = 1 ]; then
-        printf 'set +o pipefail\n' >"$d/extra"
+        pf='set +o pipefail'
+        pv='set +o privileged'
     else
-        printf '%-16s%s\n' pipefail off >"$d/extra"
+        pf=$(printf '%-16s%s' pipefail off)
+        pv=$(printf '%-16s%s' privileged off)
     fi
-    grep -vxF -f "$d/do" "$d/bo" >"$d/bx" || true
-    grep -vxF -f "$d/do" "$d/io" >"$d/ix" || true
+    grep -vxF -e "$pf" -e "$pv" "$d/do" >"$d/df" || true
+    grep -vxF -e "$pf" -e "$pv" "$d/bo" >"$d/bf" || true
+    grep -vxF -e "$pf" -e "$pv" "$d/io" >"$d/if" || true
+    same=1
+    grep -qxF "$pf" "$d/bo" || same=0
+    grep -qxF "$pf" "$d/io" || same=0
+    cmp -s "$d/df" "$d/bf" || same=0
+    cmp -s "$d/df" "$d/if" || same=0
     if [ "$ds" != 0 ] || [ "$bs" != 0 ] || [ "$is" != 0 ] || [ -s "$d/de" ] || [ -s "$d/be" ] ||
-        [ -s "$d/ie" ] || ! cmp -s "$d/extra" "$d/bx" || ! cmp -s "$d/extra" "$d/ix"; then
+        [ -s "$d/ie" ] || [ "$same" -ne 1 ]; then
         printf 'FAIL set -o %s\n' "$name" >&2
-        diff -u "$d/extra" "$d/bx" >&2
-        diff -u "$d/extra" "$d/ix" >&2
+        diff -u "$d/df" "$d/bf" >&2
+        diff -u "$d/df" "$d/if" >&2
         fail=1
     fi
 }

@@ -4,6 +4,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 static int sgr_at(const char *s, size_t n, size_t i) {
     return s[i] == '\033' && i + 1 < n && s[i + 1] == '[';
@@ -216,7 +218,7 @@ static void paint_buf(const ViStyle *style, const char *buf, size_t len) {
 }
 
 void vi_redraw(const char *prompt, const char *buf, size_t len, size_t cur, const char *ghost,
-               const ViStyle *style, int *primed) {
+               const ViStyle *style, int *primed, size_t *cur_col_out) {
     const char *tail;
     size_t rows;
     size_t prompt_col;
@@ -234,6 +236,8 @@ void vi_redraw(const char *prompt, const char *buf, size_t len, size_t cur, cons
         cur = len;
     }
     rows = row_count(prompt);
+    /* One update, with the cursor hidden, so a repaint does not flash. */
+    fputs("\033[?25l\033[?2026h", stderr);
     if (primed && *primed && rows > 1) {
         fprintf(stderr, "\033[%zuA", rows - 1);
     }
@@ -253,8 +257,96 @@ void vi_redraw(const char *prompt, const char *buf, size_t len, size_t cur, cons
     if (end_col > cur_col) {
         fprintf(stderr, "\033[%zuD", end_col - cur_col);
     }
+    if (cur_col_out) {
+        *cur_col_out = cur_col;
+    }
     if (primed) {
         *primed = 1;
     }
+}
+
+int vi_term_cols(void) {
+    struct winsize ws;
+    memset(&ws, 0, sizeof ws);
+    if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) != 0 || ws.ws_col == 0) {
+        return 80;
+    }
+    return (int)ws.ws_col;
+}
+
+void vi_menu_draw(char **names, int n, int sel, size_t cur_col, int *rows, int *cols, int one_col) {
+    int old = rows ? *rows : 0;
+    int colw = 2;
+    int ncol = 1;
+    int use_rows = 0;
+    int paint;
+    int r;
+    int c;
+    int i;
+    if (n < 0) {
+        n = 0;
+    }
+    if (n > 0) {
+        int width = vi_term_cols();
+        for (i = 0; i < n; i++) {
+            int ln = (int)strlen(names && names[i] ? names[i] : "");
+            if (ln + 2 > colw) {
+                colw = ln + 2;
+            }
+        }
+        ncol = one_col ? 1 : width / colw;
+        if (ncol < 1) {
+            ncol = 1;
+        }
+        use_rows = (n + ncol - 1) / ncol;
+    }
+    paint = old > use_rows ? old : use_rows;
+    for (r = 0; r < paint; r++) {
+        fputs("\n\r", stderr);
+        if (r < use_rows) {
+            for (c = 0; c < ncol; c++) {
+                int idx = r * ncol + c;
+                const char *name;
+                int ln;
+                int pad;
+                if (idx >= n) {
+                    break;
+                }
+                name = names && names[idx] ? names[idx] : "";
+                ln = (int)strlen(name);
+                pad = colw - ln;
+                if (pad < 0) {
+                    pad = 0;
+                }
+                if (idx == sel) {
+                    fputs("\033[7m", stderr);
+                    fputs(name, stderr);
+                    fputs("\033[0m", stderr);
+                } else {
+                    fputs(name, stderr);
+                }
+                while (pad > 0) {
+                    fputc(' ', stderr);
+                    pad--;
+                }
+            }
+        }
+        fputs("\033[K", stderr);
+    }
+    if (paint > 0) {
+        fprintf(stderr, "\033[%dA", paint);
+    }
+    /* A saved cursor would point at a stale cell after the rows scroll. */
+    fprintf(stderr, "\033[%zuG", cur_col + 1);
+    if (rows) {
+        *rows = use_rows;
+    }
+    if (cols) {
+        *cols = ncol;
+    }
+}
+
+void vi_draw_end(void) {
+    fputs("\033[?2026l\033[?25h", stderr);
     fflush(stderr);
 }

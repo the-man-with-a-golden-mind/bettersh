@@ -5,16 +5,13 @@ bin=${1:?}
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
 fail=0
+root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 bad() {
     printf 'FAIL %s\n' "$1" >&2
     fail=1
 }
 norm() {
-    python3 -c '
-import re, sys
-for line in open(sys.argv[1], "r", encoding="utf-8", errors="surrogateescape"):
-    sys.stdout.write(re.sub(r"^([^:]+:[0-9]+):[0-9]+:", r"\1:C:", line, count=1))
-' "$1"
+    "$bin" "$root/tests/harness/norm.btr" "$1"
 }
 for f in tests/language/*.btr; do
     [ -f "$f" ] || continue

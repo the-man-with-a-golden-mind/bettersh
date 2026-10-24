@@ -1,0 +1,3 @@
+#!/usr/bin/env bettersh
+# Writes a modern script whose source contains the byte 255.
+writefile(arg(1), "let s = \"@{ chr(255) }\"\nprintln(s.length)\nprintln(ord(s))\n")

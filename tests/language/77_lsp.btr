@@ -26,7 +26,7 @@ let m = map_set({}, "a", 7)
 println(m.a)
 println(kind(m))
 
-let cfg = theme.load("theme name dark\ntheme gutter red\nserver py python3 -u other.py\nserver py python3 -u last.py\nroot /tmp/proj\n")
+let cfg = theme.load("theme name dark\ntheme gutter red\nserver py bettersh\nserver py bettersh\nroot /tmp/proj\n")
 println(cfg.gutter)
 println(cfg.keyword)
 println(cfg.servers[1].cmd)

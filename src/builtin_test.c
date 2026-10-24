@@ -85,16 +85,24 @@ static int file_cmp(const char *op, const char *left, const char *right) {
         }
         return a.st_dev == b.st_dev && a.st_ino == b.st_ino ? 0 : 1;
     }
+    /* A missing file2 makes -nt true when file1 exists. A missing file1
+       makes -ot true when file2 exists. */
     if (strcmp(op, "-nt") == 0) {
-        if (!ha || !hb || a.st_mtime <= b.st_mtime) {
+        if (!ha) {
             return 1;
         }
-        return 0;
+        if (!hb) {
+            return 0;
+        }
+        return a.st_mtime > b.st_mtime ? 0 : 1;
     }
-    if (!ha || !hb || a.st_mtime >= b.st_mtime) {
+    if (!hb) {
         return 1;
     }
-    return 0;
+    if (!ha) {
+        return 0;
+    }
+    return a.st_mtime < b.st_mtime ? 0 : 1;
 }
 
 static int test_number(const char *text, long *out) {

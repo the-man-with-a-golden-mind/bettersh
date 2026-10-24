@@ -209,7 +209,7 @@ Start an interactive session with `bettersh -i`. `PS1` is used for a complete co
 
 A login shell is started with the name `-btr` or `-bsh`. It reads `/etc/profile` and then `~/.profile` when those files can be read. There is no separate interactive startup file. The themed prompt ignores `PS1`.
 
-`set -o vi` and `set -o emacs` choose the command-line editor. `fc` reads or edits command history. With `HISTFILE` set, bettersh loads history at startup and appends new commands. Without it, history lasts for the current process.
+`set -o vi` and `set -o emacs` choose the command-line editor. `fc` reads or edits command history. With `HISTFILE` set, bettersh loads history at startup and appends new commands. Without it, history lasts for the current process. `btr` and `bsh` use `~/.bettersh/history` when `HISTFILE` is unset. Up lists matching commands under the line, and Ctrl-R searches them as you type.
 
 Bettersh adds `pipefail` to the shell options. The `debug` option is stored and displayed but does not create a trace file. `ignoreeof` asks the user to type `exit` instead of leaving on Ctrl-D.
 

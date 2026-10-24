@@ -5,7 +5,7 @@ root=$(CDPATH= cd "$(dirname "$0")/../.." && pwd)
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
 count=${BETTERSH_FUZZ_COUNT:-1000}
-python3 "$root/tests/differential/fuzz.py" "$d" "$count" || exit 1
+"$bin" "$root/tests/differential/fuzz.btr" "$d" "$count" || exit 1
 check() {
     f=$1
     "$bin" --interp "$f" >"$d/io" 2>"$d/ie"

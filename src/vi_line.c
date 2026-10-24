@@ -4,6 +4,7 @@
 #include "utf8.h"
 #include "vi_complete.h"
 #include "vi_draw.h"
+#include "vi_hist.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -29,7 +30,8 @@ enum {
     KEY_END,
     KEY_WORD_LEFT,
     KEY_WORD_RIGHT,
-    KEY_DELETE
+    KEY_DELETE,
+    KEY_BTAB
 };
 
 static void vi_restore(void) {
@@ -203,6 +205,9 @@ static int key_of(const char *seq) {
     if (strcmp(seq, "[3~") == 0) {
         return KEY_DELETE;
     }
+    if (strcmp(seq, "[Z") == 0) {
+        return KEY_BTAB;
+    }
     return KEY_NONE;
 }
 
@@ -222,19 +227,32 @@ static const char *ghost_of(const char *buf, size_t len, size_t cur, char **hist
     return NULL;
 }
 
+typedef struct ViMenu {
+    ViMatches matches;
+    int on;
+    int sel;
+    int rows;
+    int cols;
+} ViMenu;
+
 static void show_line(const char *prompt, const char *buf, size_t len, size_t cur, char **hist, uint32_t nhist,
-                      const ViStyle *style, int emacs, int *primed) {
+                      const ViStyle *style, int emacs, ViMenu *menu, ViHist *hh, int *primed) {
     const char *ghost = NULL;
-    if (emacs) {
+    size_t col = 0;
+    int menu_open = menu && menu->on;
+    int hist_open = hh && hh->on;
+    if (emacs && !menu_open && !hist_open) {
         ghost = ghost_of(buf, len, cur, hist, nhist, style);
     }
-    vi_redraw(prompt, buf, len, cur, ghost, style, primed);
-}
-
-static void touch_hist(int *hist_at, uint32_t nhist, char **prefix) {
-    free(*prefix);
-    *prefix = NULL;
-    *hist_at = (int)nhist;
+    vi_redraw(prompt, buf, len, cur, ghost, style, primed, &col);
+    if (menu && (menu->on || menu->rows > 0)) {
+        vi_menu_draw(menu->on ? menu->matches.name : NULL, menu->on ? menu->matches.n : 0, menu->sel, col,
+                     &menu->rows, &menu->cols, 0);
+    }
+    if (hh && (hh->on || hh->rows > 0)) {
+        vi_hist_draw(hh, hist, nhist, col);
+    }
+    vi_draw_end();
 }
 
 static void take_hist(char **buf, size_t *cap, size_t *len, size_t *cur, const char *text) {
@@ -245,65 +263,40 @@ static void take_hist(char **buf, size_t *cap, size_t *len, size_t *cur, const c
     *cur = *len;
 }
 
-static int hist_prev(char **hist, int at, const char *prefix) {
-    int i;
-    size_t n = prefix ? strlen(prefix) : 0;
-    if (!hist) {
-        return -1;
+static void hist_apply(ViHist *hh, char **hist, uint32_t nhist, char **buf, size_t *cap, size_t *len, size_t *cur) {
+    const char *line = vi_hist_line(hh, hist, nhist);
+    if (line) {
+        take_hist(buf, cap, len, cur, line);
     }
-    for (i = at - 1; i >= 0; i--) {
-        if (!prefix || strncmp(hist[i], prefix, n) == 0) {
-            return i;
-        }
-    }
-    return -1;
 }
 
-static int hist_next(char **hist, uint32_t nhist, int at, const char *prefix) {
-    uint32_t i;
-    size_t n = prefix ? strlen(prefix) : 0;
-    if (!hist || at < 0) {
-        return -1;
-    }
-    for (i = (uint32_t)at + 1; i < nhist; i++) {
-        if (!prefix || strncmp(hist[i], prefix, n) == 0) {
-            return (int)i;
-        }
-    }
-    return -1;
-}
-
-static void hist_up(char **buf, size_t *cap, size_t *len, size_t *cur, char **hist, uint32_t nhist, int *hist_at,
-                    char **saved, char **prefix) {
-    int next;
-    if (*hist_at == (int)nhist) {
+static int hist_open(ViHist *hh, char **hist, uint32_t nhist, const char *needle, int search, char **buf,
+                     size_t *cap, size_t *len, size_t *cur, char **saved) {
+    if (!hh->on) {
         free(*saved);
         *saved = dup_text(*buf);
-        free(*prefix);
-        *prefix = *len > 0 ? dup_text(*buf) : NULL;
     }
-    next = hist_prev(hist, *hist_at, *prefix);
-    if (next < 0) {
-        return;
+    if (!vi_hist_open(hh, hist, nhist, needle, search)) {
+        return 0;
     }
-    *hist_at = next;
-    take_hist(buf, cap, len, cur, hist[next]);
+    hist_apply(hh, hist, nhist, buf, cap, len, cur);
+    return 1;
 }
 
-static void hist_down(char **buf, size_t *cap, size_t *len, size_t *cur, char **hist, uint32_t nhist, int *hist_at,
-                      char **saved, const char *prefix) {
-    int next;
-    if (*hist_at >= (int)nhist) {
+static void hist_older(ViHist *hh, char **hist, uint32_t nhist, char **buf, size_t *cap, size_t *len, size_t *cur) {
+    if (vi_hist_older(hh)) {
+        hist_apply(hh, hist, nhist, buf, cap, len, cur);
+    }
+}
+
+static void hist_newer(ViHist *hh, char **hist, uint32_t nhist, char **buf, size_t *cap, size_t *len, size_t *cur,
+                       char **saved) {
+    if (vi_hist_newer(hh)) {
+        hist_apply(hh, hist, nhist, buf, cap, len, cur);
         return;
     }
-    next = hist_next(hist, nhist, *hist_at, prefix);
-    if (next < 0) {
-        *hist_at = (int)nhist;
-        take_hist(buf, cap, len, cur, saved && *saved ? *saved : "");
-        return;
-    }
-    *hist_at = next;
-    take_hist(buf, cap, len, cur, hist[next]);
+    take_hist(buf, cap, len, cur, saved && *saved ? *saved : "");
+    vi_hist_drop(hh);
 }
 
 static void insert_byte(char **buf, size_t *cap, size_t *len, size_t *cur, unsigned char ch) {
@@ -349,37 +342,170 @@ static void accept_ghost(char **buf, size_t *cap, size_t *len, size_t *cur, cons
     *cur = *len;
 }
 
-/* 1 submits the line. 2 is end of file. *listed means matches were printed. */
+static void menu_off(ViMenu *menu) {
+    vi_matches_clear(&menu->matches);
+    menu->on = 0;
+    menu->sel = 0;
+}
+
+static void menu_put(ViMenu *menu, char **buf, size_t *cap, size_t *len, size_t *cur) {
+    const char *name;
+    if (!menu->on || menu->sel < 0 || menu->sel >= menu->matches.n) {
+        return;
+    }
+    name = menu->matches.name[menu->sel];
+    vi_replace_word(buf, cap, len, cur, menu->matches.start, menu->matches.end, name);
+    menu->matches.end = menu->matches.start + strlen(name);
+}
+
+static void menu_step(ViMenu *menu, int delta, char **buf, size_t *cap, size_t *len, size_t *cur) {
+    int n = menu->matches.n;
+    int sel;
+    if (!menu->on || n <= 0) {
+        return;
+    }
+    sel = (menu->sel + delta) % n;
+    if (sel < 0) {
+        sel += n;
+    }
+    menu->sel = sel;
+    menu_put(menu, buf, cap, len, cur);
+}
+
+static void menu_begin(ViMenu *menu, char **buf, size_t *cap, size_t *len, size_t *cur) {
+    ViMatches found;
+    size_t ln;
+    int slash;
+    memset(&found, 0, sizeof found);
+    if (!vi_matches_at(*buf, *len, *cur, &found)) {
+        return;
+    }
+    if (found.n == 1) {
+        ln = strlen(found.name[0]);
+        slash = ln > 0 && found.name[0][ln - 1] == '/';
+        if (found.command && !slash) {
+            char *put = xmalloc(ln + 2);
+            memcpy(put, found.name[0], ln);
+            put[ln] = ' ';
+            put[ln + 1] = '\0';
+            vi_replace_word(buf, cap, len, cur, found.start, found.end, put);
+            free(put);
+        } else {
+            vi_replace_word(buf, cap, len, cur, found.start, found.end, found.name[0]);
+        }
+        vi_matches_clear(&found);
+        return;
+    }
+    menu_off(menu);
+    menu->matches = found;
+    menu->on = 1;
+    menu->sel = 0;
+    menu->cols = 1;
+    menu_put(menu, buf, cap, len, cur);
+}
+
+static int menu_delta(const ViMenu *menu, int key) {
+    int cols = menu->cols > 0 ? menu->cols : 1;
+    if (key == KEY_RIGHT) {
+        return 1;
+    }
+    if (key == KEY_LEFT || key == KEY_BTAB) {
+        return -1;
+    }
+    if (key == KEY_DOWN) {
+        return cols;
+    }
+    if (key == KEY_UP) {
+        return -cols;
+    }
+    return 0;
+}
+
+static void hist_recall_up(ViHist *hh, char **hist, uint32_t nhist, char **buf, size_t *cap, size_t *len,
+                           size_t *cur, char **saved) {
+    if (hh->on) {
+        hist_older(hh, hist, nhist, buf, cap, len, cur);
+        return;
+    }
+    hist_open(hh, hist, nhist, *len > 0 ? *buf : NULL, 0, buf, cap, len, cur, saved);
+}
+
+static void hist_recall_down(ViHist *hh, char **hist, uint32_t nhist, char **buf, size_t *cap, size_t *len,
+                             size_t *cur, char **saved) {
+    if (!hh->on) {
+        return;
+    }
+    hist_newer(hh, hist, nhist, buf, cap, len, cur, saved);
+}
+
+/* 1 submits the line. 2 is end of file. */
 static int emacs_key(unsigned char ch, char **buf, size_t *cap, size_t *len, size_t *cur, char **hist,
-                     uint32_t nhist, int *hist_at, char **saved, char **prefix, int *tab_armed,
-                     const ViStyle *style, int *listed) {
+                     uint32_t nhist, char **saved, const ViStyle *style, ViMenu *menu, ViHist *hh) {
     const char *ghost = ghost_of(*buf, *len, *cur, hist, nhist, style);
+    if (ch == 0x12) {
+        if (menu->on) {
+            menu_off(menu);
+        }
+        if (hh->on && hh->search) {
+            hist_older(hh, hist, nhist, buf, cap, len, cur);
+        } else if (hh->on) {
+            hh->search = 1;
+        } else {
+            hist_open(hh, hist, nhist, *len > 0 ? *buf : NULL, 1, buf, cap, len, cur, saved);
+        }
+        return 0;
+    }
     if (ch == 0x1b) {
         char seq[32];
         int key;
+        int delta;
         if (!read_seq(seq, sizeof seq)) {
+            if (hh->on && hh->search) {
+                take_hist(buf, cap, len, cur, saved && *saved ? *saved : "");
+                vi_hist_drop(hh);
+            }
             return 0;
         }
         key = key_of(seq);
+        delta = menu_delta(menu, key);
+        if (menu->on && delta != 0) {
+            menu_step(menu, delta, buf, cap, len, cur);
+            return 0;
+        }
+        if (menu->on) {
+            menu_off(menu);
+        }
+        if (hh->on && (key == KEY_UP || key == KEY_DOWN)) {
+            if (key == KEY_UP) {
+                hist_older(hh, hist, nhist, buf, cap, len, cur);
+            } else {
+                hist_newer(hh, hist, nhist, buf, cap, len, cur, saved);
+            }
+            return 0;
+        }
+        if (key == KEY_UP) {
+            hist_recall_up(hh, hist, nhist, buf, cap, len, cur, saved);
+            return 0;
+        }
+        if (key == KEY_DOWN) {
+            return 0;
+        }
+        if (hh->on) {
+            vi_hist_drop(hh);
+        }
         if (key == KEY_LEFT && *cur > 0) {
             *cur = step_left(*buf, *cur);
         } else if (key == KEY_RIGHT) {
             if (*cur == *len && ghost) {
                 accept_ghost(buf, cap, len, cur, ghost);
-                touch_hist(hist_at, nhist, prefix);
             } else if (*cur < *len) {
                 *cur = step_right(*buf, *len, *cur);
             }
-        } else if (key == KEY_UP) {
-            hist_up(buf, cap, len, cur, hist, nhist, hist_at, saved, prefix);
-        } else if (key == KEY_DOWN) {
-            hist_down(buf, cap, len, cur, hist, nhist, hist_at, saved, *prefix);
         } else if (key == KEY_HOME) {
             *cur = 0;
         } else if (key == KEY_END) {
             if (*cur == *len && ghost) {
                 accept_ghost(buf, cap, len, cur, ghost);
-                touch_hist(hist_at, nhist, prefix);
             } else {
                 *cur = *len;
             }
@@ -389,24 +515,54 @@ static int emacs_key(unsigned char ch, char **buf, size_t *cap, size_t *len, siz
             *cur = (size_t)word_right(*buf, *len, *cur);
         } else if (key == KEY_DELETE) {
             delete_fwd(*buf, len, *cur);
-            touch_hist(hist_at, nhist, prefix);
         }
-        *tab_armed = 0;
+        return 0;
+    }
+    if (ch == 0x10) {
+        if (menu->on) {
+            menu_off(menu);
+        }
+        hist_recall_up(hh, hist, nhist, buf, cap, len, cur, saved);
+        return 0;
+    }
+    if (ch == 0x0e) {
+        if (menu->on) {
+            menu_off(menu);
+        }
+        hist_recall_down(hh, hist, nhist, buf, cap, len, cur, saved);
+        return 0;
+    }
+    if (hh->on && hh->search && (ch == 0x7f || ch == 0x08)) {
+        if (vi_hist_query_edit(hh, hist, nhist, 0, 0)) {
+            hist_apply(hh, hist, nhist, buf, cap, len, cur);
+        }
+        return 0;
+    }
+    if (hh->on && hh->search && ch >= 0x20) {
+        if (vi_hist_query_edit(hh, hist, nhist, 1, ch)) {
+            hist_apply(hh, hist, nhist, buf, cap, len, cur);
+        }
         return 0;
     }
     if (ch == '\t' && style->complete) {
-        int rc = vi_complete(buf, cap, len, cur, *tab_armed);
-        *tab_armed = (rc & VI_COMP_MULTI) ? 1 : 0;
-        if (rc & VI_COMP_LISTED) {
-            *listed = 1;
+        if (hh->on) {
+            vi_hist_drop(hh);
         }
-        touch_hist(hist_at, nhist, prefix);
+        if (menu->on) {
+            menu_step(menu, 1, buf, cap, len, cur);
+        } else {
+            menu_begin(menu, buf, cap, len, cur);
+        }
         return 0;
     }
-    *tab_armed = 0;
+    if (hh->on) {
+        vi_hist_drop(hh);
+    }
+    if (menu->on) {
+        menu_off(menu);
+    }
     if (ch == 0x7f || ch == 0x08) {
         delete_back(*buf, len, cur);
-        touch_hist(hist_at, nhist, prefix);
         return 0;
     }
     if (ch == 0x04) {
@@ -414,7 +570,6 @@ static int emacs_key(unsigned char ch, char **buf, size_t *cap, size_t *len, siz
             return 2;
         }
         delete_fwd(*buf, len, *cur);
-        touch_hist(hist_at, nhist, prefix);
         return 0;
     }
     if (ch == 0x01) {
@@ -424,7 +579,6 @@ static int emacs_key(unsigned char ch, char **buf, size_t *cap, size_t *len, siz
     if (ch == 0x05) {
         if (*cur == *len && ghost) {
             accept_ghost(buf, cap, len, cur, ghost);
-            touch_hist(hist_at, nhist, prefix);
         } else {
             *cur = *len;
         }
@@ -439,25 +593,15 @@ static int emacs_key(unsigned char ch, char **buf, size_t *cap, size_t *len, siz
     if (ch == 0x06) {
         if (*cur == *len && ghost) {
             accept_ghost(buf, cap, len, cur, ghost);
-            touch_hist(hist_at, nhist, prefix);
         } else if (*cur < *len) {
             *cur = step_right(*buf, *len, *cur);
         }
-        return 0;
-    }
-    if (ch == 0x10) {
-        hist_up(buf, cap, len, cur, hist, nhist, hist_at, saved, prefix);
-        return 0;
-    }
-    if (ch == 0x0e) {
-        hist_down(buf, cap, len, cur, hist, nhist, hist_at, saved, *prefix);
         return 0;
     }
     if (ch == 0x15) {
         *len = 0;
         *cur = 0;
         (*buf)[0] = '\0';
-        touch_hist(hist_at, nhist, prefix);
         return 0;
     }
     if (ch == 0x17) {
@@ -466,12 +610,10 @@ static int emacs_key(unsigned char ch, char **buf, size_t *cap, size_t *len, siz
         *len -= *cur - to;
         *cur = to;
         (*buf)[*len] = '\0';
-        touch_hist(hist_at, nhist, prefix);
         return 0;
     }
     if (ch >= 0x20) {
         insert_byte(buf, cap, len, cur, ch);
-        touch_hist(hist_at, nhist, prefix);
     }
     return 0;
 }
@@ -491,11 +633,13 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
     int hist_at = (int)nhist;
     int emacs;
     int primed = 0;
-    int tab_armed = 0;
     int done = 0;
     int eof = 0;
+    ViMenu menu;
+    ViHist hh;
     char *saved = NULL;
-    char *prefix = NULL;
+    memset(&menu, 0, sizeof menu);
+    vi_hist_init(&hh);
     if (!use) {
         vi_style_clear(&plain);
         use = &plain;
@@ -509,11 +653,10 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
     }
     buf = xmalloc(cap);
     buf[0] = '\0';
-    show_line(prompt, buf, len, cur, hist, nhist, use, emacs, &primed);
+    show_line(prompt, buf, len, cur, hist, nhist, use, emacs, &menu, &hh, &primed);
     while (!done && !eof) {
         unsigned char ch = 0;
         ssize_t n = read(STDIN_FILENO, &ch, 1);
-        int listed = 0;
         if (n < 0 && errno == EINTR) {
             continue;
         }
@@ -526,16 +669,12 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
             break;
         }
         if (emacs) {
-            int act = emacs_key(ch, &buf, &cap, &len, &cur, hist, nhist, &hist_at, &saved, &prefix, &tab_armed,
-                                use, &listed);
+            int act = emacs_key(ch, &buf, &cap, &len, &cur, hist, nhist, &saved, use, &menu, &hh);
             if (act == 2) {
                 eof = 1;
                 break;
             }
-            if (listed) {
-                primed = 0;
-            }
-            show_line(prompt, buf, len, cur, hist, nhist, use, emacs, &primed);
+            show_line(prompt, buf, len, cur, hist, nhist, use, emacs, &menu, &hh, &primed);
             continue;
         }
         if (insert) {
@@ -544,7 +683,7 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
                 if (cur > 0) {
                     cur--;
                 }
-                show_line(prompt, buf, len, cur, hist, nhist, use, 0, &primed);
+                show_line(prompt, buf, len, cur, hist, nhist, use, 0, &menu, &hh, &primed);
                 continue;
             }
             if (ch == 0x7f || ch == 0x08) {
@@ -553,7 +692,7 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
                     cur--;
                     len--;
                     buf[len] = '\0';
-                    show_line(prompt, buf, len, cur, hist, nhist, use, 0, &primed);
+                    show_line(prompt, buf, len, cur, hist, nhist, use, 0, &menu, &hh, &primed);
                 }
                 continue;
             }
@@ -566,7 +705,7 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
                     memmove(buf + cur, buf + cur + 1, len - cur - 1);
                     len--;
                     buf[len] = '\0';
-                    show_line(prompt, buf, len, cur, hist, nhist, use, 0, &primed);
+                    show_line(prompt, buf, len, cur, hist, nhist, use, 0, &menu, &hh, &primed);
                 }
                 continue;
             }
@@ -574,7 +713,7 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
                 len = 0;
                 cur = 0;
                 buf[0] = '\0';
-                show_line(prompt, buf, len, cur, hist, nhist, use, 0, &primed);
+                show_line(prompt, buf, len, cur, hist, nhist, use, 0, &menu, &hh, &primed);
                 continue;
             }
             if (ch == 0x17) {
@@ -583,7 +722,7 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
                 len -= cur - to;
                 cur = to;
                 buf[len] = '\0';
-                show_line(prompt, buf, len, cur, hist, nhist, use, 0, &primed);
+                show_line(prompt, buf, len, cur, hist, nhist, use, 0, &menu, &hh, &primed);
                 continue;
             }
             if (ch >= 0x20) {
@@ -593,7 +732,7 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
                 cur++;
                 len++;
                 buf[len] = '\0';
-                show_line(prompt, buf, len, cur, hist, nhist, use, 0, &primed);
+                show_line(prompt, buf, len, cur, hist, nhist, use, 0, &menu, &hh, &primed);
             }
             continue;
         }
@@ -606,7 +745,7 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
                 cur = 0;
             }
             insert = 1;
-            show_line(prompt, buf, len, cur, hist, nhist, use, 0, &primed);
+            show_line(prompt, buf, len, cur, hist, nhist, use, 0, &menu, &hh, &primed);
             continue;
         }
         if (ch == 'h' && cur > 0) {
@@ -670,15 +809,22 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
                 buf[cur] = (char)rep;
             }
         }
-        show_line(prompt, buf, len, cur, hist, nhist, use, 0, &primed);
+        show_line(prompt, buf, len, cur, hist, nhist, use, 0, &menu, &hh, &primed);
+    }
+    if (menu.rows > 0) {
+        vi_menu_draw(NULL, 0, 0, 0, &menu.rows, &menu.cols, 0);
+    }
+    if (hh.rows > 0) {
+        vi_menu_draw(NULL, 0, 0, 0, &hh.rows, &hh.cols, 1);
     }
     if (done) {
         fputc('\n', stderr);
-        fflush(stderr);
     }
+    fflush(stderr);
     vi_restore();
+    vi_matches_clear(&menu.matches);
+    vi_hist_drop(&hh);
     free(saved);
-    free(prefix);
     if (done) {
         buf[len] = '\0';
         *out = buf;

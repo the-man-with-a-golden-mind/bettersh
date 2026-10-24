@@ -678,6 +678,9 @@ static void join_star(EvalCtx *ctx, Sbuf *cur, int quoted) {
 
 static int add_param(EvalCtx *ctx, const WordPart *part, Sbuf *cur, Sbuf **list, uint32_t *nlist,
                      uint32_t *clist) {
+    if (part->op == P_SUBSCRIPT) {
+        return fatal(ctx, part->line, "Bad substitution");
+    }
     const char *name = part->text ? part->text : "";
     int quoted = part->quoted;
     if ((strcmp(name, "@") == 0 || strcmp(name, "*") == 0) && part->op == P_NONE) {

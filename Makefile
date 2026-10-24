@@ -4,6 +4,11 @@ REQUIRED  = -std=c17 -Wall -Wextra -Wpedantic -Werror
 CFLAGS   ?= -O2
 DEFINES   = -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 LDFLAGS  ?=
+UNAME_S  := $(shell uname -s)
+PTY_LIBS =
+ifeq ($(UNAME_S),Linux)
+PTY_LIBS = -lutil
+endif
 VERSION  := $(shell cat VERSION)
 OBJDIR   ?= src
 OUT      ?= bettersh
@@ -22,7 +27,7 @@ SRC = src/main.c src/arena.c src/error.c src/ast.c \
       src/compiler.c src/compile_expr.c src/compile_flow.c src/verify.c src/disasm.c \
       src/vm.c src/vm_ops.c src/vm_method.c src/vm_exec.c src/interp.c src/interp_expr.c \
       src/module.c src/host.c src/host_term.c src/host_fs.c src/host_pipe.c src/modern.c \
-      src/shjob.c src/interact.c src/vi_line.c src/vi_draw.c src/vi_complete.c \
+      src/shjob.c src/interact.c src/vi_line.c src/vi_draw.c src/vi_complete.c src/vi_hist.c \
       src/btr_prompt.c \
       src/utf8.c src/suggest.c src/trace.c src/bcode.c
 OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(SRC))
@@ -58,16 +63,34 @@ tests/chunk_fuzz: tests/chunk_fuzz.c $(FUZZ_OBJ)
 	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -iquote src -o $@ tests/chunk_fuzz.c \
 		$(FUZZ_OBJ) $(LDFLAGS) -lm
 
+tests/osrun: tests/osrun.c
+	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -o $@ tests/osrun.c $(LDFLAGS)
+
+tests/lsp_peer: tests/lsp_peer.c
+	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -o $@ tests/lsp_peer.c $(LDFLAGS)
+
+tests/pty_edit: tests/pty_edit.c tests/pty_util.c tests/pty_util.h
+	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -o $@ tests/pty_edit.c tests/pty_util.c $(LDFLAGS) $(PTY_LIBS)
+
+tests/pty_interact: tests/pty_interact.c tests/pty_util.c tests/pty_util.h
+	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -o $@ tests/pty_interact.c tests/pty_util.c $(LDFLAGS) $(PTY_LIBS)
+
+tests/pty_btr: tests/pty_btr.c tests/pty_util.c tests/pty_util.h
+	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -o $@ tests/pty_btr.c tests/pty_util.c $(LDFLAGS) $(PTY_LIBS)
+
+TEST_BINS = tests/value_test tests/verify_test tests/chunk_fuzz \
+	tests/osrun tests/lsp_peer tests/pty_edit tests/pty_interact tests/pty_btr
+
 $(OBJDIR)/%.o: src/%.c src/*.h
 	@mkdir -p $(dir $@)
 	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -DBETTERSH_VERSION='"$(VERSION)"' -iquote src -c $< -o $@
 
-test: bettersh tests/value_test tests/verify_test tests/chunk_fuzz
+test: bettersh $(TEST_BINS)
 	./tests/run.sh
 
 # Network, the perf script, and Apple leaks. Not part of test.
 # The perf script prints a time. It fails only when BETTERSH_PERF_LIMIT is set.
-test-host: bettersh tests/value_test tests/verify_test tests/chunk_fuzz
+test-host: bettersh $(TEST_BINS)
 	BETTERSH_NET=1 BETTERSH_PERF=1 BETTERSH_LEAKS=1 ./tests/run.sh
 
 # Wall-clock benchmarks. They report results and do not gate `make test`.
@@ -77,10 +100,10 @@ bench: bettersh
 debug:
 	$(MAKE) clean
 	$(MAKE) CFLAGS="-O0 -g -fsanitize=address,undefined" \
-		LDFLAGS="-fsanitize=address,undefined" bettersh tests/value_test tests/verify_test tests/chunk_fuzz
+		LDFLAGS="-fsanitize=address,undefined" bettersh $(TEST_BINS)
 
 clean:
-	rm -f $(OBJ) bettersh tests/value_test tests/verify_test tests/chunk_fuzz
+	rm -f $(OBJ) bettersh $(TEST_BINS)
 	rm -rf build
 
 # Compare ten thousand generated programs on the interpreter and VM.

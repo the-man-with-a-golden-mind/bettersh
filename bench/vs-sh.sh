@@ -10,23 +10,10 @@ if [ ! -x "$bin" ]; then
 fi
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
-python3 - "$bin" "$d" "bench/baseline.tsv" <<'PY'
-import os, subprocess, sys, time
+osrun=$PWD/tests/osrun
+mkdir -p "$d/expect"
 
-bin, dest, base_path = sys.argv[1], sys.argv[2], sys.argv[3]
-base_times = {}
-if os.path.isfile(base_path):
-    for line in open(base_path, "r", encoding="utf-8"):
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split()
-        if len(parts) == 2:
-            base_times[parts[0]] = float(parts[1])
-shells = [bin, "/bin/sh", "dash"]
-
-posix = {
-    "arith.sh": """
+cat >"$d/arith.sh" << 'EOF'
 i=0
 s=0
 while [ "$i" -lt 8000 ]; do
@@ -34,8 +21,8 @@ while [ "$i" -lt 8000 ]; do
   i=$((i + 1))
 done
 echo "$s"
-""",
-    "length.sh": """
+EOF
+cat >"$d/length.sh" << 'EOF'
 i=0
 n=0
 while [ "$i" -lt 20000 ]; do
@@ -44,8 +31,8 @@ while [ "$i" -lt 20000 ]; do
   i=$((i + 1))
 done
 echo "$n"
-""",
-    "case.sh": """
+EOF
+cat >"$d/case.sh" << 'EOF'
 i=0
 n=0
 while [ "$i" -lt 20000 ]; do
@@ -58,8 +45,8 @@ while [ "$i" -lt 20000 ]; do
   i=$((i + 1))
 done
 echo "$n"
-""",
-    "func.sh": """
+EOF
+cat >"$d/func.sh" << 'EOF'
 add() {
   a=$(($1 + $2))
 }
@@ -71,23 +58,22 @@ while [ "$i" -lt 18000 ]; do
   i=$((i + 1))
 done
 echo "$s"
-""",
-    "printf.sh": """
+EOF
+cat >"$d/printf.sh" << 'EOF'
 i=0
 while [ "$i" -lt 12000 ]; do
-  printf '%s\\n' "$i" >/dev/null
+  printf '%s\n' "$i" >/dev/null
   i=$((i + 1))
 done
 echo "$i"
-""",
-}
-
-modern = {
-    "squares.btr": """#!/usr/bin/env bettersh
+EOF
+cat >"$d/squares.btr" << 'EOF'
+#!/usr/bin/env bettersh
 let s = 0
 for i in 1..1000000 { let s = i * i }
-""",
-    "while.btr": """#!/usr/bin/env bettersh
+EOF
+cat >"$d/while.btr" << 'EOF'
+#!/usr/bin/env bettersh
 let i = 0
 let s = 0
 while i < 1200000 {
@@ -95,8 +81,9 @@ while i < 1200000 {
   let i = i + 1
 }
 println(s)
-""",
-    "concat.btr": """#!/usr/bin/env bettersh
+EOF
+cat >"$d/concat.btr" << 'EOF'
+#!/usr/bin/env bettersh
 let s = ""
 let i = 0
 while i < 1200000 {
@@ -104,8 +91,9 @@ while i < 1200000 {
   let i = i + 1
 }
 println(s.length)
-""",
-    "map.btr": """#!/usr/bin/env bettersh
+EOF
+cat >"$d/map.btr" << 'EOF'
+#!/usr/bin/env bettersh
 let m = { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }
 let keys = ["a", "b", "c", "d", "e", "f", "g", "h"]
 let i = 0
@@ -115,8 +103,9 @@ while i < 600000 {
   let i = i + 1
 }
 println(s)
-""",
-    "filter.btr": """#!/usr/bin/env bettersh
+EOF
+cat >"$d/filter.btr" << 'EOF'
+#!/usr/bin/env bettersh
 let nums = [1, 2, 3, 4, 5, 6, 7, 8]
 let i = 0
 let n = 0
@@ -125,82 +114,180 @@ while i < 100000 {
   let i = i + 1
 }
 println(n)
-""",
+EOF
+
+printf '31996000\n' >"$d/expect/arith.sh"
+printf '120000\n' >"$d/expect/length.sh"
+printf '50000\n' >"$d/expect/case.sh"
+printf '161991000\n' >"$d/expect/func.sh"
+printf '12000\n' >"$d/expect/printf.sh"
+: >"$d/expect/squares.btr"
+printf '719999400000\n' >"$d/expect/while.btr"
+printf '1200000\n' >"$d/expect/concat.btr"
+printf '2700000\n' >"$d/expect/map.btr"
+printf '400000\n' >"$d/expect/filter.btr"
+
+usec_of() {
+    s=$1
+    w=${s%%.*}
+    f=${s#*.}
+    if [ "$w" = "$s" ]; then
+        f=
+    fi
+    f=$(printf '%s000000' "$f")
+    f=$(printf '%.6s' "$f")
+    while [ -n "$f" ] && [ "${f#0}" != "$f" ]; do
+        f=${f#0}
+    done
+    if [ -z "$f" ]; then
+        f=0
+    fi
+    if [ -z "$w" ]; then
+        w=0
+    fi
+    echo $((w * 1000000 + f))
 }
 
-# Counts below were checked on the same programs at a smaller size.
-# The printed value is that formula at the size in the script.
-expect = {
-    "arith.sh": b"31996000\n",
-    "length.sh": b"120000\n",
-    "case.sh": b"50000\n",
-    "func.sh": b"161991000\n",
-    "printf.sh": b"12000\n",
-    "squares.btr": b"",
-    "while.btr": b"719999400000\n",
-    "concat.btr": b"1200000\n",
-    "map.btr": b"2700000\n",
-    "filter.btr": b"400000\n",
+show_time() {
+    ms=$((($1 + 500) / 1000))
+    printf '%3d.%03d' $((ms / 1000)) $((ms % 1000))
 }
 
-labels = [
-    ("posix while 8000  (sum 0..7999)", "arith.sh", True),
-    ("posix param length 20000", "length.sh", True),
-    ("posix case 20000", "case.sh", True),
-    ("posix function 18000", "func.sh", True),
-    ("posix printf 12000", "printf.sh", True),
-    ("modern for 1..1000000 squares", "squares.btr", False),
-    ("modern while sum 1200000", "while.btr", False),
-    ("modern string concat 1200000", "concat.btr", False),
-    ("modern map lookup 600000", "map.btr", False),
-    ("modern filter 100000", "filter.btr", False),
-]
+base_secs() {
+    want=$1
+    base_line=
+    while read -r name secs rest; do
+        first=$(printf '%.1s' "$name")
+        if [ -z "$name" ] || [ "$first" = "#" ]; then
+            continue
+        fi
+        if [ "$name" = "$want" ]; then
+            base_line=$secs
+            return 0
+        fi
+    done < bench/baseline.tsv
+    base_line=
+}
 
-for name, body in list(posix.items()) + list(modern.items()):
-    with open(dest + "/" + name, "w") as fh:
-        fh.write(body.lstrip("\n"))
+best_of() {
+    cmd=$1
+    path=$2
+    best=
+    k=0
+    while [ "$k" -lt 3 ]; do
+        line=$("$osrun" time -o "$d/out" -e "$d/err" -- "$cmd" "$path") || return 1
+        usec=${line%% *}
+        code=${line##* }
+        if [ -z "$best" ] || [ "$usec" -lt "$best" ]; then
+            best=$usec
+            best_code=$code
+            cp "$d/out" "$d/best_out"
+            cp "$d/err" "$d/best_err"
+        fi
+        k=$((k + 1))
+    done
+}
 
-def once(cmd):
-    t0 = time.perf_counter()
-    proc = subprocess.run(cmd, capture_output=True)
-    return time.perf_counter() - t0, proc.returncode, proc.stdout, proc.stderr
+failed=0
+printf 'best of 3\n'
+run_one() {
+    label=$1
+    name=$2
+    shared=$3
+    printf '%s\n' "$label"
+    if [ "$shared" -eq 1 ]; then
+        best_of "$bin" "$d/$name" || exit 1
+        base_usec=$best
+        base_code=$best_code
+        cp "$d/best_out" "$d/base_out"
+        cp "$d/best_err" "$d/base_err"
+        printf '  %-10s %ss  rc=%s\n' bettersh "$(show_time "$base_usec")" "$base_code"
+        if [ -f bench/baseline.tsv ]; then
+            base_secs "$name"
+            if [ -n "$base_line" ]; then
+                base_us=$(usec_of "$base_line")
+                if [ "$base_us" -gt 0 ]; then
+                    diff=$((base_usec - base_us))
+                    neg=0
+                    if [ "$diff" -lt 0 ]; then
+                        neg=1
+                        diff=$((0 - diff))
+                    fi
+                    tenths=$((diff * 1000 / base_us))
+                    if [ "$neg" -eq 1 ]; then
+                        sign=-
+                    else
+                        sign=+
+                    fi
+                    num=$(printf '%s%d.%d' "$sign" $((tenths / 10)) $((tenths % 10)))
+                    printf '             baseline %6s%%\n' "$num"
+                fi
+            fi
+        fi
+        for sh in /bin/sh dash; do
+            best_of "$sh" "$d/$name" || exit 1
+            shown=$sh
+            printf '  %-10s %ss  rc=%s\n' "$shown" "$(show_time "$best")" "$best_code"
+            if [ "$best_code" != "$base_code" ] || ! cmp -s "$d/best_out" "$d/base_out" ||
+                ! cmp -s "$d/best_err" "$d/base_err"; then
+                failed=1
+                printf 'mismatch %s rc=%s\n' "$sh" "$best_code" >&2
+                diff -u "$d/base_out" "$d/best_out" >&2
+                diff -u "$d/base_err" "$d/best_err" >&2
+            fi
+        done
+        if [ "$base_code" -ne 0 ] || ! cmp -s "$d/base_out" "$d/expect/$name" || [ -s "$d/base_err" ]; then
+            failed=1
+            printf 'bad %s rc=%s\n' "$name" "$base_code" >&2
+            diff -u "$d/expect/$name" "$d/base_out" >&2
+        elif [ -s "$d/base_out" ]; then
+            printf '  stdout   %s\n' "$(tr -d '\n' <"$d/base_out")"
+        fi
+    else
+        best_of "$bin" "$d/$name" || exit 1
+        printf '  %-10s %ss  rc=%s\n' bettersh "$(show_time "$best")" "$best_code"
+        if [ -f bench/baseline.tsv ]; then
+            base_secs "$name"
+            if [ -n "$base_line" ]; then
+                base_us=$(usec_of "$base_line")
+                if [ "$base_us" -gt 0 ]; then
+                    diff=$((best - base_us))
+                    neg=0
+                    if [ "$diff" -lt 0 ]; then
+                        neg=1
+                        diff=$((0 - diff))
+                    fi
+                    tenths=$((diff * 1000 / base_us))
+                    if [ "$neg" -eq 1 ]; then
+                        sign=-
+                    else
+                        sign=+
+                    fi
+                    num=$(printf '%s%d.%d' "$sign" $((tenths / 10)) $((tenths % 10)))
+                    printf '             baseline %6s%%\n' "$num"
+                fi
+            fi
+        fi
+        if [ "$best_code" -ne 0 ] || ! cmp -s "$d/best_out" "$d/expect/$name" || [ -s "$d/best_err" ]; then
+            failed=1
+            printf 'bad %s rc=%s\n' "$name" "$best_code" >&2
+            diff -u "$d/expect/$name" "$d/best_out" >&2
+        elif [ -s "$d/best_out" ]; then
+            printf '  stdout   %s\n' "$(tr -d '\n' <"$d/best_out")"
+        fi
+    fi
+}
 
-print("best of 3")
-failed = False
-for label, name, shared in labels:
-    path = dest + "/" + name
-    print(label)
-    if shared:
-        rows = []
-        for sh in shells:
-            best = min((once([sh, path]) for _ in range(3)), key=lambda row: row[0])
-            rows.append((sh, best))
-            shown = "bettersh" if sh == bin else sh
-            print("  %-10s %7.3fs  rc=%s" % (shown, best[0], best[1]))
-            if sh == bin and name in base_times and base_times[name] > 0:
-                pct = (best[0] - base_times[name]) / base_times[name] * 100.0
-                print("             baseline %+6.1f%%" % pct)
-        base = rows[0][1]
-        for sh, row in rows:
-            if row[1] != base[1] or row[2] != base[2] or row[3] != base[3]:
-                failed = True
-                sys.stderr.write("mismatch %s rc=%s out=%r err=%r\n" % (sh, row[1], row[2], row[3]))
-        if base[1] != 0 or base[2] != expect[name] or base[3]:
-            failed = True
-            sys.stderr.write("bad %s rc=%s out=%r err=%r\n" % (name, base[1], base[2], base[3]))
-        else:
-            print("  stdout   %s" % base[2].decode().strip())
-    else:
-        best = min((once([bin, path]) for _ in range(3)), key=lambda row: row[0])
-        print("  %-10s %7.3fs  rc=%s" % ("bettersh", best[0], best[1]))
-        if name in base_times and base_times[name] > 0:
-            pct = (best[0] - base_times[name]) / base_times[name] * 100.0
-            print("             baseline %+6.1f%%" % pct)
-        if best[1] != 0 or best[2] != expect[name] or best[3]:
-            failed = True
-            sys.stderr.write("bad %s rc=%s out=%r err=%r\n" % (name, best[1], best[2], best[3]))
-        elif best[2]:
-            print("  stdout   %s" % best[2].decode().strip())
-if failed:
-    sys.exit(1)
-PY
+run_one "posix while 8000  (sum 0..7999)" arith.sh 1
+run_one "posix param length 20000" length.sh 1
+run_one "posix case 20000" case.sh 1
+run_one "posix function 18000" func.sh 1
+run_one "posix printf 12000" printf.sh 1
+run_one "modern for 1..1000000 squares" squares.btr 0
+run_one "modern while sum 1200000" while.btr 0
+run_one "modern string concat 1200000" concat.btr 0
+run_one "modern map lookup 600000" map.btr 0
+run_one "modern filter 100000" filter.btr 0
+if [ "$failed" -ne 0 ]; then
+    exit 1
+fi

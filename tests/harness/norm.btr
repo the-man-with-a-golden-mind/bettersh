@@ -1,0 +1,50 @@
+#!/usr/bin/env bettersh
+# Rewrites the first file:line:column: prefix on each line to file:line:C:
+# so a VM diagnostic matches --interp, which always reports column 1.
+
+fn digit(c) {
+  return c >= "0" && c <= "9"
+}
+
+fn norm_line(line) {
+  let n = line.length
+  let i = 0
+  if n == 0 { return line }
+  if line[0] == ":" { return line }
+  while i < n && line[i] != ":" {
+    let i = i + 1
+  }
+  if i == 0 || i >= n { return line }
+  let i = i + 1
+  let digs = 0
+  while i < n && digit(line[i]) {
+    let i = i + 1
+    let digs = digs + 1
+  }
+  if digs == 0 || i >= n || line[i] != ":" { return line }
+  let mark = i
+  let i = i + 1
+  let digs = 0
+  while i < n && digit(line[i]) {
+    let i = i + 1
+    let digs = digs + 1
+  }
+  if digs == 0 || i >= n || line[i] != ":" { return line }
+  let i = i + 1
+  return "@{ line.slice(0, mark) }:C:@{ line.slice(i, n) }"
+}
+
+let text = readfile(arg(1))
+let lines = text.split("\n")
+let i = 0
+let out = ""
+while i < lines.length {
+  let piece = norm_line(lines[i])
+  if i + 1 < lines.length {
+    let out = "@{ out }@{ piece }\n"
+  } else {
+    let out = "@{ out }@{ piece }"
+  }
+  let i = i + 1
+}
+print(out)

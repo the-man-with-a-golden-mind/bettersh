@@ -287,15 +287,16 @@ fn emit_prompt(colors, segs, plugs) {
     let i = i + 1
     let row = join_row(row, piece_of(name, colors, short))
   }
+  if code != "0" && show_status {
+    let row = join_row(row, theme.wrap(colors.diag, code))
+  }
   if code == "0" {
     let line2 = theme.wrap(colors.string, mark)
-  } else if show_status {
-    let line2 = theme.wrap(colors.diag, "@{ mark } @{ code }")
   } else {
     let line2 = theme.wrap(colors.diag, mark)
   }
   if row == "" { io.write("@{ line2 } ") }
-  else { io.write("@{ row }\n@{ line2 } ") }
+  else { io.write("@{ row } @{ line2 } ") }
 }
 
 let home = home_of()

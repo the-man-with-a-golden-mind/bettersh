@@ -9,6 +9,7 @@ if ! command -v dash >/dev/null 2>&1; then
     echo SH_FULL_SKIP
     exit 0
 fi
+osrun=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)/tests/osrun
 
 check() {
     label=$1
@@ -154,7 +155,7 @@ fi
 # No controlling terminal, so monitor cannot start and the shell does not abort.
 dash_bin=$(command -v dash)
 setsid_run() {
-    python3 -c 'import os,sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' "$@"
+    "$osrun" setsid -- "$@"
 }
 setsid_run "$bin" -c 'set -m; echo ok' >"$d/bout" 2>"$d/berr"
 bs=$?

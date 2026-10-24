@@ -3,15 +3,25 @@
 
 #include <stddef.h>
 
-/* The word at the cursor was replaced. */
-#define VI_COMP_CHANGED 1
-/* Match names were written above the line. The next redraw is a first draw. */
-#define VI_COMP_LISTED 2
-/* More than one name matched, so a later Tab should list them. */
-#define VI_COMP_MULTI 4
+enum { VI_MATCH_MAX = 128 };
 
-/* Complete the word at *cur. again lists matches that were already shown
-   as ambiguous. 0 means nothing matched. */
-int vi_complete(char **buf, size_t *cap, size_t *len, size_t *cur, int again);
+/* Names are malloc'd. vi_matches_clear frees them. */
+typedef struct ViMatches {
+    char *name[VI_MATCH_MAX];
+    int n;
+    size_t start;
+    size_t end;
+    int command;
+} ViMatches;
+
+void vi_matches_clear(ViMatches *matches);
+
+/* Fill matches for the word at cur. Does not edit the line.
+   matches must be clear. 1 means n > 0. */
+int vi_matches_at(const char *buf, size_t len, size_t cur, ViMatches *matches);
+
+/* Replace buf[start, end) with put and leave the cursor after it. */
+void vi_replace_word(char **buf, size_t *cap, size_t *len, size_t *cur, size_t start, size_t end,
+                     const char *put);
 
 #endif

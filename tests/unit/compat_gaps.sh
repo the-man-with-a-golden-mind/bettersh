@@ -9,6 +9,8 @@ if ! command -v dash >/dev/null 2>&1; then
     echo COMPAT_SKIP
     exit 0
 fi
+repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
+osrun=$repo/tests/osrun
 
 same() {
     name=$1
@@ -222,15 +224,7 @@ ps4_ok=0
 if [ "$ds" = "$bs" ] && cmp -s "$d/do" "$d/bo"; then
     if cmp -s "$d/de" "$d/be"; then
         ps4_ok=1
-    elif python3 - "$d/de" "$d/be" << 'PY'
-import pathlib, sys
-dash = pathlib.Path(sys.argv[1]).read_bytes()
-ours = pathlib.Path(sys.argv[2]).read_bytes()
-if dash != ours:
-    dash = dash.replace(b"unset PS4\n\n", b"unset PS4\n", 1)
-sys.exit(0 if dash == ours else 1)
-PY
-    then
+    elif "$bin" "$repo/tests/harness/ps4.btr" "$d/de" "$d/be"; then
         ps4_ok=1
     fi
 fi
@@ -667,8 +661,8 @@ kill -9 $pid
 jobs >/dev/null
 wait $pid
 echo a:$?'
-same 'fg abort' 'python3 -c "import os; os.abort()"
-echo st:$?'
+same 'fg abort' "$osrun abort
+echo st:\$?"
 same 'enoexec' 'dir=$(mktemp -d)
 cd "$dir" || exit 1
 foo=parent

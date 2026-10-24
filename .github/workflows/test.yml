@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dash and curl
-        run: sudo apt-get update && sudo apt-get install -y dash curl python3
+        run: sudo apt-get update && sudo apt-get install -y dash curl
       - name: Test
         run: make test
 
@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dash and curl
-        run: sudo apt-get update && sudo apt-get install -y dash curl python3
+        run: sudo apt-get update && sudo apt-get install -y dash curl
       - name: Build with ASan and UBSan
         run: make debug
       - name: Test
@@ -42,6 +42,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dash, curl, and clang
-        run: sudo apt-get update && sudo apt-get install -y dash curl python3 clang
+        run: sudo apt-get update && sudo apt-get install -y dash curl clang
       - name: Test
         run: make test CC=clang

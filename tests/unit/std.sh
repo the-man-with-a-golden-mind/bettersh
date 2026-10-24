@@ -6,6 +6,8 @@ case $bin in
 esac
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
+repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
+peer=$repo/tests/lsp_peer
 fail=0
 bad() {
     printf 'FAIL %s\n' "$1" >&2
@@ -271,7 +273,7 @@ for badchr in 'chr(1114112)' 'chr(-1)' 'chr(1.5)' 'chr(55296)' 'chr(57343)' 'ord
     fi
 done
 
-python3 -c 'open("'"$d"'/badbyte.btr", "wb").write(b"let s = \"" + bytes([255]) + b"\"\nprintln(s.length)\nprintln(ord(s))\n")'
+"$bin" "$repo/tests/harness/badbyte.btr" "$d/badbyte.btr"
 both 'bad byte' "$d/badbyte.btr" || true
 printf '%s\n' 1 255 >"$d/want"
 if [ "$st" -ne 0 ] || [ -s "$d/ve" ] || ! cmp -s "$d/want" "$d/vo"; then
@@ -371,72 +373,7 @@ if [ "$st" != "$is" ] || [ "$st" -ne 0 ] || [ -s "$d/vo" ] || ! cmp -s "$d/vo" "
     cat "$d/ve" >&2
 fi
 
-cat >"$d/edit_pty.py" << 'PY'
-import fcntl, os, pty, select, signal, struct, subprocess, sys, termios, time
-
-bin, edit, dest = sys.argv[1:]
-master, slave = pty.openpty()
-try:
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-    before = termios.tcgetattr(slave)
-    env = os.environ.copy()
-    env["BETTERSH_EDITOR"] = "/no/such/bettersh-editor.conf"
-    proc = subprocess.Popen([bin, edit, dest], stdin=slave, stdout=slave, stderr=slave, close_fds=True, env=env)
-    try:
-        saw = False
-        deadline = time.time() + 2
-        while time.time() < deadline and not saw:
-            ready, _, _ = select.select([master], [], [], 0.1)
-            if master in ready:
-                os.read(master, 8192)
-                saw = True
-            if proc.poll() is not None:
-                break
-        if not saw:
-            sys.stderr.write("editor did not paint\n")
-            sys.exit(1)
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
-        os.kill(proc.pid, signal.SIGWINCH)
-        time.sleep(0.2)
-        keys = b"ihello\x1b:w\r:q\r"
-        sent = 0
-        deadline = time.time() + 4
-        while time.time() < deadline:
-            if proc.poll() is not None and sent >= len(keys):
-                break
-            write_fd = [master] if sent < len(keys) else []
-            ready, write_ready, _ = select.select([master], write_fd, [], 0.1)
-            if master in ready:
-                try:
-                    os.read(master, 8192)
-                except OSError:
-                    break
-            if write_ready and sent < len(keys):
-                sent += os.write(master, keys[sent:sent + 8])
-        else:
-            sys.stderr.write("editor timed out\n")
-            sys.exit(1)
-        rc = proc.wait(timeout=2)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-    after = termios.tcgetattr(slave)
-finally:
-    os.close(master)
-    os.close(slave)
-if rc != 0:
-    sys.stderr.write("editor status %s\n" % rc)
-    sys.exit(1)
-if not (before[3] & termios.ICANON) or not (after[3] & termios.ICANON) or not (after[3] & termios.ECHO):
-    sys.stderr.write("tty was not restored\n")
-    sys.exit(1)
-saved = open(dest, "rb").read()
-if saved != b"hello\n":
-    sys.stderr.write("saved %r\n" % saved)
-    sys.exit(1)
-PY
-if ! python3 "$d/edit_pty.py" "$bin" std/edit.btr "$d/saved.txt"; then
+if ! "$repo/tests/pty_edit" save "$bin" std/edit.btr "$d/saved.txt"; then
     bad 'edit pty'
 fi
 
@@ -460,75 +397,16 @@ if [ "$st" -ne 0 ] || [ -s "$d/ve" ] || ! cmp -s "$d/want" "$d/vo"; then
     cat "$d/ve" >&2
 fi
 
-cat >"$d/edit_more.py" << 'PY'
-import fcntl, os, pty, select, struct, subprocess, sys, termios, time
-
-mode = sys.argv[1]
-dest = sys.argv[2]
-cmd = sys.argv[3:] + [dest]
-master, slave = pty.openpty()
-rc = 1
-buf = b""
-try:
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-    env = os.environ.copy()
-    env["BETTERSH_EDITOR"] = "/no/such/bettersh-editor.conf"
-    proc = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave, close_fds=True, env=env)
-    try:
-        deadline = time.time() + 4
-        sent = 0
-        keys = b"ihello\x1b:w\r:q!\r" if mode == "fail" else b""
-        while time.time() < deadline:
-            if proc.poll() is not None and (mode == "dir" or sent >= len(keys)):
-                break
-            write_fd = []
-            if mode == "fail" and sent < len(keys) and buf.find(b"\x1b[?1049h") >= 0:
-                write_fd = [master]
-            ready, write_ready, _ = select.select([master], write_fd, [], 0.1)
-            if master in ready:
-                try:
-                    buf += os.read(master, 8192)
-                except OSError:
-                    break
-            if write_ready:
-                sent += os.write(master, keys[sent:sent + 8])
-        else:
-            sys.stderr.write("editor timed out\n")
-            sys.exit(1)
-        if proc.poll() is None:
-            proc.kill()
-            sys.stderr.write("editor still running\n")
-            sys.exit(1)
-        rc = proc.wait(timeout=2)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-    after = termios.tcgetattr(slave)
-finally:
-    os.close(master)
-    os.close(slave)
-if not (after[3] & termios.ICANON) or not (after[3] & termios.ECHO):
-    sys.stderr.write("tty was not restored\n")
-    sys.exit(1)
-if mode == "dir":
-    if rc != 1 or b"cannot read file" not in buf or b"\x1b[?1049h" in buf or not os.path.isdir(dest):
-        sys.stderr.write("dir rc %s %r\n" % (rc, buf))
-        sys.exit(1)
-elif rc != 0 or b"cannot write file" not in buf or os.path.exists(dest):
-    sys.stderr.write("fail rc %s %r\n" % (rc, buf[-400:]))
-    sys.exit(1)
-PY
-if ! python3 "$d/edit_more.py" dir "$d/dir" "$bin" std/edit.btr; then
+if ! "$repo/tests/pty_edit" dir "$d/dir" "$bin" std/edit.btr; then
     bad 'edit dir'
 fi
-if ! python3 "$d/edit_more.py" dir "$d/dir" "$bin" --interp std/edit.btr; then
+if ! "$repo/tests/pty_edit" dir "$d/dir" "$bin" --interp std/edit.btr; then
     bad 'edit dir interp'
 fi
-if ! python3 "$d/edit_more.py" fail "$d/no-such/out.txt" "$bin" std/edit.btr; then
+if ! "$repo/tests/pty_edit" fail "$d/no-such/out.txt" "$bin" std/edit.btr; then
     bad 'edit save fail'
 fi
-if ! python3 "$d/edit_more.py" fail "$d/no-such/out.txt" "$bin" --interp std/edit.btr; then
+if ! "$repo/tests/pty_edit" fail "$d/no-such/out.txt" "$bin" --interp std/edit.btr; then
     bad 'edit save fail interp'
 fi
 
@@ -644,79 +522,15 @@ let screen = tui.place(screen, tui.label("ready"), 0, 2)
 tui.run(screen, step)
 EOF
 
-cat >"$d/tui_pty.py" << 'PY'
-import fcntl, os, pty, select, signal, struct, subprocess, sys, termios, time
-
-dest = sys.argv[1]
-cmd = sys.argv[2:] + [dest]
-master, slave = pty.openpty()
-rc = 1
-buf = b""
-try:
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-    before = termios.tcgetattr(slave)
-    proc = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
-    try:
-        deadline = time.time() + 4
-        sent = 0
-        keys = b"hello\r"
-        winch = False
-        while time.time() < deadline:
-            if proc.poll() is not None and sent >= len(keys):
-                break
-            write_fd = []
-            if sent < len(keys) and winch and buf.find(b"\x1b[?1049h") >= 0:
-                write_fd = [master]
-            ready, write_ready, _ = select.select([master], write_fd, [], 0.1)
-            if master in ready:
-                try:
-                    buf += os.read(master, 8192)
-                except OSError:
-                    break
-            if not winch and buf.find(b"\x1b[?1049h") >= 0 and proc.poll() is None:
-                time.sleep(0.2)
-                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
-                os.kill(proc.pid, signal.SIGWINCH)
-                winch = True
-                time.sleep(0.2)
-            if write_ready and sent < len(keys):
-                sent += os.write(master, keys[sent:sent + 8])
-        else:
-            sys.stderr.write("tui timed out\n")
-            sys.exit(1)
-        rc = proc.wait(timeout=2)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-    after = termios.tcgetattr(slave)
-finally:
-    os.close(master)
-    os.close(slave)
-if rc != 0:
-    sys.stderr.write("tui status %s\n" % rc)
-    sys.exit(1)
-if not (before[3] & termios.ICANON) or not (after[3] & termios.ICANON) or not (after[3] & termios.ECHO):
-    sys.stderr.write("tty was not restored\n")
-    sys.exit(1)
-if b"\x1b[?1049h" not in buf or b"\x1b[?1049l" not in buf or b"hello" not in buf or b"( Go )" not in buf or b"ready" not in buf:
-    sys.stderr.write("tui frame %r\n" % buf[-500:])
-    sys.exit(1)
-saved = open(dest, "rb").read()
-if saved != b"hello":
-    sys.stderr.write("saved %r\n" % saved)
-    sys.exit(1)
-PY
 rm -f "$d/typed.txt"
-if ! python3 "$d/tui_pty.py" "$d/typed.txt" "$bin" "$d/tui_run.btr"; then
+if ! "$repo/tests/pty_edit" tui "$d/typed.txt" "$bin" "$d/tui_run.btr"; then
     bad 'tui pty'
 fi
 rm -f "$d/typed.txt"
-if ! python3 "$d/tui_pty.py" "$d/typed.txt" "$bin" --interp "$d/tui_run.btr"; then
+if ! "$repo/tests/pty_edit" tui "$d/typed.txt" "$bin" --interp "$d/tui_run.btr"; then
     bad 'tui pty interp'
 fi
 
-cp tests/unit/lsp_peer.py "$d/peer.py"
 cat >"$d/editor.conf" << EOF
 # editor
 theme gutter red
@@ -724,7 +538,7 @@ theme name dark
 theme keyword blue
 
 server py first-cmd
-server py python3 -u $d/peer.py $d/log 2>$d/lsp_err
+server py $peer $d/log 2>$d/lsp_err
 root $d
 EOF
 printf '%s\n' 'theme nope' >"$d/bad.conf"
@@ -748,7 +562,7 @@ println(cfg.keyword)
 println(cfg.status)
 println(cfg.servers.length)
 println(cfg.servers[0].cmd)
-println(cfg.servers[1].cmd == "python3 -u $d/peer.py $d/log 2>$d/lsp_err")
+println(cfg.servers[1].cmd == "$peer $d/log 2>$d/lsp_err")
 println(cfg.root == "$d")
 println(theme.themed(cfg))
 
@@ -858,18 +672,7 @@ let txt = map_set(edit.buffer("let x\n", "a.txt"), "theme", theme.dark())
 edit.draw(txt, 40, 6)
 EOF
 both 'edit theme' "$d/theme.btr" || true
-python3 -c '
-import pathlib, sys
-b = pathlib.Path(sys.argv[1]).read_bytes()
-head, rest = b.split(b"PLAIN\n", 1)
-plain, theme = rest.split(b"THEME\n", 1)
-theme, py = theme.split(b"PY\n", 1)
-py, txt = py.split(b"TXT\n", 1)
-ok = head == b"false\n" and b"[35m" not in plain and b"[35mlet\x1b[0m" in theme and b"[36m" in theme and b"[2m" in theme
-ok = ok and b"[35mdef\x1b[0m" in py and b"[32m\"s\"\x1b[0m" in py and b"[2m# c\x1b[0m" in py
-ok = ok and b"[35m" not in txt
-sys.exit(0 if ok else 1)
-' "$d/vo" || bad 'edit theme bytes'
+"$bin" "$repo/tests/harness/theme.btr" "$d/vo" || bad 'edit theme bytes'
 if [ "$st" -ne 0 ] || [ -s "$d/ve" ]; then
     bad 'edit theme'
     cat "$d/ve" >&2
