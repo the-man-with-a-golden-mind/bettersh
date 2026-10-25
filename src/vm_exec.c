@@ -836,7 +836,7 @@ static void prefix_loc(VmBuf *buf, const char *src, uint32_t off) {
 /* The shell tree for a span, with each hole's value spliced in. NULL after an
    error, which is already reported. The shell context is started on first use. */
 static Node *span_tree(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes, Value **vals,
-                       uint16_t nholes) {
+                       uint16_t nholes, int *ran) {
     VmBuf buf;
     uint32_t end;
     memset(&buf, 0, sizeof buf);
@@ -860,6 +860,25 @@ static Node *span_tree(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes
     int rc;
     diag_init(&diag, vm->arena);
     rc = parse_script(vm->arena, vm->filename, text, buf.len, &root, &diag);
+    if (rc != 0 && ran) {
+        /* Text that does not parse as a whole runs a command at a time, as dash reads a
+           script: an exit ahead of the part that fails to parse ends it cleanly. */
+        int bad = 0;
+        if (!vm->shell_on) {
+            eval_begin(&vm->shell, vm->arena, vm->filename, vm->argc, vm->argv, vm->envp, vm->src,
+                       vm->src_len);
+            shell_apply_start(&vm->shell, vm->shstart);
+            vm->shell_on = 1;
+        }
+        eval_steps(&vm->shell, vm->filename, text, buf.len, &bad);
+        vm_buf_free(&buf);
+        *ran = 1;
+        if (bad && !vm->failed) {
+            vm->failed = 1;
+            vm->status = 2;
+        }
+        return NULL;
+    }
     vm_buf_free(&buf);
     if (rc != 0 || !root) {
         diag_print_sh(&diag, stderr, NULL);
@@ -880,11 +899,16 @@ static Node *span_tree(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes
 
 void vm_exec_span(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes, Value **vals,
                   uint16_t nholes) {
-    Node *root = span_tree(vm, off, len, holes, vals, nholes);
-    if (!root) {
+    int ran = 0;
+    Node *root = span_tree(vm, off, len, holes, vals, nholes, &ran);
+    if (!root && !ran) {
         return;
     }
-    eval_node(&vm->shell, root, 1);
+    if (root) {
+        eval_node(&vm->shell, root, 1);
+    } else if (vm->failed) {
+        return;
+    }
     vm->status = vm->shell.status;
     if (vm->shell.exit_req) {
         vm->stop = 1;
@@ -895,7 +919,7 @@ void vm_exec_span(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes, Val
    trailing newlines, as sh does. Null after an error. */
 Value *vm_capture_span(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes, Value **vals,
                        uint16_t nholes) {
-    Node *root = span_tree(vm, off, len, holes, vals, nholes);
+    Node *root = span_tree(vm, off, len, holes, vals, nholes, NULL);
     char *text;
     Value *out;
     if (!root) {

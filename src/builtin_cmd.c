@@ -339,17 +339,9 @@ int cmd_dot(EvalCtx *ctx, int argc, char **argv) {
     Diag diag;
     diag_init(&diag, ctx->arena);
     Node *root = NULL;
-    int rc = parse_script(ctx->arena, file, buf, n, &root, &diag);
-    if (rc != 0) {
-        diag_print_sh(&diag, stderr, NULL);
-        free(buf);
-        free(owned);
-        ctx->status = 2;
-        if (!ctx->plain_cmd) {
-            ctx->exit_req = 1;
-        }
-        return 2;
-    }
+    /* A file that does not parse as a whole runs a command at a time, as in dash: a
+       profile script may return before its bash-only part. */
+    int steps = parse_script(ctx->arena, file, buf, n, &root, &diag) != 0;
     const char *old_src = ctx->src;
     size_t old_len = ctx->src_len;
     int old_line = ctx->verbose_line;
@@ -363,8 +355,12 @@ int cmd_dot(EvalCtx *ctx, int argc, char **argv) {
     ctx->dot_depth++;
     /* `.` does not inherit the caller's exemption. A failure in the file
        still sets exit_req when errexit is on. */
-    int st = eval_node(ctx, root, 1);
+    int bad = 0;
+    int st = steps ? eval_steps(ctx, file, buf, n, &bad) : eval_node(ctx, root, 1);
     ctx->dot_depth--;
+    if (bad && !ctx->plain_cmd) {
+        ctx->exit_req = 1;
+    }
     /* return ends this file. The caller, including a function, continues. */
     if (ctx->returning) {
         ctx->returning = 0;

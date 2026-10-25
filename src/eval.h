@@ -206,6 +206,14 @@ typedef struct EvalCtx {
 int eval_node(EvalCtx *ctx, Node *node, int chk);
 int eval_script(Arena *arena, const char *filename, Node *root, int argc, char **argv, char **envp,
                 const char *src, size_t src_len, const ShellStart *start);
+/* Runs text one complete command at a time, as dash reads a script, for text that does not
+   parse as a whole. Each command runs before the next is parsed, so an exit or return ends
+   the run before text this shell cannot parse. A syntax error is reported where it is met:
+   *bad is set and the result is 2. */
+int eval_steps(EvalCtx *ctx, const char *file, const char *text, size_t len, int *bad);
+/* eval_script for a whole file that does not parse: eval_steps in a new shell. */
+int eval_script_steps(Arena *arena, const char *filename, int argc, char **argv, char **envp,
+                      const char *src, size_t src_len, const ShellStart *start);
 void shell_apply_start(EvalCtx *ctx, const ShellStart *start);
 void local_push(EvalCtx *ctx);
 void local_pop(EvalCtx *ctx);
@@ -228,6 +236,12 @@ int shell_script(EvalCtx *ctx, const char *path, char **av, char **envp);
 
 /* execing is 1 for a child that is about to execve. Otherwise the child evaluates. */
 void shell_at_fork(EvalCtx *ctx, int execing);
+/* Records the signal state the process began with. main calls it first; the first shell
+   start calls it too. */
+void shell_note_signals(void);
+/* True when SIGPIPE was ignored on entry, so children must keep it ignored. */
+int shell_pipe_ignored(void);
+void shell_child_pipe(void);
 void child_exit(EvalCtx *ctx, int status);
 void traps_run(EvalCtx *ctx);
 void verbose_flush(EvalCtx *ctx);

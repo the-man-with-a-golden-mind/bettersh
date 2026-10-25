@@ -507,12 +507,10 @@ static int run_text(const char *path, char *src, size_t len, int argc, char **ar
         diag_init(&diag, &arena);
         rc = parse_script(&arena, path, src, len, &root, &diag);
         status = 0;
-        if (rc != 0) {
-            if (dump_ast) {
-                diag_print(&diag, stderr);
-            } else {
-                diag_print_sh(&diag, stderr, NULL);
-            }
+        if (rc != 0 && !dump_ast) {
+            status = eval_script_steps(&arena, path, argc, argv, environ, src, len, start);
+        } else if (rc != 0) {
+            diag_print(&diag, stderr);
             status = 2;
         } else if (dump_ast) {
             ast_dump(root, stdout);
@@ -537,6 +535,7 @@ int main(int argc, char **argv) {
     int free_av = 0;
     char *one[2];
     const char *file = NULL;
+    shell_note_signals();
     parsed = parse_invoke(argc, argv, &inv);
     if (parsed >= 0) {
         return parsed;

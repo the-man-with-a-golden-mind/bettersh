@@ -132,7 +132,7 @@ static int host_pipe_open(VM *vm) {
         struct sigaction sa;
         int err;
         memset(&sa, 0, sizeof sa);
-        sa.sa_handler = SIG_DFL;
+        sa.sa_handler = shell_pipe_ignored() ? SIG_IGN : SIG_DFL;
         sigaction(SIGPIPE, &sa, NULL);
         setpgid(0, 0);
         close(in[1]);

@@ -1022,6 +1022,45 @@ static void release_cycle(Value *start) {
     value_collecting = 0;
 }
 
+/* 1 when a member of the group has an edge to target: an item, an upvalue cell's value, or
+   a slot of the function's own environment. */
+static int group_points_at(Value **set, uint32_t n, const Value *target) {
+    for (uint32_t i = 0; i < n; i++) {
+        Value *value = set[i];
+        uint32_t len = 0;
+        Value **kids = NULL;
+        if (value->kind == VAL_ARRAY && value->u.arr) {
+            kids = value->u.arr->items;
+            len = value->u.arr->len;
+        } else if (value->kind == VAL_MAP && value->u.map) {
+            kids = value->u.map->vals;
+            len = value->u.map->len;
+        } else if (value->kind == VAL_FN && value->u.fn) {
+            VmFunc *fn = value->u.fn;
+            for (uint16_t u = 0; u < fn->nups; u++) {
+                Cell *cell = fn->ups ? fn->ups[u] : NULL;
+                if (cell && cell->value == target) {
+                    return 1;
+                }
+            }
+            if (fn->ienv) {
+                for (int s = 0; s < fn->ienv->len; s++) {
+                    if (fn->ienv->vals[s] == target) {
+                        return 1;
+                    }
+                }
+            }
+            continue;
+        }
+        for (uint32_t j = 0; j < len; j++) {
+            if (kids[j] == target) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 /* 1 when this array or map cannot reach itself, so a live unref only
    drops a count. The walk runs once per graph epoch. A function is never
    cached: its unref also collects a closed environment. */
@@ -1037,8 +1076,10 @@ static int cycle_cached_clean(Value *value) {
         return 1;
     }
     cycle_reach(&set, &n, &cap, value);
-    count_inbound(set, n);
-    clean = value->inbound == 0;
+    /* The proof is that nothing in the group points back at value, whoever else holds the
+       cells on the way. Counting only internal edges would miss a cycle through a cell a
+       live frame still holds, and the proof would outlive that frame. */
+    clean = !group_points_at(set, n, value);
     /* The walk does not follow a closure's parent environments, so a group
        that holds an interpreter closure can reach value without this walk
        seeing it. No proof is kept for such a group. */

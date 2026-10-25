@@ -594,7 +594,7 @@ static int host_spawn(VM *vm) {
     if (pid == 0) {
         struct sigaction sa;
         memset(&sa, 0, sizeof sa);
-        sa.sa_handler = SIG_DFL;
+        sa.sa_handler = shell_pipe_ignored() ? SIG_IGN : SIG_DFL;
         sigaction(SIGPIPE, &sa, NULL);
         close(fds[0]);
         if (dup2(fds[1], STDOUT_FILENO) < 0) {
