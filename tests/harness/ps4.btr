@@ -1,13 +1,29 @@
 #!/usr/bin/env bettersh
-# Dash 0.5.12 prints one extra blank line after the xtrace of `unset PS4`.
-# Drop only the first occurrence, then require the traces to match.
+# After `unset PS4`, dash 0.5.12 prints the next trace with a prefix read from the freed
+# PS4 string: an empty line on one machine, a stray byte such as \006 on another.
+# Drop up to three unprintable bytes between the trace of `unset PS4` and the next
+# `echo hi`, once, then require the traces to match.
+fn junk(text) {
+  let i = 0
+  while i < text.length {
+    let n = ord(text[i])
+    if n >= 32 && n < 127 { return false }
+    let i = i + 1
+  }
+  return true
+}
+
 let dash = readfile(arg(1))
 let ours = readfile(arg(2))
 if dash != ours {
-  let needle = "unset PS4\n\n"
+  let needle = "unset PS4\n"
   let at = dash.index(needle)
   if at >= 0 {
-    let dash = "@{ dash.slice(0, at) }unset PS4\n@{ dash.slice(at + needle.length, dash.length) }"
+    let rest = dash.slice(at + needle.length, dash.length)
+    let next = rest.index("echo hi")
+    if next > 0 && next <= 3 && junk(rest.slice(0, next)) {
+      let dash = "@{ dash.slice(0, at) }@{ needle }@{ rest.slice(next, rest.length) }"
+    }
   }
 }
 if dash != ours { $ exit 1 }
