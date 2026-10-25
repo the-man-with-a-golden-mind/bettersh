@@ -1,4 +1,4 @@
 #!/usr/bin/env bettersh
 let fruits = []
-echo @{ fruits }
-echo tail
+$ echo @{ fruits }
+$ echo tail

@@ -1,0 +1,321 @@
+#!/usr/bin/env bettersh
+
+# The shell text inside a .btr file: `$ cmd`, `$( )` and `sh { }`, as edit_syntax marks it.
+# A shell language server sees it as a sh file of the same shape: every other cell is a space,
+# and an inserted `@{ value }` is a variable of the same width. Completion, hover, and Goto
+# Definition without a server know the shell words, the commands on PATH, and the file's own
+# shell functions.
+
+import std/fs
+import std/env
+import std/strings
+import std/edit_text
+import std/edit_syntax
+
+let held = { path: null, commands: [] }
+
+# True when the cell at col, or the one before it at the line's end, is shell text.
+fn at(marks, col) {
+  if marks == null || marks.length == 0 { return false }
+  let i = col
+  if i >= marks.length { let i = marks.length - 1 }
+  if i < 0 { return false }
+  if edit_syntax.in_shell(marks[i]) && marks[i] != "$" { return true }
+  if i > 0 && edit_syntax.in_shell(marks[i - 1]) && marks[i - 1] != "%" { return true }
+  return false
+}
+
+fn any_shell(marks) {
+  let i = 0
+  while i < marks.length {
+    if edit_syntax.in_shell(marks[i]) { return true }
+    let i = i + 1
+  }
+  return false
+}
+
+# One line of the sh view and the [start, end) columns of its inserted values.
+fn view_line(text, marks) {
+  let out = []
+  let holes = []
+  let seen = false
+  let i = 0
+  while i < text.length {
+    let m = "."
+    if i < marks.length { let m = marks[i] }
+    if m == "@" && text[i] == "@" {
+      let j = i + 2
+      while j < text.length && j < marks.length && !(marks[j] == "@" && text[j] == "}") { let j = j + 1 }
+      if j < text.length { let j = j + 1 }
+      let out = out.push("$")
+      let k = i + 1
+      while k < j {
+        let out = out.push("X")
+        let k = k + 1
+      }
+      let holes = holes.push([i, j])
+      let seen = true
+      let i = j
+    } else {
+      if m == "%" {
+        if seen { let out = out.push(";") }
+        else { let out = out.push(" ") }
+      } else if edit_syntax.in_shell(m) && m != "$" {
+        let ch = text[i]
+        if ch == "\t" { let out = out.push("\t") }
+        else if ch != " " {
+          let out = out.push(ch)
+          let seen = true
+        } else { let out = out.push(" ") }
+      } else if text[i] == "\t" {
+        let out = out.push("\t")
+      } else {
+        let out = out.push(" ")
+      }
+      let i = i + 1
+    }
+  }
+  let n = out.length
+  while n > 0 && (out[n - 1] == " " || out[n - 1] == "\t") { let n = n - 1 }
+  return { text: out.slice(0, n).join(""), holes: holes }
+}
+
+# { lines, holes } for the whole file. holes[row] lists the inserted values on that row.
+# The first line says #!/bin/sh when it has no shell text of its own.
+fn view(lines, marks_of) {
+  let out = []
+  let holes = []
+  let i = 0
+  while i < lines.length {
+    let marks = marks_of[i]
+    if marks == null || !any_shell(marks) {
+      let out = out.push("")
+      let holes = holes.push([])
+    } else {
+      let got = view_line(lines[i], marks)
+      let out = out.push(got.text)
+      let holes = holes.push(got.holes)
+    }
+    let i = i + 1
+  }
+  if out.length > 0 && out[0] == "" { let junk = out.set(0, "#!/bin/sh") }
+  return { lines: out, holes: holes }
+}
+
+# True when [a, b) touches an inserted value on the row.
+fn over_hole(holes, row, a, b) {
+  if row < 0 || row >= holes.length { return false }
+  let list = holes[row]
+  let i = 0
+  while i < list.length {
+    if a < list[i][1] && b > list[i][0] { return true }
+    if a == b && a >= list[i][0] && a < list[i][1] { return true }
+    let i = i + 1
+  }
+  return false
+}
+
+fn words() {
+  return [
+    "if|if LIST; then LIST; fi", "then|then", "else|else", "elif|elif LIST; then", "fi|fi",
+    "case|case WORD in PATTERN) LIST;; esac", "esac|esac", "for|for NAME in WORDS; do LIST; done",
+    "while|while LIST; do LIST; done", "until|until LIST; do LIST; done", "do|do", "done|done", "in|in",
+    "cd|cd [dir]: change the working directory", "echo|echo [arg...]: write arguments",
+    "printf|printf format [arg...]: write formatted output", "read|read [-r] name...: read a line",
+    "export|export name[=value]...: mark for the environment", "unset|unset name...: remove variables",
+    "set|set [-eux] [arg...]: options and positional parameters", "shift|shift [n]: drop positional parameters",
+    "test|test expr: evaluate a condition", "exit|exit [n]: leave the shell", "return|return [n]: leave a function",
+    "trap|trap action signal...: run action on a signal", "eval|eval arg...: run arguments as shell text",
+    "exec|exec command: replace the shell", "local|local name[=value]: a function-local variable",
+    "pwd|pwd: print the working directory", "true|true: succeed", "false|false: fail",
+    "wait|wait [pid]: wait for background jobs", "command|command name: run without functions",
+    "type|type name: how a name would run", "alias|alias name=value", "source|source file: run in this shell"
+  ]
+}
+
+fn book() {
+  let out = {}
+  let list = words()
+  let i = 0
+  while i < list.length {
+    let cut = list[i].index("|")
+    let out = map_set(out, list[i].slice(0, cut), list[i].slice(cut + 1, list[i].length))
+    let i = i + 1
+  }
+  return out
+}
+
+# The commands on PATH, read once per PATH value.
+fn commands() {
+  let p = env.get("PATH")
+  if p == null { let p = "" }
+  if held.path == p { return held.commands }
+  let seen = {}
+  let out = []
+  let dirs = p.split(":")
+  let i = 0
+  while i < dirs.length {
+    let dir = dirs[i]
+    if dir != "" && fs.kind(dir) == "dir" {
+      let names = fs.list(dir)
+      let k = 0
+      while k < names.length {
+        let name = names[k]
+        if !seen.has(name) {
+          let seen = map_set(seen, name, true)
+          let out = out.push(name)
+        }
+        let k = k + 1
+      }
+    }
+    let i = i + 1
+  }
+  let junk = map_set(held, "path", p)
+  let junk = map_set(held, "commands", out.sort())
+  return held.commands
+}
+
+fn name_char(ch) {
+  return edit_text.is_word(ch) || ch == "-" || ch == "."
+}
+
+# The shell word before col.
+fn prefix_at(line, col) {
+  let i = col
+  if i > line.length { let i = line.length }
+  while i > 0 && name_char(line[i - 1]) { let i = i - 1 }
+  return line.slice(i, col)
+}
+
+fn word_at(line, col) {
+  if line.length == 0 { return "" }
+  let c = col
+  if c >= line.length { let c = line.length - 1 }
+  if !name_char(line[c]) {
+    if c > 0 && name_char(line[c - 1]) { let c = c - 1 }
+    else { return "" }
+  }
+  let a = c
+  let b = c + 1
+  while a > 0 && name_char(line[a - 1]) { let a = a - 1 }
+  while b < line.length && name_char(line[b]) { let b = b + 1 }
+  return line.slice(a, b)
+}
+
+# The name a line defines as a shell function, `name()` or `function name`, or "".
+fn fn_name(text) {
+  let t = text.trim()
+  if strings.starts(t, "function ") {
+    let rest = t.slice(9, t.length).trim()
+    let i = 0
+    while i < rest.length && name_char(rest[i]) { let i = i + 1 }
+    return rest.slice(0, i)
+  }
+  let i = 0
+  while i < t.length && name_char(t[i]) { let i = i + 1 }
+  if i == 0 { return "" }
+  let j = i
+  while j < t.length && t[j] == " " { let j = j + 1 }
+  if j + 1 < t.length && t[j] == "(" && t[j + 1] == ")" { return t.slice(0, i) }
+  return ""
+}
+
+# The shell functions the file defines: [{ name, row, col }].
+fn functions(lines, marks_of) {
+  let out = []
+  let i = 0
+  while i < lines.length {
+    let marks = marks_of[i]
+    if marks != null && any_shell(marks) {
+      let name = fn_name(lines[i])
+      if name != "" {
+        let col = lines[i].index(name)
+        if col >= 0 && at(marks, col) { let out = out.push({ name: name, row: i, col: col }) }
+      }
+    }
+    let i = i + 1
+  }
+  return out
+}
+
+# Completions for the shell word before col: the file's functions, shell words, then commands.
+fn offer(lines, row, col, marks_of) {
+  let prefix = prefix_at(lines[row], col)
+  if prefix == "" { return [] }
+  let out = []
+  let seen = {}
+  let fns = functions(lines, marks_of)
+  let i = 0
+  while i < fns.length && out.length < 12 {
+    let name = fns[i].name
+    if strings.starts(name, prefix) && name != prefix && !seen.has(name) {
+      let seen = map_set(seen, name, true)
+      let out = out.push({ name: name, blurb: "@{ name }(): shell function" })
+    }
+    let i = i + 1
+  }
+  let b = book()
+  let list = words()
+  let i = 0
+  while i < list.length && out.length < 12 {
+    let name = list[i].slice(0, list[i].index("|"))
+    if strings.starts(name, prefix) && name != prefix && !seen.has(name) {
+      let seen = map_set(seen, name, true)
+      let out = out.push({ name: name, blurb: b[name] })
+    }
+    let i = i + 1
+  }
+  let cmds = commands()
+  let i = 0
+  while i < cmds.length && out.length < 12 {
+    let name = cmds[i]
+    if strings.starts(name, prefix) && name != prefix && !seen.has(name) {
+      let seen = map_set(seen, name, true)
+      let out = out.push({ name: name, blurb: "command" })
+    }
+    let i = i + 1
+  }
+  return out
+}
+
+fn found_on_path(name) {
+  let p = env.get("PATH")
+  if p == null || name.contains("/") { return "" }
+  let dirs = p.split(":")
+  let i = 0
+  while i < dirs.length {
+    if dirs[i] != "" && fs.kind("@{ dirs[i] }/@{ name }") == "file" { return "@{ dirs[i] }/@{ name }" }
+    let i = i + 1
+  }
+  return ""
+}
+
+# A line about the shell word under col, or "".
+fn hover(lines, row, col, marks_of) {
+  let word = word_at(lines[row], col)
+  if word == "" { return "" }
+  let fns = functions(lines, marks_of)
+  let i = 0
+  while i < fns.length {
+    if fns[i].name == word { return "@{ word }(): shell function, line @{ fns[i].row + 1 }" }
+    let i = i + 1
+  }
+  let b = book()
+  if b.has(word) { return b[word] }
+  let full = found_on_path(word)
+  if full != "" { return "@{ word }: command, @{ full }" }
+  return ""
+}
+
+# { row, col } of the shell function named under col, or null.
+fn jump(lines, row, col, marks_of) {
+  let word = word_at(lines[row], col)
+  if word == "" { return null }
+  let fns = functions(lines, marks_of)
+  let i = 0
+  while i < fns.length {
+    if fns[i].name == word && fns[i].row != row { return { row: fns[i].row, col: fns[i].col } }
+    let i = i + 1
+  }
+  return null
+}

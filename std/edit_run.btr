@@ -345,7 +345,7 @@ fn repl_driver() {
   let bs = chr(92)
   let piece = "@{ q }@{ at }{ acc }@{ at }{ line }@{ bs }n@{ q }"
   let st = "@{ q }@@ST:@{ at }{ got.status }@@@{ q }"
-  return "while true {\n  let acc = @{ q }@{ q }\n  let line = readln()\n  if line == null { exit 0 }\n  while line != null && line != @{ q }@@END@@@{ q } {\n    let acc = @{ piece }\n    let line = readln()\n  }\n  if line == null { exit 0 }\n  let got = btr_eval(acc)\n  if got.err != @{ q }@{ q } { print(got.err) }\n  println(@{ st })\n}\n"
+  return "while true {\n  let acc = @{ q }@{ q }\n  let line = readln()\n  if line == null { $ exit 0 }\n  while line != null && line != @{ q }@@END@@@{ q } {\n    let acc = @{ piece }\n    let line = readln()\n  }\n  if line == null { $ exit 0 }\n  let got = btr_eval(acc)\n  if got.err != @{ q }@{ q } { print(got.err) }\n  println(@{ st })\n}\n"
 }
 
 fn ensure_repl() {

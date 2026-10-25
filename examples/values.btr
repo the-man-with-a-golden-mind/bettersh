@@ -6,9 +6,10 @@ println(doubled.join(","))
 
 let user = { name: "ada", role: "dev" }
 println("@{ user.name } is a @{ user.role }")
+println(user.name + " has " + nums.length + " numbers")
 
 let total = 0
 for n in doubled {
-  let total = total + n
+  total += n
 }
 println(total)

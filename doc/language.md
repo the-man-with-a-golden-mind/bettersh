@@ -1,8 +1,8 @@
 # bettersh language guide
 
-bettersh runs two related languages. Strict mode runs shell syntax. Modern mode adds expressions, functions, collections, and modules, while still allowing shell commands wherever a modern statement is not being parsed.
+bettersh runs two related languages. Strict mode runs shell syntax. Modern mode is the bettersh language: expressions, functions, collections, and modules, with shell commands written explicitly as `$ command`, `$(command)`, or `sh { ... }`.
 
-A `.btr` file always uses modern mode. A `.sh` file uses strict mode unless its shebang names `bettersh` or `env bettersh`. For other file names, a bettersh shebang selects modern mode and every other shebang selects strict mode. Commands passed with `-c` use strict mode.
+A `.btr` file always uses modern mode and a `.sh` file always uses strict mode, whatever its shebang says. For other file names, a shebang naming `bettersh` or `env bettersh` selects modern mode and every other shebang, or none, selects strict mode. Commands passed with `-c` use strict mode.
 
 ## Running programs
 
@@ -25,7 +25,7 @@ Modern programs normally run on the bytecode virtual machine. Add `--interp` to 
 
 ## A first modern program
 
-Modern statements use braces and expression syntax. A line that does not begin a modern construct is parsed as a shell statement.
+Modern statements use braces and expression syntax. A shell command starts with `$`:
 
 ```btr
 let files = ["one.txt", "two.txt"]
@@ -35,13 +35,15 @@ fn label(path, prefix = "file") {
 }
 
 for path in files {
-  echo @{ label(path) }
+  $ echo @{ label(path) }
 }
 ```
 
-`let` creates a local binding. Repeating `let` with the same name updates that binding, including inside loops. `fn` creates a function, and `return` leaves it. Functions close over the environment in which they were defined.
+`let` creates a binding. Inside a function it always creates a new local, even when an outer function or the program has the same name. `name = value` changes an existing binding: the function's own, or the nearest enclosing one. Assigning a name that no `let`, parameter, or function declared is an error. `name += value` and `name -= value` are short for `name = name + value` and `name = name - value`.
 
-A `#` begins a comment. The reserved words are `let`, `fn`, `import`, `return`, `if`, `else`, `while`, `for`, `case`, `true`, `false`, and `null`.
+`fn` creates a function, and `return` leaves it. Functions close over the environment in which they were defined. Named functions at the top level of a file or of a function body may call each other in any order; other names must be declared before they are used. Calls may nest 1000 deep.
+
+A `#` begins a comment. The reserved words are `let`, `fn`, `import`, `return`, `if`, `else`, `while`, `for`, `case`, `true`, `false`, and `null`. `break`, `continue`, and `sh` have a meaning at the start of a statement.
 
 ## Values and expressions
 
@@ -67,9 +69,9 @@ println(user.name)
 println(numbers[2])
 ```
 
-The binary operators are `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, and `||`. Unary `-` negates a number and `!` negates a truth value.
+The binary operators are `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `&&`, and `||`. Unary `-` negates a number and `!` negates a truth value. `+` joins two strings; when one side is a string, a number, boolean, or `null` on the other side is turned into text first.
 
-`"@{ expression }"` inserts a value into a string. In an unquoted shell word, `@{ array }` expands to one word per element. Arrays cannot be inserted into a quoted string automatically; call `join` when one string is required. Maps do not expand into shell words.
+`"@{ expression }"` inserts a value into a string, and the result is always a string, even when the hole is all there is. In an unquoted shell word, `@{ array }` expands to one word per element. Arrays cannot be inserted into a quoted string automatically; call `join` when one string is required. Maps do not expand into shell words.
 
 Strings retain their original bytes. `.length`, indexing, `.slice`, and `.index` work in Unicode scalar positions, treating an invalid byte as one position. `upper`, `lower`, `split`, `contains`, `replace`, and `reverse` operate on stored bytes. `chr` creates one Unicode scalar, while `ord` requires a string containing exactly one scalar. `bytes` and `unbytes` convert between a string and its byte values, including zero bytes.
 
@@ -86,17 +88,21 @@ if user.name.length == 0 {
 
 let total = 0
 for number in numbers {
-  let total = total + number
+  total += number
 }
 
 for index in 1..10 {
+  if index % 2 == 0 { continue }
+  if index > 7 { break }
   println(index)
 }
 
 while total > 0 {
-  let total = total - 1
+  total -= 1
 }
 ```
+
+`break` leaves the innermost loop and `continue` starts its next turn. Neither crosses a function boundary.
 
 A `case` selects a literal, a closed range, an open-ended range, or the fallback arm:
 
@@ -129,21 +135,26 @@ Arrays provide `length`, `push`, `pop`, `map`, `filter`, `reduce`, `sort`, `join
 
 Maps provide `keys`, `values`, `has`, and `remove`. A field can be read as `map.name`. If a map contains a function under the same name as a built-in method, that field wins when called.
 
-## Shell statements inside modern code
+## Shell commands inside modern code
 
-Modern and shell syntax share a file. A line such as `echo hello`, a pipeline, or a redirection is handled by the strict shell parser. Braced `if`, `while`, `for`, and `case` forms are modern; the traditional `then`, `do`, and `esac` forms remain shell syntax.
+A `.btr` file is bettersh code, and shell commands are always marked. There are three forms:
 
 ```btr
 let pattern = "*.c"
-printf '%s\n' @{ pattern }
-find src -name @{ pattern } | sort
-
-if test -d src; then
-  echo "this is a shell conditional"
-fi
+$ find src -name @{ pattern } | sort      # one command line
+let branch = $(git branch --show-current) # its output, as a string
+sh {                                      # a block of plain sh
+  if test -d src; then
+    echo "this is a shell conditional"
+  fi
+}
 ```
 
-A modern local is separate from a shell variable. Passing a value through `@{ ... }` converts it for the shell command; assigning it with `let` does not export or assign a shell variable.
+`$ command` runs the rest of the line with the strict shell parser: pipelines, `&&` and `||`, redirections, and here-documents all work. `$(command)` is an expression whose value is the command's standard output with trailing newlines removed. `sh { ... }` runs everything up to the matching `}` as sh; braces inside quotes, `${ }`, and comments do not end it. In all three, `@{ expression }` inserts a modern value. An unquoted `@{ array }` becomes one word per element.
+
+The shell state is shared across the file: a shell variable, function, or `cd` set by one command is seen by the next, and `$?` is the status of the previous command. A line such as `ls -la` without `$` is an error with a hint, so a missing `$` is caught before the program runs.
+
+A modern binding is separate from a shell variable. Passing a value through `@{ ... }` converts it for the shell command; assigning it with `let` does not export or assign a shell variable.
 
 ## Modules
 

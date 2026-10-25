@@ -1,0 +1,11 @@
+#!/usr/bin/env bettersh
+# + joins strings, and turns a number or bool on the other side into text.
+let n = 7
+println("a" + "b")
+println("n=" + n)
+println(n + " items")
+println("ok: " + true)
+let s = "@{ n }"
+println(s.length)
+println(s == "7")
+println(1 + 2)

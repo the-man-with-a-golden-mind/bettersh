@@ -8,16 +8,18 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install dash
-        run: brew install dash
+      - uses: actions/checkout@v5
+      # /bin/dash is the dash the suite is written against. Homebrew's is a newer release whose
+      # messages and alias output differ.
+      - name: Check dash
+        run: test -x /bin/dash
       - name: Test
         run: make test
 
   ubuntu:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install dash and curl
         run: sudo apt-get update && sudo apt-get install -y dash curl
       - name: Test
@@ -26,21 +28,23 @@ jobs:
   ubuntu-sanitizers:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install dash and curl
         run: sudo apt-get update && sudo apt-get install -y dash curl
       - name: Build with ASan and UBSan
         run: make debug
       - name: Test
         env:
-          ASAN_OPTIONS: detect_leaks=1
+          # ASan sets the core limit to 0 by default, which ulimit -c then reports. Keep the
+          # runner's limit so the shell matches dash.
+          ASAN_OPTIONS: detect_leaks=1:disable_coredump=0
           UBSAN_OPTIONS: halt_on_error=1
         run: ./tests/run.sh
 
   ubuntu-clang:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install dash, curl, and clang
         run: sudo apt-get update && sudo apt-get install -y dash curl clang
       - name: Test

@@ -17,7 +17,7 @@ run() {
 }
 run 0 --help; grep -F -q 'usage: bettersh' "$d/o" || fail=1
 run 0 -h
-run 0 --version; grep -F -q 'bettersh 0.1.0' "$d/o" || fail=1
+run 0 --version; grep -F -q 'bettersh 0.2.3' "$d/o" || fail=1
 run 1 --nope
 grep -F -q 'unknown option' "$d/e" || fail=1
 # No file reads standard input. A closed stdin is an empty script.

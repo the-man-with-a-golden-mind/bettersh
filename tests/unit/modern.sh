@@ -12,7 +12,7 @@ mkdir "$d/dir"
 printf 'foo\n' >"$d/dir/foo"
 printf 'bar\n' >"$d/dir/bar"
 printf 'cd "$1" || exit 1\nls | grep foo\n' >"$d/s.sh"
-printf '%s\n' '#!/usr/bin/env bettersh' 'cd "$1" || exit 1' 'ls | grep foo' >"$d/m.btr"
+printf '%s\n' '#!/usr/bin/env bettersh' '$ cd "$1" || exit 1' '$ ls | grep foo' >"$d/m.btr"
 "$bin" "$d/s.sh" "$d/dir" >"$d/so" 2>"$d/se"
 ss=$?
 "$bin" "$d/m.btr" "$d/dir" >"$d/mo" 2>"$d/me"
@@ -30,7 +30,7 @@ if [ "$ss" != "$ms" ] || [ "$ms" -ne 0 ] || ! cmp -s "$d/so" "$d/mo" || ! cmp -s
 fi
 
 printf 'cd "$1" || exit 1\npwd\n' >"$d/s.sh"
-printf '%s\n' '#!/usr/bin/env bettersh' 'cd "$1" || exit 1' 'pwd' >"$d/m.btr"
+printf '%s\n' '#!/usr/bin/env bettersh' '$ cd "$1" || exit 1' '$ pwd' >"$d/m.btr"
 "$bin" "$d/s.sh" "$d/dir" >"$d/so" 2>"$d/se"
 ss=$?
 "$bin" "$d/m.btr" "$d/dir" >"$d/mo" 2>"$d/me"
@@ -52,7 +52,7 @@ grep -q 'CONST_INT' "$d/te" || bad 'trace const'
 grep -q 'ADD' "$d/te" || bad 'trace add'
 grep -q 'METHOD' "$d/te" || bad 'trace method'
 
-printf '%s\n' '#!/usr/bin/env bettersh' 'false' 'println(1)' >"$d/f.btr"
+printf '%s\n' '#!/usr/bin/env bettersh' '$ false' 'println(1)' >"$d/f.btr"
 "$bin" "$d/f.btr" >"$d/o" 2>"$d/e"
 rc=$?
 "$bin" --interp "$d/f.btr" >"$d/io" 2>"$d/ie"
@@ -89,7 +89,7 @@ for f in tests/language/06_splice.btr tests/language/07_splat.btr tests/language
     fi
 done
 
-printf '%s\n' '#!/usr/bin/env bettersh' 'a=1' 'echo $a' 'false' 'echo $?' >"$d/state.btr"
+printf '%s\n' '#!/usr/bin/env bettersh' '$ a=1' '$ echo $a' '$ false' '$ echo $?' >"$d/state.btr"
 "$bin" "$d/state.btr" >"$d/vo" 2>"$d/ve"
 vs=$?
 "$bin" --interp "$d/state.btr" >"$d/io" 2>"$d/ie"
@@ -102,7 +102,7 @@ if [ "$vs" -ne 0 ] || [ "$is" != "$vs" ] || ! cmp -s "$d/want" "$d/vo" || ! cmp 
     cat "$d/ve" >&2
 fi
 
-printf '%s\n' '#!/usr/bin/env bettersh' 'echo hi' 'exit 3' 'echo no' >"$d/stop.btr"
+printf '%s\n' '#!/usr/bin/env bettersh' '$ echo hi' '$ exit 3' '$ echo no' >"$d/stop.btr"
 "$bin" "$d/stop.btr" >"$d/vo" 2>"$d/ve"
 vs=$?
 "$bin" --interp "$d/stop.btr" >"$d/io" 2>"$d/ie"
@@ -115,7 +115,7 @@ if [ "$vs" -ne 3 ] || [ "$is" != "$vs" ] || ! cmp -s "$d/want" "$d/vo" || ! cmp 
     cat "$d/vo" >&2
 fi
 
-printf '%s\n' '#!/usr/bin/env bettersh' 'let v = "$(echo BREAKOUT)"' 'cat <<EOF' '@{ v }' 'EOF' >"$d/here.btr"
+printf '%s\n' '#!/usr/bin/env bettersh' 'let v = "$(echo BREAKOUT)"' 'sh {' 'cat <<EOF' '@{ v }' 'EOF' '}' >"$d/here.btr"
 "$bin" "$d/here.btr" >"$d/vo" 2>"$d/ve"
 vs=$?
 "$bin" --interp "$d/here.btr" >"$d/io" 2>"$d/ie"
@@ -129,7 +129,7 @@ if [ "$vs" -ne 0 ] || [ "$is" != "$vs" ] || ! cmp -s "$d/want" "$d/vo" || ! cmp 
 fi
 
 printf '%s\n' '#!/usr/bin/env bettersh' 'let nl = chr(10)' \
-    'let v = "@{ nl }EOF@{ nl }echo BREAKOUT"' 'cat <<EOF' '@{ v }' 'EOF' 'echo AFTER' >"$d/brk.btr"
+    'let v = "@{ nl }EOF@{ nl }echo BREAKOUT"' 'sh {' 'cat <<EOF' '@{ v }' 'EOF' 'echo AFTER' '}' >"$d/brk.btr"
 "$bin" "$d/brk.btr" >"$d/vo" 2>"$d/ve"
 vs=$?
 "$bin" --interp "$d/brk.btr" >"$d/io" 2>"$d/ie"
@@ -141,7 +141,7 @@ if [ "$vs" -ne 2 ] || [ "$is" != "$vs" ] || [ -s "$d/vo" ] || ! cmp -s "$d/vo" "
     cat "$d/ve" >&2
 fi
 
-printf '%s\n' '#!/usr/bin/env bettersh' "let v = \"'; echo BREAKOUT; echo '\"" 'echo @{ v }' >"$d/word.btr"
+printf '%s\n' '#!/usr/bin/env bettersh' "let v = \"'; echo BREAKOUT; echo '\"" '$ echo @{ v }' >"$d/word.btr"
 "$bin" "$d/word.btr" >"$d/vo" 2>"$d/ve"
 vs=$?
 "$bin" --interp "$d/word.btr" >"$d/io" 2>"$d/ie"
@@ -154,7 +154,7 @@ if [ "$vs" -ne 0 ] || [ "$is" != "$vs" ] || ! cmp -s "$d/want" "$d/vo" || ! cmp 
     cat "$d/ve" >&2
 fi
 
-printf '%s\n' '#!/usr/bin/env bettersh' 'echo @{ chr(0) }' >"$d/znul.btr"
+printf '%s\n' '#!/usr/bin/env bettersh' '$ echo @{ chr(0) }' >"$d/znul.btr"
 "$bin" "$d/znul.btr" >"$d/vo" 2>"$d/ve"
 vs=$?
 "$bin" --interp "$d/znul.btr" >"$d/io" 2>"$d/ie"

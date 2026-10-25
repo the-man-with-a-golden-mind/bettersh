@@ -233,6 +233,11 @@ if [ "$ps4_ok" -ne 1 ]; then
     printf 'dash %s better %s\n' "$ds" "$bs" >&2
     diff -u "$d/do" "$d/bo" >&2
     diff -u "$d/de" "$d/be" >&2
+    # The lines can differ only in bytes a diff does not show.
+    printf 'dash stderr bytes:\n' >&2
+    od -c "$d/de" | head -n 12 >&2
+    printf 'bettersh stderr bytes:\n' >&2
+    od -c "$d/be" | head -n 12 >&2
     fail=1
 fi
 

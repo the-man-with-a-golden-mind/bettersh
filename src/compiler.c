@@ -162,6 +162,30 @@ int compile_load_name(Compiler *c, const MNode *node) {
     return c->failed ? -1 : 0;
 }
 
+int compile_assign(Compiler *c, const MNode *node) {
+    const char *name = node->text ? node->text : "";
+    int slot = compile_find_local(c, name);
+    if (slot < 0 && !compile_has_outer(c, name)) {
+        return c_fail(c, node, "undefined name; declare it with let first");
+    }
+    if (node->nkids < 1 || compile_expr(c, node->kids[0]) != 0) {
+        return -1;
+    }
+    c->line = node->line > 0 ? node->line : 1;
+    if (slot >= 0) {
+        c_emit(c, OP_STORE_LOCAL);
+        c_emit_u16(c, (uint16_t)slot);
+        return c->failed ? -1 : 0;
+    }
+    int up = capture_up(c, name);
+    if (up < 0) {
+        return -1;
+    }
+    c_emit(c, OP_STORE_UP);
+    c_emit_u16(c, (uint16_t)up);
+    return c->failed ? -1 : 0;
+}
+
 static uint32_t c_jump_argc(Compiler *c, uint8_t argc) {
     c_emit(c, OP_JUMP_GE_ARGC);
     c_emit_u8(c, argc);
@@ -187,7 +211,22 @@ int compile_add_local(Compiler *c, const char *name) {
     return slot;
 }
 
+/* Named functions at the top of a body are declared before any of it runs, so
+   functions can call each other in any order. Variables still need let first. */
+static int declare_fns(Compiler *c, const MNode *block) {
+    for (uint32_t i = 0; block && block->kind == M_BLOCK && i < block->nkids; i++) {
+        const MNode *kid = block->kids[i];
+        if (kid && kid->kind == M_FN && kid->text && kid->text[0] && compile_add_local(c, kid->text) < 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static int compile_body(Compiler *c, const MNode *block) {
+    if (declare_fns(c, block) != 0) {
+        return -1;
+    }
     if (!block || block->nkids == 0) {
         c_emit(c, OP_NULL);
         c_emit(c, OP_RETURN);
@@ -319,7 +358,7 @@ int compile_fn_value(Compiler *c, const MNode *node) {
     return c->failed ? -1 : 0;
 }
 
-static int compile_shell(Compiler *c, const MNode *node) {
+int compile_shell(Compiler *c, const MNode *node) {
     c->line = node->line > 0 ? node->line : 1;
     if (node->nholes > 65535) {
         return c_fail(c, node, "too many interpolations");
@@ -348,7 +387,11 @@ static int compile_shell(Compiler *c, const MNode *node) {
         return c_fail(c, node, "too many commands");
     }
     c->line = node->line > 0 ? node->line : 1;
-    if (node->nholes) {
+    if (node->capture) {
+        c_emit(c, OP_CAPTURE);
+        c_emit_u16(c, (uint16_t)idx);
+        c_emit_u16(c, (uint16_t)node->nholes);
+    } else if (node->nholes) {
         c_emit(c, OP_EXEC_SPLICE);
         c_emit_u16(c, (uint16_t)idx);
         c_emit_u16(c, (uint16_t)node->nholes);
@@ -501,6 +544,11 @@ int compile_stmt(Compiler *c, const MNode *node) {
         return compile_case(c, node);
     case M_RETURN:
         return compile_return(c, node);
+    case M_ASSIGN:
+        return compile_assign(c, node);
+    case M_BREAK:
+    case M_CONTINUE:
+        return compile_jump(c, node);
     case M_BLOCK:
         for (uint32_t i = 0; i < node->nkids; i++) {
             if (compile_stmt(c, node->kids[i]) != 0) {
@@ -523,7 +571,7 @@ int compile_program(Arena *arena, Diag *diag, const char *filename, MNode *root,
     compiler.filename = filename ? filename : "bettersh";
     compiler.chunk = chunk;
     compiler.line = 1;
-    if (!root || compile_stmt(&compiler, root) != 0) {
+    if (!root || declare_fns(&compiler, root) != 0 || compile_stmt(&compiler, root) != 0) {
         chunk_free(chunk);
         *out = NULL;
         return -1;

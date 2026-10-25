@@ -243,6 +243,23 @@ static MNode *parse_primary(Parser *p) {
         m_advance(p);
         return node;
     }
+    if (p->sc.kind == TK_DOLLAR) {
+        size_t open = p->sc.tok_off + 1;
+        if (open >= p->len || p->src[open] != '(') {
+            m_fail(p, "expected ( after $");
+            return NULL;
+        }
+        size_t close = shell_close(p->src, p->len, open + 1, '(', ')');
+        if (close >= p->len) {
+            m_fail(p, "expected ) to end $(");
+            return NULL;
+        }
+        MNode *node = m_shell_span(p, open + 1, close, close + 1);
+        if (node) {
+            node->capture = 1;
+        }
+        return node;
+    }
     if (p->sc.kind == TK_LPAREN) {
         m_advance(p);
         m_skip_nl(p);

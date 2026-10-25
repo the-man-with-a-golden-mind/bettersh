@@ -1,0 +1,25 @@
+#!/usr/bin/env bettersh
+# Functions in one body may call each other in any order.
+fn is_even(n) {
+  if n == 0 { return true }
+  return is_odd(n - 1)
+}
+fn is_odd(n) {
+  if n == 0 { return false }
+  return is_even(n - 1)
+}
+println(is_even(10))
+println(is_odd(7))
+
+fn outer() {
+  fn first() { return second() + 1 }
+  fn second() { return 41 }
+  return first()
+}
+println(outer())
+
+fn depth(n) {
+  if n == 0 { return 0 }
+  return 1 + depth(n - 1)
+}
+println(depth(900))

@@ -2,6 +2,7 @@
 
 import std/strings
 import std/edit_text
+import std/edit_syntax
 
 # Completions. A .btr buffer completes names from the built-in catalog and its own fn, let,
 # and import lines. Every buffer completes words that already appear in it.
@@ -450,7 +451,7 @@ fn in_literal(marks, col) {
   let at = col - 1
   if at >= marks.length { return false }
   let mark = marks[at]
-  return mark == "s" || mark == "c"
+  return edit_syntax.literal(mark)
 }
 
 fn call_name(line, paren) {
@@ -476,7 +477,7 @@ fn call_hint(lines, row, col, marks) {
     let i = i - 1
     let skip = false
     if marks != null && i < marks.length {
-      if marks[i] == "s" || marks[i] == "c" { let skip = true }
+      if edit_syntax.literal(marks[i]) { let skip = true }
     }
     if !skip {
       if line[i] == ")" { let depth = depth + 1 }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# A .btr file is modern. A .sh file is strict unless its shebang is bettersh.
+# A .btr file is modern. A .sh file is strict, even with a bettersh shebang.
 bin=${1:?}
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
@@ -27,7 +27,7 @@ if [ "$rc" -ne 0 ] || [ -s "$d/e" ] || ! cmp -s "$d/o" "$d/want"; then
     cat "$d/o" "$d/e" >&2
 fi
 
-printf '%s\n' '#!/usr/bin/env bettersh' 'println(5)' >"$d/m.sh"
+printf '%s\n' '#!/usr/bin/env bettersh' 'echo 5' >"$d/m.sh"
 "$bin" "$d/m.sh" >"$d/o" 2>"$d/e"
 rc=$?
 printf '5\n' >"$d/want"

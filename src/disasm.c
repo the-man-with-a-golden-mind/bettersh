@@ -66,6 +66,7 @@ void disasm_ins(const Chunk *chunk, uint32_t ip, FILE *out) {
         fprintf(out, " %u", (unsigned)chunk_u16(chunk->code, ip + 1));
         break;
     case OP_LOAD_UP:
+    case OP_STORE_UP:
         fprintf(out, " %u", (unsigned)chunk_u16(chunk->code, ip + 1));
         break;
     case OP_JUMP_GE_ARGC:
@@ -103,6 +104,7 @@ void disasm_ins(const Chunk *chunk, uint32_t ip, FILE *out) {
         fprintf(out, " %u", (unsigned)chunk_u16(chunk->code, ip + 1));
         break;
     case OP_EXEC_SPLICE:
+    case OP_CAPTURE:
         fprintf(out, " %u %u", (unsigned)chunk_u16(chunk->code, ip + 1),
                 (unsigned)chunk_u16(chunk->code, ip + 3));
         break;

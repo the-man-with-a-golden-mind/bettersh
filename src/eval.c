@@ -31,6 +31,29 @@ static int catchable(int sig) {
     return sig > 0 && sig < BETTERSH_NSIG && sig != SIGKILL && sig != SIGSTOP;
 }
 
+/* -1 until the first shell starts, then whether SIGPIPE was ignored when the process began.
+   A signal ignored on entry stays ignored in every child, as POSIX asks and dash does. A
+   runner such as Node starts the shell that way. */
+static int pipe_entry = -1;
+
+void shell_note_signals(void) {
+    struct sigaction cur;
+    if (pipe_entry >= 0) {
+        return;
+    }
+    memset(&cur, 0, sizeof cur);
+    pipe_entry = sigaction(SIGPIPE, NULL, &cur) == 0 && cur.sa_handler == SIG_IGN;
+}
+
+int shell_pipe_ignored(void) {
+    return pipe_entry > 0;
+}
+
+/* What a child gets for SIGPIPE: the default, or ignored when it was ignored on entry. */
+void shell_child_pipe(void) {
+    signal(SIGPIPE, shell_pipe_ignored() ? SIG_IGN : SIG_DFL);
+}
+
 /* The parent ignores SIGPIPE. Children that exec get the default disposition. */
 static void restore_default(int sig) {
     if (sig == SIGPIPE) {
@@ -438,7 +461,7 @@ void shell_at_fork(EvalCtx *ctx, int execing) {
             if (caught) {
                 signal(sig, SIG_DFL);
             } else if (!ignored && sig == SIGPIPE) {
-                signal(SIGPIPE, SIG_DFL);
+                shell_child_pipe();
             }
             continue;
         }
@@ -452,7 +475,7 @@ void shell_at_fork(EvalCtx *ctx, int execing) {
         free(ctx->trap_exit);
         ctx->trap_exit = NULL;
         if (!ctx->traps[SIGPIPE]) {
-            signal(SIGPIPE, SIG_DFL);
+            shell_child_pipe();
         }
         ctx->loop_depth = 0;
         ctx->break_n = 0;
@@ -527,11 +550,7 @@ int shell_script(EvalCtx *ctx, const char *path, char **av, char **envp) {
     }
     buf[n] = '\0';
     diag_init(&diag, ctx->arena);
-    if (parse_script(ctx->arena, path, buf, n, &root, &diag) != 0) {
-        diag_print_sh(&diag, stderr, NULL);
-        free(buf);
-        return 2;
-    }
+    int steps = parse_script(ctx->arena, path, buf, n, &root, &diag) != 0;
     /* execve failed with ENOEXEC. Become the script, not a subshell. */
     arena = ctx->arena;
     argc = 0;
@@ -542,7 +561,8 @@ int shell_script(EvalCtx *ctx, const char *path, char **av, char **envp) {
     }
     shell_drop(ctx);
     eval_begin(ctx, arena, path, argc, av, envp, buf, n);
-    st = eval_node(ctx, root, 1);
+    int bad = 0;
+    st = steps ? eval_steps(ctx, path, buf, n, &bad) : eval_node(ctx, root, 1);
     ctx->src = NULL;
     ctx->src_len = 0;
     free(buf);
@@ -605,6 +625,7 @@ void eval_begin(EvalCtx *ctx, Arena *arena, const char *filename, int argc, char
         }
     }
     clear_pending();
+    shell_note_signals();
     signal(SIGPIPE, SIG_IGN);
 }
 
@@ -693,6 +714,80 @@ int eval_script(Arena *arena, const char *filename, Node *root, int argc, char *
     eval_begin(&ctx, arena, filename, argc, argv, envp, src, src_len);
     shell_apply_start(&ctx, start);
     eval_node(&ctx, root, 1);
+    eval_end(&ctx);
+    return ctx.status & 255;
+}
+
+/* The diagnostic for a chunk that starts on line, from a whole parse of it with the lines
+   before it blank, so the message and its line match a parse of the whole text. */
+static void steps_report(EvalCtx *ctx, const char *file, const char *text, size_t len, int line) {
+    size_t pad = line > 1 ? (size_t)(line - 1) : 0;
+    char *buf = xmalloc(pad + len + 1);
+    Diag diag;
+    Node *root = NULL;
+    memset(buf, '\n', pad);
+    memcpy(buf + pad, text, len);
+    buf[pad + len] = '\0';
+    diag_init(&diag, ctx->arena);
+    if (parse_script(ctx->arena, file, buf, pad + len, &root, &diag) != 0) {
+        diag_print_sh(&diag, stderr, NULL);
+    }
+    free(buf);
+}
+
+int eval_steps(EvalCtx *ctx, const char *file, const char *text, size_t len, int *bad) {
+    size_t off = 0;
+    int line = 1;
+    int st = ctx->status;
+    *bad = 0;
+    while (off < len) {
+        size_t end = off;
+        int need;
+        Node *root = NULL;
+        Diag diag;
+        for (;;) {
+            while (end < len && text[end] != '\n') {
+                end++;
+            }
+            if (end < len) {
+                end++;
+            }
+            diag_init(&diag, ctx->arena);
+            root = NULL;
+            need = parse_script_more(ctx->arena, file, text + off, end - off, &root, &diag, line);
+            if (need != 1 || end >= len) {
+                break;
+            }
+        }
+        if (need != 0) {
+            steps_report(ctx, file, text + off, end - off, line);
+            *bad = 1;
+            ctx->status = 2;
+            return 2;
+        }
+        if (root) {
+            st = eval_node(ctx, root, 1);
+        }
+        for (size_t i = off; i < end; i++) {
+            if (text[i] == '\n') {
+                line++;
+            }
+        }
+        off = end;
+        if (ctx->exit_req || ctx->returning) {
+            break;
+        }
+    }
+    return st;
+}
+
+int eval_script_steps(Arena *arena, const char *filename, int argc, char **argv, char **envp,
+                      const char *src, size_t src_len, const ShellStart *start) {
+    EvalCtx ctx;
+    int bad = 0;
+    eval_begin(&ctx, arena, filename, argc, argv, envp, src, src_len);
+    shell_apply_start(&ctx, start);
+    eval_steps(&ctx, filename, src, src_len, &bad);
     eval_end(&ctx);
     return ctx.status & 255;
 }

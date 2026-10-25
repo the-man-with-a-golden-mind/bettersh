@@ -1,0 +1,3 @@
+tests/bad/colon.sh
+tests/bad/dig.sh
+tests/bad/hash.sh

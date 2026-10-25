@@ -13,7 +13,7 @@ Use these documents for the current project:
 
 The project still follows several useful choices from the original plan.
 
-First, strict shell behavior has one evaluator. Modern programs may contain shell statements, but those statements enter the same parser and evaluator used by strict scripts.
+First, strict shell behavior has one evaluator. Modern programs may contain shell commands, but those commands enter the same parser and evaluator used by strict scripts. Since 0.2 every such command is marked (`$ command`, `$(command)`, or `sh { }`), so a `.btr` file is never guessed line by line and a `.sh` file is always plain sh.
 
 Second, modern programs have two execution paths. The compiler emits stack-based bytecode for the VM, while the interpreter walks the modern syntax tree. Generated tests compare the two paths. Because they share runtime helpers, this comparison is useful without being a fully independent semantic proof.
 

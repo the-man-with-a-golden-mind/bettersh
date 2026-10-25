@@ -91,10 +91,6 @@ static int read_braced_name(Lexer *lx, char **name_out) {
             buf_add(&buf, nextc(lx));
             skip_bnl(lx);
         }
-        if (is_name_start(peekc(lx))) {
-            buf_free(&buf);
-            return lx_error(lx, lx->line, lx->col, "bad substitution");
-        }
     } else if (is_special_param(c)) {
         buf_add(&buf, nextc(lx));
     } else {
@@ -117,7 +113,9 @@ static void eat_nl_quiet(Lexer *lx) {
     }
 }
 
-static int bad_or_missing(Lexer *lx, int saved_line, int saved_col, int quiet_nl) {
+/* With op, a form that ends at its } is kept as P_SUBSCRIPT and rejected only when it is
+   expanded, as dash does: a bash-only ${name//a/b} in a function that never runs is fine. */
+static int bad_or_missing(Lexer *lx, int saved_line, int saved_col, int quiet_nl, ParamOp *op) {
     Word *junk = NULL;
     if (quiet_nl) {
         eat_nl_quiet(lx);
@@ -126,6 +124,10 @@ static int bad_or_missing(Lexer *lx, int saved_line, int saved_col, int quiet_nl
         return -1;
     }
     if (peekc(lx) == '}') {
+        if (op) {
+            *op = P_SUBSCRIPT;
+            return 0;
+        }
         return lx_error(lx, saved_line, saved_col, "bad substitution");
     }
     return lx_error(lx, lx->line, lx->col, "missing '}'");
@@ -164,7 +166,7 @@ static int read_param_op(Scan *scan, ParamOp *op, Word **nested) {
             if (!quiet && peekc(lx) >= 0) {
                 nextc(lx);
             }
-            return bad_or_missing(lx, saved_line, saved_col, quiet);
+            return bad_or_missing(lx, saved_line, saved_col, quiet, op);
         }
         nextc(lx);
         nextc(lx);
@@ -197,7 +199,7 @@ static int read_param_op(Scan *scan, ParamOp *op, Word **nested) {
         }
         return scan_param_word(lx, nested);
     }
-    return bad_or_missing(lx, lx->line, lx->col, c == '\n');
+    return bad_or_missing(lx, lx->line, lx->col, c == '\n', op);
 }
 
 static void push_param(Scan *scan, int line, int col, char *name, ParamOp op, Word *nested) {
@@ -261,7 +263,7 @@ static int scan_brace(Scan *scan, int line, int col) {
     nextc(lx);
     skip_bnl(lx);
     if (peekc(lx) < 0 || peekc(lx) == '\n') {
-        return bad_or_missing(lx, line, col, peekc(lx) == '\n');
+        return bad_or_missing(lx, line, col, peekc(lx) == '\n', NULL);
     }
     int is_len = 0;
     if (peekc(lx) == '#' && looks_like_length(lx)) {

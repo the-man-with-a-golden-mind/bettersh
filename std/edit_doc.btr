@@ -772,6 +772,9 @@ fn make(text, path, opts) {
     wrap_on: wrap_on,
     lsp: null,
     lsp_ver: 0,
+    shl: null,
+    shl_ver: 0,
+    shv: null,
     diags: []
   }
   syn_reset(d)

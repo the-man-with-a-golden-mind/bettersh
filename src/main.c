@@ -72,16 +72,10 @@ static int base_is(const char *text, size_t len, const char *name) {
     return blen == nlen && memcmp(text + start, name, nlen) == 0;
 }
 
-/* A .btr file is the modern language. A .sh file is strict unless its
-   shebang is bettersh or env bettersh. Any other path follows the shebang,
-   and a missing shebang stays strict. */
-static int path_is_btr(const char *path) {
-    size_t n;
-    if (!path) {
-        return 0;
-    }
-    n = strlen(path);
-    return n >= 4 && memcmp(path + n - 4, ".btr", 4) == 0;
+static int path_ends(const char *path, const char *ext) {
+    size_t n = path ? strlen(path) : 0;
+    size_t e = strlen(ext);
+    return n >= e && memcmp(path + n - e, ext, e) == 0;
 }
 
 /* Shebang selects the mode when the path does not. Only bettersh, or env
@@ -112,6 +106,18 @@ static int shebang_is_modern(const char *src, size_t len) {
         i++;
     }
     return base_is(src + arg, i - arg, "bettersh");
+}
+
+/* A .btr file is the modern language and a .sh file is sh, whatever the
+   shebang says. Any other path follows the shebang. */
+static int file_is_modern(const char *path, const char *src, size_t len) {
+    if (path_ends(path, ".btr")) {
+        return 1;
+    }
+    if (path_ends(path, ".sh")) {
+        return 0;
+    }
+    return shebang_is_modern(src, len);
 }
 
 /* A strict script is one OP_EXEC of the whole file. The VM reparses that
@@ -487,7 +493,7 @@ static int run_text(const char *path, char *src, size_t len, int argc, char **ar
     if (!src) {
         return 1;
     }
-    if (modern_ok && (path_is_btr(path) || shebang_is_modern(src, len))) {
+    if (modern_ok && file_is_modern(path, src, len)) {
         status = modern_script(path, src, len, argc, argv, environ, dump_ast, dump_bc, trace, do_interp, exe);
         free(src);
         return status;
@@ -501,12 +507,10 @@ static int run_text(const char *path, char *src, size_t len, int argc, char **ar
         diag_init(&diag, &arena);
         rc = parse_script(&arena, path, src, len, &root, &diag);
         status = 0;
-        if (rc != 0) {
-            if (dump_ast) {
-                diag_print(&diag, stderr);
-            } else {
-                diag_print_sh(&diag, stderr, NULL);
-            }
+        if (rc != 0 && !dump_ast) {
+            status = eval_script_steps(&arena, path, argc, argv, environ, src, len, start);
+        } else if (rc != 0) {
+            diag_print(&diag, stderr);
             status = 2;
         } else if (dump_ast) {
             ast_dump(root, stdout);
@@ -531,6 +535,7 @@ int main(int argc, char **argv) {
     int free_av = 0;
     char *one[2];
     const char *file = NULL;
+    shell_note_signals();
     parsed = parse_invoke(argc, argv, &inv);
     if (parsed >= 0) {
         return parsed;
@@ -625,7 +630,7 @@ int main(int argc, char **argv) {
             if (!src) {
                 return 1;
             }
-            modern = path_is_btr(file) || shebang_is_modern(src, len);
+            modern = file_is_modern(file, src, len);
             rc = bcode_store(file, src, len, inv.output, modern);
             free(src);
             return rc;

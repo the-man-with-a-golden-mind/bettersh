@@ -50,7 +50,8 @@ enum {
     TK_TRUE,
     TK_FALSE,
     TK_NULL,
-    TK_STR
+    TK_STR,
+    TK_DOLLAR
 };
 
 typedef struct Parser Parser;
@@ -88,6 +89,13 @@ struct Parser {
 void scan_init(Scan *sc, Parser *owner);
 void scan_next(Scan *sc);
 size_t shell_stmt_end(const char *src, size_t len, size_t from, int *is_pipe);
+/* The closer that ends shell text starting at from, after an opener such as
+   the `(` of `$(` or the `{` of `sh {`. Quotes, ${ }, @{ }, comments, and
+   nested pairs stay inside. len when it is missing. */
+size_t shell_close(const char *src, size_t len, size_t from, char open, char close);
+/* An M_SH node for shell text src[from, end), with its @{ } holes. The scanner
+   is moved to after, the index just past the text and any closer. */
+MNode *m_shell_span(Parser *p, size_t from, size_t end, size_t after);
 
 MNode *parse_expr(Parser *p);
 MNode *parse_stmt(Parser *p);

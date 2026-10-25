@@ -85,6 +85,9 @@ $(OBJDIR)/%.o: src/%.c src/*.h
 	@mkdir -p $(dir $@)
 	$(CC) $(REQUIRED) $(CFLAGS) $(DEFINES) -DBETTERSH_VERSION='"$(VERSION)"' -iquote src -c $< -o $@
 
+# The version is compiled into main.o.
+$(OBJDIR)/main.o: VERSION
+
 test: bettersh $(TEST_BINS)
 	./tests/run.sh
 

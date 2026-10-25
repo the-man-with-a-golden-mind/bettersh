@@ -2,6 +2,7 @@
 
 #include "array.h"
 #include "error.h"
+#include "eval_priv.h"
 #include "parser.h"
 
 #include <stdint.h>
@@ -832,53 +833,147 @@ static void prefix_loc(VmBuf *buf, const char *src, uint32_t off) {
     }
 }
 
-void vm_exec_span(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes, Value **vals,
-                  uint16_t nholes) {
+/* The shell tree for a span, with each hole's value spliced in. NULL after an
+   error, which is already reported. The shell context is started on first use. */
+static Node *span_tree(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes, Value **vals,
+                       uint16_t nholes, int *ran) {
     VmBuf buf;
     uint32_t end;
     memset(&buf, 0, sizeof buf);
     if (!vm->src || (size_t)off > vm->src_len || (size_t)len > vm->src_len - off) {
         vm_fail(vm, "bad command");
-        return;
+        return NULL;
     }
     if (nholes && !holes) {
         vm_fail(vm, "bad command");
-        return;
+        return NULL;
     }
     prefix_loc(&buf, vm->src, off);
     end = off + len;
     if (splice_holes(vm, &buf, off, end, holes, vals, nholes) != 0) {
         vm_buf_free(&buf);
-        return;
+        return NULL;
     }
-    {
-        const char *text = buf.data ? buf.data : "";
-        Diag diag;
-        Node *root = NULL;
-        int rc;
-        diag_init(&diag, vm->arena);
-        rc = parse_script(vm->arena, vm->filename, text, buf.len, &root, &diag);
-        vm_buf_free(&buf);
-        if (rc != 0 || !root) {
-            diag_print_sh(&diag, stderr, NULL);
-            if (!vm->failed) {
-                vm->failed = 1;
-                vm->status = 2;
-            }
-            return;
-        }
+    const char *text = buf.data ? buf.data : "";
+    Diag diag;
+    Node *root = NULL;
+    int rc;
+    diag_init(&diag, vm->arena);
+    rc = parse_script(vm->arena, vm->filename, text, buf.len, &root, &diag);
+    if (rc != 0 && ran) {
+        /* Text that does not parse as a whole runs a command at a time, as dash reads a
+           script: an exit ahead of the part that fails to parse ends it cleanly. */
+        int bad = 0;
         if (!vm->shell_on) {
             eval_begin(&vm->shell, vm->arena, vm->filename, vm->argc, vm->argv, vm->envp, vm->src,
                        vm->src_len);
             shell_apply_start(&vm->shell, vm->shstart);
             vm->shell_on = 1;
         }
+        eval_steps(&vm->shell, vm->filename, text, buf.len, &bad);
+        vm_buf_free(&buf);
+        *ran = 1;
+        if (bad && !vm->failed) {
+            vm->failed = 1;
+            vm->status = 2;
+        }
+        return NULL;
+    }
+    vm_buf_free(&buf);
+    if (rc != 0 || !root) {
+        diag_print_sh(&diag, stderr, NULL);
+        if (!vm->failed) {
+            vm->failed = 1;
+            vm->status = 2;
+        }
+        return NULL;
+    }
+    if (!vm->shell_on) {
+        eval_begin(&vm->shell, vm->arena, vm->filename, vm->argc, vm->argv, vm->envp, vm->src,
+                   vm->src_len);
+        shell_apply_start(&vm->shell, vm->shstart);
+        vm->shell_on = 1;
+    }
+    return root;
+}
+
+void vm_exec_span(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes, Value **vals,
+                  uint16_t nholes) {
+    int ran = 0;
+    Node *root = span_tree(vm, off, len, holes, vals, nholes, &ran);
+    if (!root && !ran) {
+        return;
+    }
+    if (root) {
         eval_node(&vm->shell, root, 1);
-        vm->status = vm->shell.status;
-        if (vm->shell.exit_req) {
-            vm->stop = 1;
+    } else if (vm->failed) {
+        return;
+    }
+    vm->status = vm->shell.status;
+    if (vm->shell.exit_req) {
+        vm->stop = 1;
+    }
+}
+
+/* Runs the span as a command substitution and returns its output without the
+   trailing newlines, as sh does. Null after an error. */
+Value *vm_capture_span(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes, Value **vals,
+                       uint16_t nholes) {
+    Node *root = span_tree(vm, off, len, holes, vals, nholes, NULL);
+    char *text;
+    Value *out;
+    if (!root) {
+        return NULL;
+    }
+    text = capture_node(&vm->shell, root);
+    vm->status = vm->shell.cmdsub_status;
+    out = value_str(str_new(text ? text : "", text ? strlen(text) : 0));
+    free(text);
+    return out;
+}
+
+/* Pops the hole values for a word, or returns NULL after a failure. */
+static Value **pop_holes(VM *vm, uint16_t nholes) {
+    Value **vals = xmalloc((size_t)nholes * sizeof(Value *));
+    int i;
+    for (i = (int)nholes - 1; i >= 0; i--) {
+        vals[i] = vm_pop(vm);
+        if (!vals[i]) {
+            int j;
+            for (j = i + 1; j < (int)nholes; j++) {
+                value_unref(vals[j]);
+            }
+            free(vals);
+            return NULL;
         }
     }
+    return vals;
+}
+
+static void drop_holes(Value **vals, uint16_t nholes) {
+    uint16_t i;
+    if (!vals) {
+        return;
+    }
+    for (i = 0; i < nholes; i++) {
+        value_unref(vals[i]);
+    }
+    free(vals);
+}
+
+static int word_ok(VM *vm, Chunk *chunk, uint16_t word, uint16_t nholes) {
+    WordDesc desc;
+    if (!chunk || word >= chunk->words_len) {
+        vm_fail(vm, "bad command");
+        return 0;
+    }
+    desc = chunk->words[word];
+    if (desc.nholes != nholes ||
+        (nholes && (desc.hole_at > chunk->holes_len || nholes > chunk->holes_len - desc.hole_at))) {
+        vm_fail(vm, "bad command");
+        return 0;
+    }
+    return 1;
 }
 
 void vm_exec(VM *vm, uint16_t word, int splice, uint16_t nholes) {
@@ -886,42 +981,47 @@ void vm_exec(VM *vm, uint16_t word, int splice, uint16_t nholes) {
     Chunk *chunk = fr->chunk;
     Value **vals = NULL;
     WordDesc desc;
-    if (!chunk || word >= chunk->words_len) {
-        vm_fail(vm, "bad command");
-        return;
-    }
-    desc = chunk->words[word];
-    if (splice) {
-        if (desc.nholes != nholes ||
-            (nholes && (desc.hole_at > chunk->holes_len || nholes > chunk->holes_len - desc.hole_at))) {
+    if (!splice) {
+        nholes = 0;
+        if (!chunk || word >= chunk->words_len) {
             vm_fail(vm, "bad command");
             return;
         }
-    } else {
-        nholes = 0;
+    } else if (!word_ok(vm, chunk, word, nholes)) {
+        return;
     }
+    desc = chunk->words[word];
     if (nholes) {
-        int i;
-        vals = xmalloc((size_t)nholes * sizeof(Value *));
-        for (i = (int)nholes - 1; i >= 0; i--) {
-            vals[i] = vm_pop(vm);
-            if (!vals[i]) {
-                int j;
-                for (j = i + 1; j < (int)nholes; j++) {
-                    value_unref(vals[j]);
-                }
-                free(vals);
-                return;
-            }
+        vals = pop_holes(vm, nholes);
+        if (!vals) {
+            return;
         }
     }
     vm_exec_span(vm, desc.src_off, desc.src_len,
                  nholes ? chunk->holes + desc.hole_at : NULL, vals, nholes);
-    if (vals) {
-        uint16_t i;
-        for (i = 0; i < nholes; i++) {
-            value_unref(vals[i]);
+    drop_holes(vals, nholes);
+}
+
+void vm_capture(VM *vm, uint16_t word, uint16_t nholes) {
+    Frame *fr = &vm->frames[vm->nframes - 1];
+    Chunk *chunk = fr->chunk;
+    Value **vals = NULL;
+    Value *out;
+    WordDesc desc;
+    if (!word_ok(vm, chunk, word, nholes)) {
+        return;
+    }
+    desc = chunk->words[word];
+    if (nholes) {
+        vals = pop_holes(vm, nholes);
+        if (!vals) {
+            return;
         }
-        free(vals);
+    }
+    out = vm_capture_span(vm, desc.src_off, desc.src_len,
+                          nholes ? chunk->holes + desc.hole_at : NULL, vals, nholes);
+    drop_holes(vals, nholes);
+    if (out) {
+        vm_push(vm, out);
     }
 }

@@ -22,7 +22,7 @@ static const char driver[] = "import \"./edit.btr\" as edit\n"
                              "  let paths = paths.push(arg(i))\n"
                              "  let i = i + 1\n"
                              "}\n"
-                             "if !edit.run_files(paths) { exit 1 }\n";
+                             "if !edit.run_files(paths) { $ exit 1 }\n";
 
 int editor_launch(const char *exe, int n, char **paths, int interp) {
     char *script = NULL;

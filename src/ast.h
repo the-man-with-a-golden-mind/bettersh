@@ -31,7 +31,8 @@ typedef enum ParamOp {
     P_PCT_PCT,
     /* ${name:}word} — the value, or empty when unset or null, then word. */
     P_COLON_CONCAT,
-    /* ${name[index]} is parsed, then rejected when the expansion runs. */
+    /* ${name[index]}, ${name//a/b}, and other forms dash does not know: parsed, then
+       rejected when the expansion runs. */
     P_SUBSCRIPT
 } ParamOp;
 

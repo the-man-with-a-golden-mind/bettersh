@@ -4,7 +4,7 @@ This document explains how the implementation fits together. The [README](../REA
 
 ## Execution overview
 
-`src/main.c` parses command-line options, reads the source, selects a language, and creates the runtime state. A `.btr` path selects the modern language. A `.sh` path selects strict mode unless its shebang names bettersh. Other paths use the shebang, with strict mode as the default. Commands supplied with `-c` are strict shell commands.
+`src/main.c` parses command-line options, reads the source, selects a language, and creates the runtime state. A `.btr` path selects the modern language. A `.sh` path always selects strict mode. Other paths use the shebang, with strict mode as the default. Commands supplied with `-c` are strict shell commands.
 
 Strict and modern source use separate syntax trees:
 
@@ -15,7 +15,7 @@ modern source -> scanner -> parser -> MNode -> compiler -> verifier -> VM
                                       \-> interpreter
 ```
 
-A shell statement inside a modern program is stored as a source span. When that statement runs, the strict parser reads the span and the shell evaluator executes the resulting `Node` tree. The VM and tree-walking interpreter therefore share one shell implementation.
+A shell command inside a modern program (`$ command`, `$(command)`, or `sh { }`) is stored as a source span. The modern parser only finds where the span ends; when the command runs, the strict parser reads the span and the shell evaluator executes the resulting `Node` tree. The VM and tree-walking interpreter therefore share one shell implementation.
 
 The interpreter is mainly a semantic cross-check for the compiler and VM. It also shares runtime helpers for values, methods, arithmetic, and builtins, so it is not an independent implementation of the whole language.
 
@@ -33,9 +33,9 @@ The modern scanner and parser live in `mod_scan.c`, `mod_expr.c`, and `mod_parse
 
 `verify.c` validates every chunk before the VM executes it. Verification checks instruction boundaries, operand indexes, jump targets, stack depths and merge points, constant kinds, parameter counts, source spans, and closure captures. A child capture must refer to a local or capture that exists in its parent chunk.
 
-`vm.c` owns frames and the value stack. `vm_ops.c`, `vm_method.c`, and `vm_exec.c` implement operators, methods, calls, and embedded shell execution. The VM runs one instruction stream at a time and has no worker threads.
+`vm.c` owns frames and the value stack. A captured local lives in a cell that the frame and each closure share; `LOAD_LOCAL` reads through the cell, so an assignment from an inner function (`STORE_UP`) is seen by the outer one. `vm_ops.c`, `vm_method.c`, and `vm_exec.c` implement operators, methods, calls, and embedded shell execution. The VM runs one instruction stream at a time and has no worker threads.
 
-`interp.c` and `interp_expr.c` walk the modern syntax tree directly. The differential generator runs the same program through the interpreter and VM and compares output, errors, and status.
+`interp.c` and `interp_expr.c` walk the modern syntax tree directly. `--interp` compiles the program first and discards the result, so both engines report the same compile-time errors, such as an undefined name or a `break` outside a loop. The differential generator runs the same program through the interpreter and VM and compares output, errors, and status.
 
 ## Values and memory
 

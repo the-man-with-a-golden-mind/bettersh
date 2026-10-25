@@ -20,24 +20,34 @@ int wait_status(int status) {
     return 1;
 }
 
-void wait_show_sig(int sig) {
+static void show_sig(int sig, int core) {
     const char *text;
+    const char *tail = core ? " (core dumped)" : "";
     if (sig <= 0 || sig == SIGINT || sig == SIGPIPE) {
         return;
     }
     text = strsignal(sig);
     if (text && text[0]) {
-        fprintf(stderr, "%s\n", text);
+        fprintf(stderr, "%s%s\n", text, tail);
     } else {
-        fprintf(stderr, "Signal %d\n", sig);
+        fprintf(stderr, "Signal %d%s\n", sig, tail);
     }
 }
 
+void wait_show_sig(int sig) {
+    show_sig(sig, 0);
+}
+
+/* Like dash, a child that left a core says so. */
 void wait_show_signal(int status) {
     if (!WIFSIGNALED(status)) {
         return;
     }
-    wait_show_sig(WTERMSIG(status));
+#ifdef WCOREDUMP
+    show_sig(WTERMSIG(status), WCOREDUMP(status) != 0);
+#else
+    show_sig(WTERMSIG(status), 0);
+#endif
 }
 
 static int is_exec(const char *path) {

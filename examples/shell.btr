@@ -1,5 +1,19 @@
 #!/usr/bin/env bettersh
+# Shell commands are marked: $ runs one line, $( ) gives its output, sh { } holds plain sh.
 
 let name = "world"
-echo "hello @{ name }"
-echo hi | tr a-z A-Z
+$ echo "hello @{ name }"
+$ echo hi | tr a-z A-Z
+
+let files = ["b.txt", "a.txt"]
+$ printf '%s\n' @{ files } | sort
+
+let upper = $(echo @{ name } | tr a-z A-Z)
+println("upper: " + upper)
+
+sh {
+  greet() { echo "sh says $1"; }
+  for w in one two; do
+    greet "$w"
+  done
+}

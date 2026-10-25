@@ -8,6 +8,15 @@ stderr_only=0
 bad() {
     fail=$((fail + 1))
     printf 'FAIL %s\n' "$1" >&2
+    [ -n "${GITHUB_ACTIONS:-}" ] && [ -z "${2:-}" ] && printf '::error title=FAIL::%s\n' "$1"
+    return 0
+}
+# On GitHub, a failure also becomes an annotation that holds the start of its output, so it can
+# be read without the job log.
+annotate() {
+    [ -n "${GITHUB_ACTIONS:-}" ] || return 0
+    body=$(head -n 60 "$2" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk '{ printf "%s%%0A", $0 }')
+    printf '::error title=FAIL %s::%s\n' "$1" "$body"
 }
 for f in tests/golden/*.sh; do
     base=${f%.sh}
@@ -65,11 +74,16 @@ for u in tests/unit/*.sh; do
             [ "${BETTERSH_PERF:-0}" = 1 ] || continue
             ;;
     esac
-    if sh "$u" "$bin"; then
+    ue=$(mktemp)
+    if sh "$u" "$bin" 2>"$ue"; then
         pass=$((pass + 1))
+        cat "$ue" >&2
     else
-        bad "$u"
+        bad "$u" quiet
+        cat "$ue" >&2
+        annotate "$u" "$ue"
     fi
+    rm -f "$ue"
 done
 if [ -x tests/value_test ]; then
     if tests/value_test; then
@@ -120,14 +134,19 @@ for f in tests/language/*.btr; do
     if [ "$ok" -eq 1 ]; then
         pass=$((pass + 1))
     else
-        bad "$f"
-        printf 'status %s want %s\n' "$bs" "$want_status" >&2
-        diff -u "$base.out" "$got" | head -n 40 >&2
-        if [ -f "$base.err" ]; then
-            diff -u "$base.err" "$got.err" | head -n 40 >&2
-        else
-            cat "$got.err" >&2
-        fi
+        bad "$f" quiet
+        {
+            printf 'status %s want %s\n' "$bs" "$want_status"
+            diff -u "$base.out" "$got" | head -n 40
+            if [ -f "$base.err" ]; then
+                diff -u "$base.err" "$got.err" | head -n 40
+            else
+                cat "$got.err"
+            fi
+        } >"$got.why"
+        cat "$got.why" >&2
+        annotate "$f" "$got.why"
+        rm -f "$got.why"
     fi
     rm -f "$got" "$got.err"
 done
