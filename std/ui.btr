@@ -110,10 +110,16 @@ fn plain(byte) {
   if n == 10 || n == 13 { return event("enter", "", null) }
   if n == 127 || n == 8 { return event("backspace", "", null) }
   if n == 9 { return event("tab", "", null) }
+  if n == 1 { return event("ctrl-a", "", null) }
   if n == 3 { return event("ctrl-c", "", null) }
   if n == 4 { return event("ctrl-d", "", null) }
+  if n == 6 { return event("ctrl-f", "", null) }
+  if n == 7 { return event("ctrl-g", "", null) }
   if n == 14 { return event("ctrl-n", "", null) }
+  if n == 15 { return event("ctrl-o", "", null) }
   if n == 16 { return event("ctrl-p", "", null) }
+  if n == 17 { return event("ctrl-q", "", null) }
+  if n == 22 { return event("ctrl-v", "", null) }
   if n == 18 { return event("ctrl-r", "", null) }
   if n == 19 { return event("ctrl-s", "", null) }
   if n == 20 { return event("ctrl-t", "", null) }
@@ -123,25 +129,206 @@ fn plain(byte) {
   if n == 25 { return event("ctrl-y", "", null) }
   if n == 26 { return event("ctrl-z", "", null) }
   if n == 31 { return event("ctrl-/", "", null) }
+  if n == 28 { return event("ctrl-\\", "", null) }
   if n == 27 { return event(null, byte, null) }
   if utf_need(n) > 0 { return event(null, byte, null) }
   if (n >= 32 && n <= 126) || n >= 128 { return event(byte, "", null) }
   return event(null, "", null)
 }
 
+fn atoi(text) {
+  let n = 0
+  let i = 0
+  while i < text.length {
+    let c = text[i]
+    if c < "0" || c > "9" { return n }
+    let n = n * 10 + "0123456789".index(c)
+    let i = i + 1
+  }
+  return n
+}
+
+# Returns the modifier prefix for an xterm modifier parameter, such as "ctrl-shift-". 1 and below mean none.
+# The parameter is one more than a bit set: 1 shift, 2 alt, 4 ctrl, 8 super.
+fn mod_prefix(m) {
+  if m <= 1 { return "" }
+  let bits = m - 1
+  let out = ""
+  if (bits / 8) % 2 == 1 { let out = "super-" }
+  if (bits / 4) % 2 == 1 { let out = "@{ out }ctrl-" }
+  if (bits / 2) % 2 == 1 { let out = "@{ out }alt-" }
+  if bits % 2 == 1 { let out = "@{ out }shift-" }
+  return out
+}
+
+# Returns the key for the number in CSI number ~, or "".
+fn tilde_key(n) {
+  if n == 1 || n == 7 { return "home" }
+  if n == 2 { return "insert" }
+  if n == 3 { return "delete" }
+  if n == 4 || n == 8 { return "end" }
+  if n == 5 { return "pageup" }
+  if n == 6 { return "pagedown" }
+  if n >= 11 && n <= 15 { return "f@{ n - 10 }" }
+  if n >= 17 && n <= 21 { return "f@{ n - 11 }" }
+  if n == 23 || n == 24 { return "f@{ n - 12 }" }
+  return ""
+}
+
+# Returns the key for a CSI or SS3 final letter, or "".
+fn final_key(f) {
+  if f == "A" { return "up" }
+  if f == "B" { return "down" }
+  if f == "C" { return "right" }
+  if f == "D" { return "left" }
+  if f == "H" { return "home" }
+  if f == "F" { return "end" }
+  if f == "P" { return "f1" }
+  if f == "Q" { return "f2" }
+  if f == "R" { return "f3" }
+  if f == "S" { return "f4" }
+  return ""
+}
+
+# Names a key code from CSI code;mods u or CSI 27;mods;code ~. Unknown codes are "".
+fn code_key(code, m) {
+  let pre = mod_prefix(m)
+  if code == 13 { return "@{ pre }enter" }
+  if code == 9 {
+    if pre == "shift-" { return "shift-tab" }
+    return "@{ pre }tab"
+  }
+  if code == 27 { return "@{ pre }escape" }
+  if code == 127 || code == 8 { return "@{ pre }backspace" }
+  if code == 32 {
+    if pre == "" || pre == "shift-" { return " " }
+    return "@{ pre }space"
+  }
+  if code < 32 || code >= 57344 || (code >= 55296 && code <= 57343) { return "" }
+  let ch = chr(code)
+  if pre == "" { return ch }
+  if pre == "shift-" {
+    if ch >= "a" && ch <= "z" { return ch.upper() }
+    return ch
+  }
+  if ch >= "A" && ch <= "Z" {
+    if pre.contains("shift-") { return "@{ pre }@{ ch.lower() }" }
+    return "@{ pre }shift-@{ ch.lower() }"
+  }
+  return "@{ pre }@{ ch }"
+}
+
+# Splits CSI parameter text on ";". A ":" sub-field keeps only its first part.
+fn csi_fields(params) {
+  let out = []
+  let parts = params.split(";")
+  let i = 0
+  while i < parts.length {
+    let piece = parts[i]
+    let at = piece.index(":")
+    if at >= 0 { let piece = piece.slice(0, at) }
+    let out = out.push(atoi(piece))
+    let i = i + 1
+  }
+  return out
+}
+
+# Names a finished CSI sequence from its parameter text and final byte, or "".
+fn csi_key(params, f) {
+  let nums = csi_fields(params)
+  let m = 1
+  if nums.length > 1 { let m = nums[1] }
+  if f == "~" {
+    if nums.length >= 3 && nums[0] == 27 { return code_key(nums[2], nums[1]) }
+    if nums.length == 0 { return "" }
+    let base = tilde_key(nums[0])
+    if base == "" { return "" }
+    return "@{ mod_prefix(m) }@{ base }"
+  }
+  if f == "u" {
+    if nums.length == 0 { return "" }
+    return code_key(nums[0], m)
+  }
+  if f == "Z" {
+    if m <= 1 { return "shift-tab" }
+    return "@{ mod_prefix(m) }tab"
+  }
+  if f == "I" && params == "" { return "focus-in" }
+  if f == "O" && params == "" { return "focus-out" }
+  let base = final_key(f)
+  if base == "" { return "" }
+  return "@{ mod_prefix(m) }@{ base }"
+}
+
 # Names a finished escape sequence, or "" when it is not a known key.
 fn named(seq) {
-  let esc = chr(27)
-  if seq == "@{ esc }[A" || seq == "@{ esc }OA" { return "up" }
-  if seq == "@{ esc }[B" || seq == "@{ esc }OB" { return "down" }
-  if seq == "@{ esc }[C" || seq == "@{ esc }OC" { return "right" }
-  if seq == "@{ esc }[D" || seq == "@{ esc }OD" { return "left" }
-  if seq == "@{ esc }[H" { return "home" }
-  if seq == "@{ esc }[F" { return "end" }
-  if seq == "@{ esc }[3~" { return "delete" }
-  if seq == "@{ esc }[5~" { return "pageup" }
-  if seq == "@{ esc }[6~" { return "pagedown" }
-  return ""
+  if seq.length < 3 || seq[0] != chr(27) { return "" }
+  let f = seq[seq.length - 1]
+  if seq[1] == "O" && seq.length == 3 { return final_key(f) }
+  if seq[1] != "[" { return "" }
+  return csi_key(strings.slice(seq, 2, seq.length - 1), f)
+}
+
+# True while seq is an unfinished CSI or SS3 sequence of digits, semicolons, and colons.
+fn csi_more(seq) {
+  if seq.length < 2 { return false }
+  if seq[0] != chr(27) { return false }
+  if seq[1] != "[" && seq[1] != "O" { return false }
+  let i = 2
+  while i < seq.length {
+    let c = seq[i]
+    if (c < "0" || c > "9") && c != ";" && c != ":" { return false }
+    let i = i + 1
+  }
+  return true
+}
+
+# True while seq is ESC[< digits and semicolons, not yet ended by M or m.
+fn mouse_more(seq) {
+  if seq.length < 3 || seq.length > 40 { return false }
+  if seq[0] != chr(27) || seq[1] != "[" || seq[2] != "<" { return false }
+  let i = 3
+  while i < seq.length {
+    let c = seq[i]
+    if (c < "0" || c > "9") && c != ";" { return false }
+    let i = i + 1
+  }
+  return true
+}
+
+# Button code with the motion bit removed. Modifiers stay above the low two bits.
+fn button_low(btn) {
+  if btn >= 32 { return (btn - 32) % 4 }
+  return btn % 4
+}
+
+# Names an SGR mouse report, or "" when seq is not one.
+# The left button drags a selection. The right button is a click. The wheel scrolls.
+fn mouse_key(seq) {
+  if seq.length < 6 || seq.length > 40 { return "" }
+  if seq[0] != chr(27) || seq[1] != "[" || seq[2] != "<" { return "" }
+  let last = seq[seq.length - 1]
+  if last != "M" && last != "m" { return "" }
+  let parts = strings.slice(seq, 3, seq.length - 1).split(";")
+  if parts.length != 3 { return "" }
+  let btn = atoi(parts[0])
+  let x = atoi(parts[1])
+  let y = atoi(parts[2])
+  if x < 1 || y < 1 { return "" }
+  if btn >= 64 {
+    if last != "M" { return "" }
+    if (btn - 64) % 4 == 1 { return "mouse:wheel-down:@{ x }:@{ y }" }
+    return "mouse:wheel-up:@{ x }:@{ y }"
+  }
+  let low = button_low(btn)
+  if low == 2 {
+    if btn >= 32 || last != "M" { return "" }
+    return "mouse:right:@{ x }:@{ y }"
+  }
+  if low != 0 { return "" }
+  if btn >= 32 { return "mouse:drag:@{ x }:@{ y }" }
+  if last == "m" { return "mouse:up:@{ x }:@{ y }" }
+  return "mouse:down:@{ x }:@{ y }"
 }
 
 # Feeds one byte into pending and returns the next event. A byte that is not one character leaves pending unchanged.
@@ -154,10 +341,10 @@ fn feed(pending, byte) {
     return event("escape", "", byte)
   }
   let seq = "@{ pending }@{ byte }"
-  if seq == "@{ esc }[" || seq == "@{ esc }O" || seq == "@{ esc }[3" || seq == "@{ esc }[5" || seq == "@{ esc }[6" {
-    return event(null, seq, null)
-  }
+  if csi_more(seq) || mouse_more(seq) { return event(null, seq, null) }
   let key = named(seq)
+  if key.length > 0 { return event(key, "", null) }
+  let key = mouse_key(seq)
   if key.length > 0 { return event(key, "", null) }
   return event(null, "", null)
 }
@@ -171,6 +358,216 @@ fn flush(pending) {
     return event(pending[0], "", rest)
   }
   return event(null, "", null)
+}
+
+# Chunk decoding. A chunk is every byte the terminal had ready. decode returns the events in it,
+# and rest, an unfinished sequence to put in front of the next chunk.
+# A key event is { key }. A bracketed paste is { key: "paste", text }. A run of 16 or more typed
+# characters is { key: "text", text }, so a paste without bracketed paste is one insert.
+# A mouse report is { key: "mouse", act, button, x, y, shift, alt, ctrl, dir }.
+# act is "down", "up", "drag", "move", or "wheel". dir is the wheel direction.
+
+fn paste_start() {
+  return "@{ chr(27) }[200~"
+}
+
+fn paste_end() {
+  return "@{ chr(27) }[201~"
+}
+
+# Names a control byte. Byte 8 is Ctrl-Backspace: most terminals send 127 for Backspace and
+# 8 for Ctrl-Backspace, and the kitty protocol reports Ctrl-H by itself.
+fn ctrl_name(c) {
+  if c == 0 { return "ctrl-space" }
+  if c == 8 { return "ctrl-backspace" }
+  if c == 9 { return "tab" }
+  if c == 10 || c == 13 { return "enter" }
+  if c == 27 { return "escape" }
+  if c == 28 { return "ctrl-\\" }
+  if c == 29 { return "ctrl-]" }
+  if c == 30 { return "ctrl-^" }
+  if c == 31 { return "ctrl-/" }
+  if c == 127 { return "backspace" }
+  if c >= 1 && c <= 26 { return "ctrl-@{ chr(c + 96) }" }
+  return ""
+}
+
+# Returns the end of the printable run, backed off before a UTF-8 sequence cut by the chunk end.
+fn utf_cut(b, i, n) {
+  let k = n - 1
+  let back = 0
+  while k >= i && back < 4 {
+    let c = b[k]
+    if c >= 192 {
+      if n - k < utf_need(c) { return k }
+      return n
+    }
+    if c < 128 { return n }
+    let k = k - 1
+    let back = back + 1
+  }
+  return n
+}
+
+fn mouse_event(params, last) {
+  let nums = csi_fields(params)
+  if nums.length != 3 { return null }
+  let btn = nums[0]
+  let x = nums[1]
+  let y = nums[2]
+  if x < 1 || y < 1 { return null }
+  let ev = { key: "mouse", act: "", button: 0, x: x, y: y, shift: false, alt: false, ctrl: false, dir: "" }
+  let junk = map_set(ev, "shift", (btn / 4) % 2 == 1)
+  let junk = map_set(ev, "alt", (btn / 8) % 2 == 1)
+  let junk = map_set(ev, "ctrl", (btn / 16) % 2 == 1)
+  let low = btn % 4
+  if btn >= 64 {
+    if last != "M" { return null }
+    let junk = map_set(ev, "act", "wheel")
+    let dir = "up"
+    if low == 1 { let dir = "down" }
+    if low == 2 { let dir = "left" }
+    if low == 3 { let dir = "right" }
+    let junk = map_set(ev, "dir", dir)
+    return ev
+  }
+  let junk = map_set(ev, "button", low)
+  if (btn / 32) % 2 == 1 {
+    if low == 3 { return map_set(ev, "act", "move") }
+    return map_set(ev, "act", "drag")
+  }
+  if last == "m" { return map_set(ev, "act", "up") }
+  if low == 3 { return null }
+  return map_set(ev, "act", "down")
+}
+
+# Parses one escape sequence at b[i]. Null means the chunk ended inside it.
+# Otherwise ev is the event or null for an unknown sequence, and next is the index after it.
+fn esc_at(b, i, n) {
+  if i + 1 >= n { return null }
+  let d = b[i + 1]
+  if d == 91 {
+    let j = i + 2
+    if j < n && b[j] == 60 {
+      let k = j + 1
+      while k < n && ((b[k] >= 48 && b[k] <= 57) || b[k] == 59) { let k = k + 1 }
+      if k >= n {
+        if k - i > 40 { return { ev: null, next: n } }
+        return null
+      }
+      let last = chr(b[k])
+      if last != "M" && last != "m" { return { ev: null, next: k + 1 } }
+      return { ev: mouse_event(unbytes(b.slice(j + 1, k)), last), next: k + 1 }
+    }
+    let k = j
+    while k < n && b[k] >= 48 && b[k] <= 63 { let k = k + 1 }
+    while k < n && b[k] >= 32 && b[k] <= 47 { let k = k + 1 }
+    if k >= n {
+      if k - i > 64 { return { ev: null, next: n } }
+      return null
+    }
+    let f = b[k]
+    if f < 64 || f > 126 { return { ev: null, next: k } }
+    let name = csi_key(unbytes(b.slice(j, k)), chr(f))
+    if name == "" { return { ev: null, next: k + 1 } }
+    return { ev: { key: name }, next: k + 1 }
+  }
+  if d == 79 {
+    if i + 2 >= n { return null }
+    let name = final_key(chr(b[i + 2]))
+    if name == "" { return { ev: null, next: i + 3 } }
+    return { ev: { key: name }, next: i + 3 }
+  }
+  if d == 27 { return { ev: { key: "escape" }, next: i + 1 } }
+  if d < 32 || d == 127 {
+    let name = ctrl_name(d)
+    if name == "" || name == "escape" { return { ev: { key: "escape" }, next: i + 1 } }
+    return { ev: { key: "alt-@{ name }" }, next: i + 2 }
+  }
+  if d >= 128 { return { ev: { key: "escape" }, next: i + 1 } }
+  let ch = chr(d)
+  if ch >= "A" && ch <= "Z" { return { ev: { key: "alt-shift-@{ ch.lower() }" }, next: i + 2 } }
+  if ch == " " { return { ev: { key: "alt-space" }, next: i + 2 } }
+  return { ev: { key: "alt-@{ ch }" }, next: i + 2 }
+}
+
+# Decodes chunk bytes that hold no bracketed paste.
+fn decode_plain(chunk, out) {
+  let b = bytes(chunk)
+  let n = b.length
+  let i = 0
+  while i < n {
+    let c = b[i]
+    if c == 27 {
+      let got = esc_at(b, i, n)
+      if got == null { return unbytes(b.slice(i, n)) }
+      if got.ev != null { let out = out.push(got.ev) }
+      let i = got.next
+    } else if c < 32 || c == 127 {
+      let name = ctrl_name(c)
+      if name != "" { let out = out.push({ key: name }) }
+      let i = i + 1
+    } else {
+      let j = i
+      while j < n && b[j] >= 32 && b[j] != 127 { let j = j + 1 }
+      if j == n { let j = utf_cut(b, i, n) }
+      if j == i { return unbytes(b.slice(i, n)) }
+      let text = unbytes(b.slice(i, j))
+      if text.length >= 16 {
+        let out = out.push({ key: "text", text: text })
+      } else {
+        let k = 0
+        while k < text.length {
+          let out = out.push({ key: text[k] })
+          let k = k + 1
+        }
+      }
+      let i = j
+    }
+  }
+  return ""
+}
+
+# Line breaks in pasted text become "\n".
+fn paste_text(text) {
+  let cr = chr(13)
+  return text.replace("@{ cr }\n", "\n").replace(cr, "\n")
+}
+
+# Returns { events, rest } for one chunk. Put rest in front of the next chunk.
+fn decode(chunk) {
+  let out = []
+  let text = chunk
+  if text == null { let text = "" }
+  let start = paste_start()
+  let stop = paste_end()
+  while text.length > 0 {
+    let at = text.index(start)
+    if at < 0 {
+      let rest = decode_plain(text, out)
+      return { events: out, rest: rest }
+    }
+    if at > 0 { let junk = decode_plain(text.slice(0, at), out) }
+    let body = text.slice(at + start.length, text.length)
+    let end = body.index(stop)
+    if end < 0 { return { events: out, rest: text.slice(at, text.length) } }
+    let out = out.push({ key: "paste", text: paste_text(body.slice(0, end)) })
+    let text = body.slice(end + stop.length, body.length)
+  }
+  return { events: out, rest: "" }
+}
+
+# Events for a rest that stayed unfinished: a lone escape is the escape key, and an open paste is pasted.
+fn decode_flush(rest) {
+  if rest == null || rest == "" { return [] }
+  if rest == chr(27) { return [{ key: "escape" }] }
+  let start = paste_start()
+  if strings.starts(rest, start) {
+    return [{ key: "paste", text: paste_text(rest.slice(start.length, rest.length)) }]
+  }
+  if rest == "@{ chr(27) }O" { return [{ key: "alt-shift-o" }] }
+  if rest == "@{ chr(27) }[" { return [{ key: "alt-[" }] }
+  return []
 }
 
 # Returns true when cp is a combining mark or a zero-width control.

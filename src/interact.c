@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -142,6 +143,10 @@ static void on_int(int sig) {
 
 void hist_add(EvalCtx *ctx, const char *text) {
     if (!text || text[0] == '\0') {
+        return;
+    }
+    if (!ctx->hist_loading && ctx->nhist > 0 && ctx->hist[ctx->nhist - 1].text &&
+        strcmp(ctx->hist[ctx->nhist - 1].text, text) == 0) {
         return;
     }
     if (ctx->nhist >= ctx->chist) {
@@ -284,6 +289,74 @@ static void source_file(EvalCtx *ctx, const char *path) {
     cmd_dot(ctx, 2, args);
 }
 
+static int ensure_dir(const char *path) {
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        return S_ISDIR(st.st_mode) ? 0 : -1;
+    }
+    return mkdir(path, 0700) == 0 ? 0 : -1;
+}
+
+/* btr keeps commands in ~/.bettersh/history unless HISTFILE is already set. */
+static void btr_histfile(EvalCtx *ctx) {
+    const char *home = NULL;
+    const char *set = NULL;
+    const char *tail = "/.bettersh";
+    const char *file = "/.bettersh/history";
+    size_t n;
+    char *dir;
+    char *path;
+    if (!ctx->btr) {
+        return;
+    }
+    if (env_get(&ctx->env, "HISTFILE", &set) && set && set[0]) {
+        return;
+    }
+    if (!env_get(&ctx->env, "HOME", &home) || !home || !home[0]) {
+        return;
+    }
+    n = strlen(home);
+    if (home[n - 1] == '/') {
+        tail = ".bettersh";
+        file = ".bettersh/history";
+    }
+    dir = xmalloc(n + strlen(tail) + 1);
+    memcpy(dir, home, n);
+    memcpy(dir + n, tail, strlen(tail) + 1);
+    if (ensure_dir(dir) != 0) {
+        free(dir);
+        return;
+    }
+    free(dir);
+    path = xmalloc(n + strlen(file) + 1);
+    memcpy(path, home, n);
+    memcpy(path + n, file, strlen(file) + 1);
+    env_set(&ctx->env, "HISTFILE", path);
+    free(path);
+}
+
+/* Interactive btr and bsh read ~/.btrrc. A missing file is skipped. exit in
+   the file ends the shell before the prompt. bettersh -i does not read it. */
+static void source_btrrc(EvalCtx *ctx) {
+    const char *home = NULL;
+    size_t n;
+    const char *tail;
+    char *path;
+    if (!ctx->btr) {
+        return;
+    }
+    if (!env_get(&ctx->env, "HOME", &home) || !home || !home[0]) {
+        return;
+    }
+    n = strlen(home);
+    tail = home[n - 1] == '/' ? ".btrrc" : "/.btrrc";
+    path = xmalloc(n + strlen(tail) + 1);
+    memcpy(path, home, n);
+    memcpy(path + n, tail, strlen(tail) + 1);
+    source_file(ctx, path);
+    free(path);
+}
+
 /* A login shell reads the system profile, then the home profile. A missing
    file is skipped. exit in either file ends the shell before the prompt. */
 static void source_login(EvalCtx *ctx) {
@@ -319,6 +392,10 @@ int interact_run(int argc, char **argv, char **envp, const ShellStart *start) {
     if (argv_is_login(name)) {
         source_login(&ctx);
     }
+    if (!ctx.exit_req) {
+        source_btrrc(&ctx);
+    }
+    btr_histfile(&ctx);
     hist_load(&ctx);
     if (!env_get(&ctx.env, "PS1", NULL)) {
         env_set(&ctx.env, "PS1", geteuid() == 0 ? "# " : "$ ");

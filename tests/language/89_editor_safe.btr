@@ -1,0 +1,87 @@
+#!/usr/bin/env bettersh
+# Text that must not reach the terminal as control codes, wide text, tabs, and path quoting.
+import std/fs
+import std/ui
+import std/edit
+import std/edit_files
+
+let esc = chr(27)
+let e = edit.app(40, 8)
+edit.load(e, "@{ esc }[2J@{ esc }]52;c;eA==@{ chr(7) }x\n@{ chr(155) }31m!@{ chr(0) }@{ chr(127) }\n", "evil.txt")
+let shot = edit.paint(e)
+println(shot.contains("@{ esc }[2J"))
+println(shot.contains("@{ esc }]52"))
+println(shot.contains(chr(155)))
+println(shot.contains(chr(7)))
+println(shot.contains(chr(0)))
+let rows = edit.frame(e).split("\n")
+println(rows[2])
+println(rows[3])
+println(ui.width(rows[2]) == 40)
+edit.key(e, "end")
+println(edit.cursor(e))
+
+let e = edit.app(30, 8)
+edit.load(e, "漢字かな ok\n\tx\ttab\n", "wide.txt")
+let rows = edit.frame(e).split("\n")
+println(rows[2])
+println(rows[3])
+println(ui.width(rows[2]))
+println(edit.cursor(e))
+edit.key(e, "end")
+println(edit.sels(e))
+println(edit.cursor(e))
+edit.keys_in(e, ["down", "home", "right", "right"])
+println(edit.sels(e))
+println(edit.cursor(e))
+edit.click(e, 9, 3, "")
+println(edit.sels(e))
+edit.click(e, 8, 3, "")
+println(edit.sels(e))
+
+let e = edit.app(24, 6)
+let long = "0123456789abcdefghijklmnopqrstuvwxyz"
+edit.load(e, "@{ long }\n", "long.txt")
+edit.key(e, "end")
+println(edit.frame(e).split("\n")[1])
+println(edit.cursor(e))
+edit.key(e, "home")
+println(edit.frame(e).split("\n")[1])
+
+if fs.kind("/tmp/btr-safe") != "dir" { fs.mkdir("/tmp/btr-safe") }
+let old = fs.list("/tmp/btr-safe")
+let i = 0
+while i < old.length {
+  if fs.kind("/tmp/btr-safe/@{ old[i] }") == "file" { fs.remove("/tmp/btr-safe/@{ old[i] }") }
+  let i = i + 1
+}
+fs.write("/tmp/btr-safe/zzspace file.txt", "spaced\n")
+fs.write("/tmp/btr-safe/.hide", "h\n")
+fs.write("/tmp/btr-safe/visible.txt", "v\n")
+let many = edit_files.split_paths("/tmp/a.btr /tmp/b.btr")
+println(many.length)
+println(many[1])
+let one = edit_files.split_paths("\"/tmp/btr-safe/zzspace file.txt\"")
+println(one.length)
+println(one[0])
+let escaped = edit_files.split_paths("/tmp/btr-safe/zzspace\\ file.txt")
+println(escaped[0])
+println(edit_files.token_tail("/tmp/a.btr /tmp/b"))
+println(edit_files.token_head("/tmp/a.btr /tmp/b"))
+println(edit_files.choices("/tmp/btr-safe/").shown.join(","))
+println(edit_files.choices("/tmp/btr-safe/.").shown.join(","))
+println(edit_files.complete_at("/tmp/btr-safe/zz", 0))
+
+let e = edit.app(50, 10)
+edit.key(e, "ctrl-o")
+edit.type_text(e, "/tmp/btr-safe/zz")
+edit.key(e, "tab")
+println(e.prompt.text)
+edit.key(e, "enter")
+println(edit.current(e).path)
+println(edit.text(e))
+edit.key(e, "ctrl-o")
+edit.type_text(e, "/tmp/btr-safe")
+edit.key(e, "enter")
+println(e.side.open)
+println(e.side.root)

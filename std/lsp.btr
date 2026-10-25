@@ -6,12 +6,21 @@ import std/strings
 
 # Speaks Language Server Protocol on a pipe. The editor attaches any server command.
 
+# The LSP language id for a file extension. Servers such as typescript-language-server
+# pick their parser from it, so TSX and JSX need their own ids.
 fn language(ext) {
   if ext == null { return "" }
   if ext == "btr" { return "bettersh" }
-  if ext == "py" { return "python" }
+  if ext == "py" || ext == "pyi" { return "python" }
   if ext == "rs" { return "rust" }
-  if ext == "js" { return "javascript" }
+  if ext == "js" || ext == "mjs" || ext == "cjs" { return "javascript" }
+  if ext == "jsx" { return "javascriptreact" }
+  if ext == "ts" || ext == "mts" || ext == "cts" { return "typescript" }
+  if ext == "tsx" { return "typescriptreact" }
+  if ext == "sh" || ext == "bash" { return "shellscript" }
+  if ext == "h" { return "c" }
+  if ext == "cc" || ext == "cpp" || ext == "cxx" || ext == "hpp" { return "cpp" }
+  if ext == "md" { return "markdown" }
   return ext
 }
 
@@ -196,6 +205,7 @@ fn fresh(id, full, text, root, file) {
     jump_ok: false,
     hold: false,
     fail: "",
+    incr: false,
     root: root
   }
 }
@@ -389,6 +399,23 @@ fn on_request(session, id, method) {
   return send_json(session, reply_err(id))
 }
 
+fn is_two(n) {
+  if kind(n) == "int" || kind(n) == "float" { return n == 2 }
+  return false
+}
+
+# A server that advertises incremental sync may take a line range. Others get the whole document.
+fn sync_incremental(result) {
+  if result == null || kind(result) != "map" { return false }
+  if !result.has("capabilities") || kind(result.capabilities) != "map" { return false }
+  let caps = result.capabilities
+  if !caps.has("textDocumentSync") { return false }
+  let sync = caps.textDocumentSync
+  if is_two(sync) { return true }
+  if kind(sync) == "map" && sync.has("change") { return is_two(sync.change) }
+  return false
+}
+
 fn on_response(session, msg) {
   let id = msg.id
   if session.wait == 0 || id != session.wait { return session }
@@ -405,7 +432,10 @@ fn on_response(session, msg) {
   let result = null
   if msg.has("result") { let result = msg.result }
   let session = map_set(session, "result", result)
-  if id == 1 { return note_ready(session) }
+  if id == 1 {
+    let session = map_set(session, "incr", sync_incremental(result))
+    return note_ready(session)
+  }
   return session
 }
 
@@ -528,9 +558,39 @@ fn begin(cmd, file, text, root) {
   let session = map_set(session, "wait", id)
   let session = map_set(session, "got", false)
   let session = send_json(session, rpc(id, "initialize", init_params(session)))
-  let session = wait_for(session, 100)
+  # A slow server answers later. The editor keeps pumping until it does.
+  let session = wait_for(session, 30)
   if session.ready { return pump(session, 30, 20) }
   return session
+}
+
+# Sends one line. old_u16 is the previous line's length in UTF-16 code units.
+fn sync_line(session, row, old_u16, line) {
+  if session == null || session.shut { return session }
+  let session = map_set(session, "items", [])
+  let session = map_set(session, "pick", 0)
+  if !session.ready || session.dead { return session }
+  let ver = session.version + 1
+  let session = map_set(session, "version", ver)
+  let start = {}
+  let start = map_set(start, "line", row)
+  let start = map_set(start, "character", 0)
+  let endp = {}
+  let endp = map_set(endp, "line", row)
+  let endp = map_set(endp, "character", old_u16)
+  let range = {}
+  let range = map_set(range, "start", start)
+  let range = map_set(range, "end", endp)
+  let change = {}
+  let change = map_set(change, "range", range)
+  let change = map_set(change, "text", line)
+  let td = {}
+  let td = map_set(td, "uri", session.uri)
+  let td = map_set(td, "version", ver)
+  let params = {}
+  let params = map_set(params, "textDocument", td)
+  let params = map_set(params, "contentChanges", [change])
+  return send_json(session, note("textDocument/didChange", params))
 }
 
 # Sends the whole document. Items from the previous completion are cleared.

@@ -226,6 +226,7 @@ static const Builtin table[] = {
     {"command", cmd_command, 0},
     {"continue", cmd_continue, 1},
     {"echo", cmd_echo, 0},
+    {"edit", cmd_edit, 0},
     {"eval", cmd_eval, 1},
     {"exec", cmd_true, 1},
     {"exit", cmd_exit, 1},

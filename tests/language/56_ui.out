@@ -13,145 +13,55 @@ ctrl-c
 ctrl-s
 delete
 left
-one
-two
-one
-two
-
-one
-wo
-true
-one
-QZwo
-one
-wo
-one
-wo
-wo
-one
-wo
-1
-0
-0:1
-1:1
-0:1
-save
-1
-quit
-save
-true
-true
-quit
-quit
-abcd
-ab
-Z
-ab
-aYb
-   1 ab                                 
-   2 cd                                 
-                                        
-                                        
-note.txt  1:1  normal                   
-i a o  x dd yy p  u  / n N  :w :q       
-22
-29
-true
-true
-28
-29
-true
-true
-true
-1
-é
-1
-8
-8
-2
-8
-8
-10000
-5
-2
-3
-ab
-ab
-
-3
-7
-9
-7
-3
-0
-2
-5
-9
-4
-3
-6
-foo bar
-foo bar
-true
-ab
-ab
-ab
-# ab
-ab
-  # ab
-AZ1
-1
-Az1
-Az1
-2
-a
-0
-a
-insert
-1
-
-insert
-1
-0
-0
-0
-4
-2
-no match
-no match
-0
-8
-cat
-not found
-ab
-ab
-cd
-1
-cd
-ab
-1
-ab
-cd
-0
-0
-ab
-cd
-b
-ab
-b
-Zab
-ab
-normal
-true
-	ab
-foo
-ba
-1
-Z
-ab
 ctrl-d
 ctrl-r
 ctrl-w
 ctrl-/
-3
+true
+1
+ctrl-left
+shift-up
+ctrl-shift-right
+alt-down
+ctrl-pageup
+shift-delete
+f5
+ctrl-f12
+f1
+ctrl-shift-p
+ctrl-enter
+ctrl-c
+ctrl-`
+escape
+ctrl-backspace
+super-right
+c
+true
+true
+a | b rest=0
+ctrl-up | shift-right | ctrl-delete | ctrl-shift-p rest=0
+mouse:down:0:10:5:false:false:false: | mouse:up:0:10:5:false:false:false: | mouse:drag:0:11:5:false:false:false: | mouse:wheel:0:3:3:false:false:false:down | mouse:wheel:0:3:3:false:false:false:up rest=0
+mouse:down:0:1:1:false:false:true: | mouse:down:0:2:2:false:true:false: | mouse:down:0:3:3:true:false:false: | mouse:down:2:4:4:false:false:false: | mouse:down:1:5:5:false:false:false: | mouse:move:3:6:6:false:false:false: rest=0
+x | paste[hello/world/end] | y rest=0
+x rest=10
+ rest=1
+ rest=5
+alt-x | alt-shift-x | alt-backspace | alt-enter | alt-space rest=0
+ą | ę rest=0
+ rest=1
+text[0123456789abcdefghij] rest=0
+ctrl-space | ctrl-a | ctrl-backspace | tab | enter | ctrl-\ | ctrl-] | ctrl-/ rest=0
+f1 | f5 | shift-f12 | shift-tab | focus-in | focus-out rest=0
+escape | ctrl-enter | ctrl-backspace | ctrl-` | ctrl-space | ctrl-shift-tab rest=0
+ rest=0
+paste[one two] rest=0
+true
+escape
+alt-shift-o
+cut
+0
+8
+8
 2
+8
+8

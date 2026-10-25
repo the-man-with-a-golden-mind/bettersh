@@ -1,0 +1,53 @@
+false
+true
+true
+panel
+shell
+Tab switches Shell, REPL, and Run. Enter runs the line. Esc goes back to the text.
+$ echo hi
+hi
+$ false
+exit 1
+repl
+panel
+text
+false
+run
+Tab switches Shell, REPL, and Run. Enter runs the line. Esc goes back to the text.
+$ echo hi
+hi
+$ false
+exit 1
+btr> let n = 4
+btr> println(n * 2)
+8
+btr> fn f() {
+…
+btr> return 7 }
+btr> println(f())
+7
+run work.btr
+RUN
+ File  Edit  Selection  Find  View  Goto  Tools                 
+ work.btr ×                                                     
+  1 println("RUN")                                              
+  2 let z = 1                                                   
+                                                                
+                                                                
+                                                                
+                                                                
+                                                                
+                                                                
+                                                                
+                                                                
+                                                                
+─[Run] │ REPL │ Shell ─  tab mode   esc text   ^` close         
+btr> println(f())                                               
+7                                                               
+run work.btr                                                    
+RUN                                                             
+args>                                                           
+ Line 1, Column 1    Panel · Enter runs · Tab mode · Esc back   
+2:1
+false
+text

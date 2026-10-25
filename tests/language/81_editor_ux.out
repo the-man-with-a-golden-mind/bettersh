@@ -1,0 +1,46 @@
+start: 1:1 [fooBar baz_qux|    indented line|last]
+word right: 1:7 [fooBar baz_qux|    indented line|last]
+word right 2: 1:15 [fooBar baz_qux|    indented line|last]
+word left: 1:8 [fooBar baz_qux|    indented line|last]
+subword right: 1:4 [fooBar baz_qux|    indented line|last]
+subword right 2: 1:7 [fooBar baz_qux|    indented line|last]
+subword left: 1:4 [fooBar baz_qux|    indented line|last]
+smart home: 2:5 [fooBar baz_qux|    indented line|last]
+home again: 2:1 [fooBar baz_qux|    indented line|last]
+end: 2:18 [fooBar baz_qux|    indented line|last]
+up keeps goal: 1:15 [fooBar baz_qux|    indented line|last]
+down keeps goal: 2:18 [fooBar baz_qux|    indented line|last]
+shift select: 1:1-2:2 [fooBar baz_qux|    indented line|last]
+left collapses: 1:1 [fooBar baz_qux|    indented line|last]
+right collapses: 1:15 [fooBar baz_qux|    indented line|last]
+ctrl shift right: 1:1-1:15 [fooBar baz_qux|    indented line|last]
+up at top: 1:1 [fooBar baz_qux|    indented line|last]
+doc end: 3:5 [fooBar baz_qux|    indented line|last]
+down at bottom: 3:5 [fooBar baz_qux|    indented line|last]
+typed: 1:12 [hello world]
+undo word: 1:7 [hello ]
+undo all: 1:1 []
+false
+redo: 1:7 [hello ]
+true
+replace all: 1:2 [x]
+backspace empty: 1:1 []
+tab in spaces: 1:9 [        ab]
+backspace to stop: 1:5 [    ab]
+backspace again: 1:1 [ab]
+pair paren: 1:4 [xf()]
+skip closer: 1:6 [xf(a)]
+backspace pair: 1:7 [xf(a) ]
+pair quote: 1:10 [xf(a)  "s"]
+apostrophe: 1:16 [xf(a)  "s" it's]
+wrap selection: 1:2-1:17 [(xf(a)  "s" it's)]
+python indent: 3:5 [def f():|    pass|    ]
+split braces: 2:5 [fn x() {|    |}]
+after brace: 4:1 [fn x() {|    y|}|]
+blank line enter: 3:3 [  a  ||  ]
+true
+true
+true
+true
+false
+2

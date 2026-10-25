@@ -869,6 +869,12 @@ int host_builtin(VM *vm, int id, int argc) {
             return -1;
         }
         return host_map_set(vm);
+    case BI_BTR_EVAL:
+        if (argc != 1) {
+            vm_fail(vm, "wrong number of arguments");
+            return -1;
+        }
+        return host_btr_eval(vm);
     default: {
         int rc = host_fs_builtin(vm, id, argc);
         if (rc != 1) {

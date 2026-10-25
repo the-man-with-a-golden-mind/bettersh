@@ -1,11 +1,15 @@
 #include "interp_priv.h"
 
+#include "error.h"
+#include "host.h"
 #include "map.h"
 #include "module.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 int ifail(Interp *ip, const MNode *node, const char *msg) {
     if (!ip->failed) {
@@ -675,4 +679,148 @@ int interp_run(Arena *arena, const char *filename, const char *src, size_t src_l
         return 2;
     }
     return ip.status & 255;
+}
+
+/* One environment for every btr_eval in this process. The arena holds every
+   chunk's AST, because closures keep those nodes. Neither is freed. */
+static Arena repl_arena;
+static Interp repl_ip;
+static int repl_ready;
+
+static void repl_prepare(VM *vm) {
+    if (!repl_ready) {
+        arena_init(&repl_arena);
+        memset(&repl_ip, 0, sizeof repl_ip);
+        repl_ip.arena = &repl_arena;
+        repl_ip.filename = "repl";
+        repl_ip.env = ienv_new(NULL);
+        repl_ip.depth = 1;
+        repl_ready = 1;
+    }
+    repl_ip.mods = vm->mods;
+    repl_ip.jobs = vm->jobs;
+    repl_ip.argc = vm->argc;
+    repl_ip.argv = vm->argv;
+    repl_ip.envp = vm->envp;
+    repl_ip.failed = 0;
+    repl_ip.status = 0;
+    repl_ip.returning = 0;
+    repl_ip.stop = 0;
+    value_unref(repl_ip.ret);
+    repl_ip.ret = NULL;
+}
+
+static char *read_fd_all(int fd, size_t *out_len) {
+    char *buf = NULL;
+    size_t len = 0;
+    size_t cap = 0;
+    *out_len = 0;
+    for (;;) {
+        char tmp[512];
+        ssize_t n = read(fd, tmp, sizeof tmp);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        if (n == 0) {
+            break;
+        }
+        if (len + (size_t)n + 1 > cap) {
+            size_t next = cap ? cap * 2 : 64;
+            char *grown;
+            while (next < len + (size_t)n + 1) {
+                next *= 2;
+            }
+            grown = realloc(buf, next);
+            if (!grown) {
+                free(buf);
+                return NULL;
+            }
+            buf = grown;
+            cap = next;
+        }
+        memcpy(buf + len, tmp, (size_t)n);
+        len += (size_t)n;
+    }
+    if (!buf) {
+        buf = malloc(1);
+        if (!buf) {
+            return NULL;
+        }
+    }
+    buf[len] = '\0';
+    *out_len = len;
+    return buf;
+}
+
+int host_btr_eval(VM *vm) {
+    Value *arg = vm_pop(vm);
+    const char *src;
+    size_t len;
+    int fds[2] = {-1, -1};
+    int saved = -1;
+    int status = 0;
+    char *err = NULL;
+    size_t err_len = 0;
+    Map *map;
+    Diag diag;
+    MNode *root = NULL;
+    if (!arg) {
+        return -1;
+    }
+    if (arg->kind != VAL_STR || !arg->u.str || memchr(arg->u.str->data, '\0', arg->u.str->len)) {
+        value_unref(arg);
+        vm_fail(vm, "bad operand");
+        return -1;
+    }
+    repl_prepare(vm);
+    len = arg->u.str->len;
+    src = arena_strndup(&repl_arena, arg->u.str->data, len);
+    value_unref(arg);
+    if (!src) {
+        vm_fail(vm, "out of memory");
+        return -1;
+    }
+    if (pipe(fds) != 0) {
+        vm_fail(vm, "cannot capture");
+        return -1;
+    }
+    fflush(stderr);
+    saved = dup(STDERR_FILENO);
+    if (saved >= 0) {
+        dup2(fds[1], STDERR_FILENO);
+    }
+    diag_init(&diag, &repl_arena);
+    repl_ip.src = src;
+    repl_ip.src_len = len;
+    if (mod_parse(&repl_arena, &diag, "repl", src, len, &root) != 0) {
+        diag_print(&diag, stderr);
+        status = 2;
+    } else if (root && eval_stmt(&repl_ip, root) != 0) {
+        status = 2;
+    } else if (repl_ip.failed) {
+        status = 2;
+    } else {
+        status = repl_ip.status & 255;
+    }
+    fflush(stderr);
+    if (saved >= 0) {
+        dup2(saved, STDERR_FILENO);
+        close(saved);
+    }
+    close(fds[1]);
+    err = read_fd_all(fds[0], &err_len);
+    close(fds[0]);
+    if (!err) {
+        vm_fail(vm, "out of memory");
+        return -1;
+    }
+    map = map_new();
+    map_set(map, "status", value_int(status));
+    map_set(map, "err", value_str(str_new(err, err_len)));
+    free(err);
+    vm_push(vm, value_map(map));
+    return 0;
 }

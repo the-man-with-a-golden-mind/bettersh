@@ -5,3 +5,8 @@
 /tests/value_test
 /tests/verify_test
 /tests/chunk_fuzz
+/tests/osrun
+/tests/lsp_peer
+/tests/pty_edit
+/tests/pty_interact
+/tests/pty_btr

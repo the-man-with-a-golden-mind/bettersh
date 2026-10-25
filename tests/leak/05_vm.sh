@@ -30,7 +30,12 @@ import std/path
 println(path.join("a", "b"))
 import std/ui
 import std/edit
-println(edit.text(edit.buffer("ab\n", "n")))
+let e = edit.app(30, 8)
+edit.load(e, "ab\n", "n.btr")
+edit.type_text(e, "pri")
+edit.keys_in(e, ["escape", "ctrl-d", "ctrl-shift-d", "ctrl-z", "ctrl-p", "escape"])
+println(edit.text(e))
+println(edit.frame(e).length > 0)
 let screen = ui.blank(8, 3)
 let screen = ui.box(screen, 0, 0, 3, 8, "z")
 let screen = ui.put(screen, 1, 2, "ok")

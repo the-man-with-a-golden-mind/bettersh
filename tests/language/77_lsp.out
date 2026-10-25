@@ -16,7 +16,7 @@ int
 map
 red
 magenta
-python3 -u last.py
+bettersh
 /tmp/proj
 true
 false
@@ -42,11 +42,12 @@ file:///tmp/a%20b.btr
 1
 ctrl-u
 ctrl-x
+let name
 true
-true
-
+No definition found
 let name
 false
+true
 true
 ab
 true

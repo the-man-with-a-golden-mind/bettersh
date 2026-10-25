@@ -3,6 +3,7 @@
 #include "bcode.h"
 #include "chunk.h"
 #include "disasm.h"
+#include "editor_launch.h"
 #include "error.h"
 #include "eval.h"
 #include "interact.h"
@@ -28,11 +29,15 @@ extern char **environ;
 static void usage(FILE *out) {
     fputs("usage: bettersh [options] [file [argument...]]\n"
           "       bettersh [options] -c command [name [argument...]]\n"
+          "       bettersh -e file\n"
+          "       bettersh edit file\n"
           "       bettersh --compile --output image file\n"
           "       bettersh --bytecode image [argument...]\n"
           "       bettersh --help\n"
           "       bettersh --version\n"
-          "A copy named btr or bsh starts the themed terminal shell.\n",
+          "A copy named btr or bsh starts the themed terminal shell.\n"
+          "-e file and edit file open the editor. -e before another option still means errexit.\n"
+          "btr -- edit still runs a file named edit.\n",
           out);
 }
 
@@ -333,10 +338,13 @@ struct Invoke {
     int bytecode;
     const char *output;
     int cflag;
+    int eflag;
     int sflag;
     int monitor_set;
     int interactive_set;
     const char *command;
+    const char *edit_file;
+    int saw_dd;
     int rest;
 };
 
@@ -349,6 +357,7 @@ static int parse_invoke(int argc, char **argv, struct Invoke *inv) {
         int on;
         const char *p;
         if (strcmp(arg, "--") == 0) {
+            inv->saw_dd = 1;
             i++;
             break;
         }
@@ -452,6 +461,13 @@ static int parse_invoke(int argc, char **argv, struct Invoke *inv) {
                 }
                 break;
             }
+            /* A lone -e followed by a file opens the editor. -e before
+               another option stays errexit, as in -e -c and -e --compile. */
+            if (*p == 'e' && on && p == arg + 1 && p[1] == '\0' && i + 1 < argc && argv[i + 1][0] != '-') {
+                inv->edit_file = argv[++i];
+                inv->eflag = 1;
+                break;
+            }
             if (apply_letter(&inv->start, &inv->monitor_set, &inv->interactive_set, &inv->sflag, *p, on) != 0) {
                 fprintf(stderr, "bettersh: unknown option %s\n", arg);
                 usage(stderr);
@@ -521,6 +537,28 @@ int main(int argc, char **argv) {
     }
     if (invoked_as_btr(argc > 0 ? argv[0] : NULL)) {
         inv.start.btr = 1;
+    }
+    if (inv.eflag) {
+        if (inv.cflag) {
+            fprintf(stderr, "bettersh: -e cannot be combined with -c\n");
+            return 1;
+        }
+        if (inv.rest < argc) {
+            fprintf(stderr, "bettersh: -e: too many arguments\n");
+            return 1;
+        }
+        return editor_launch(argc > 0 ? argv[0] : NULL, 1, (char **)&inv.edit_file, inv.do_interp);
+    }
+    /* `btr edit file` is the editor. `btr -- edit` still runs a file named edit. */
+    if (!inv.cflag && !inv.compile && !inv.bytecode && !inv.dump_ast && !inv.dump_bc && !inv.trace_bc &&
+        !inv.sflag && !inv.saw_dd && inv.rest < argc && strcmp(argv[inv.rest], "edit") == 0) {
+        for (int i = inv.rest + 1; i < argc; i++) {
+            if (!argv[i] || !argv[i][0]) {
+                fprintf(stderr, "bettersh: edit: usage: edit [path...]\n");
+                return 2;
+            }
+        }
+        return editor_launch(argc > 0 ? argv[0] : NULL, argc - inv.rest - 1, argv + inv.rest + 1, inv.do_interp);
     }
     read_in = 0;
     if (inv.cflag) {

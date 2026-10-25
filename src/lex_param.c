@@ -233,6 +233,29 @@ static int scan_simple_param(Scan *scan, int line, int col) {
     return 0;
 }
 
+/* ${name[index]} is legal text. The error is reported when it is expanded. */
+static int skip_subscript(Lexer *lx, int line, int col) {
+    int depth = 0;
+    if (peekc(lx) != '[') {
+        return lx_error(lx, line, col, "bad substitution");
+    }
+    while (1) {
+        int c = peekc(lx);
+        if (c < 0 || c == '\n') {
+            return lx_error(lx, line, col, "missing '}'");
+        }
+        nextc(lx);
+        if (c == '[') {
+            depth++;
+        } else if (c == ']') {
+            depth--;
+            if (depth == 0) {
+                return 0;
+            }
+        }
+    }
+}
+
 static int scan_brace(Scan *scan, int line, int col) {
     Lexer *lx = scan->lx;
     nextc(lx);
@@ -252,6 +275,18 @@ static int scan_brace(Scan *scan, int line, int col) {
     }
     ParamOp op = P_NONE;
     Word *nested = NULL;
+    if (!is_len && peekc(lx) == '[') {
+        if (skip_subscript(lx, line, col) < 0) {
+            return -1;
+        }
+        skip_bnl(lx);
+        if (peekc(lx) != '}') {
+            return lx_error(lx, lx->line, lx->col, "missing '}'");
+        }
+        nextc(lx);
+        push_param(scan, line, col, name, P_SUBSCRIPT, NULL);
+        return 0;
+    }
     if (is_len) {
         skip_bnl(lx);
         if (peekc(lx) != '}') {

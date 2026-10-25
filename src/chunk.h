@@ -84,6 +84,10 @@ typedef enum MethId {
     METH_REPEAT,
     METH_REVERSE,
     METH_VISIBLE,
+    METH_SET,
+    METH_INSERT,
+    METH_DELETE,
+    METH_CLONE,
     METH_COUNT
 } MethId;
 
@@ -129,6 +133,10 @@ typedef enum BuiltinId {
     BI_PIPE_CLOSE,
     BI_KIND,
     BI_MAP_SET,
+    BI_TERM_TAKE,
+    BI_TERM_IDLE,
+    BI_BTR_EVAL,
+    BI_CLOCK_MS,
     BI_COUNT
 } BuiltinId;
 

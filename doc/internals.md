@@ -67,7 +67,7 @@ The image format is private to bettersh. Changes may require a version bump, and
 
 ## Interactive history and terminal state
 
-Interactive history uses length-prefixed records: a decimal byte count, one space, the command bytes, and a newline. Records longer than 8192 bytes are not accepted. A malformed record is skipped through the next newline, and the warning is printed once per session. A missing history file is ignored; other read and write failures are reported.
+Interactive history uses length-prefixed records: a decimal byte count, one space, the command bytes, and a newline. Records longer than 8192 bytes are not accepted. A malformed record is skipped through the next newline, and the warning is printed once per session. A missing history file is ignored; other read and write failures are reported. `btr` and `bsh` set `HISTFILE` to `~/.bettersh/history` when it is unset, after creating that directory. A repeated command is not stored twice in a row.
 
 Terminal code saves the previous terminal settings before entering raw mode and restores them on normal exit and through the registered exit handler. Job control prefers `/dev/tty` and falls back to a terminal attached to one of the standard streams.
 

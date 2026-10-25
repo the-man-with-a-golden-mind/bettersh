@@ -1,0 +1,108 @@
+#!/usr/bin/env bettersh
+
+# Quote-aware paths for the open and save rows.
+# A path without a space, a quote, or a backslash is left unchanged.
+
+fn needs_quote(text) {
+  let i = 0
+  while i < text.length {
+    let ch = text[i]
+    if ch == " " || ch == "\"" || ch == "\\" { return true }
+    let i = i + 1
+  }
+  return false
+}
+
+fn quote(text) {
+  if text == null || !needs_quote(text) { return text }
+  let out = "\""
+  let i = 0
+  while i < text.length {
+    let ch = text[i]
+    if ch == "\\" || ch == "\"" { let out = "@{ out }\\@{ ch }" }
+    else { let out = "@{ out }@{ ch }" }
+    let i = i + 1
+  }
+  return "@{ out }\""
+}
+
+fn unquote(text) {
+  if text == null { return "" }
+  let out = ""
+  let i = 0
+  while i < text.length {
+    let ch = text[i]
+    if ch == "\\" && i + 1 < text.length {
+      let out = "@{ out }@{ text[i + 1] }"
+      let i = i + 2
+    } else if ch == "\"" {
+      let i = i + 1
+    } else {
+      let out = "@{ out }@{ ch }"
+      let i = i + 1
+    }
+  }
+  return out
+}
+
+# Index of the last raw token. Quotes and backslashes keep their spaces.
+fn token_at(text) {
+  let start = 0
+  let i = 0
+  let quote = false
+  let live = false
+  while i < text.length {
+    let ch = text[i]
+    if ch == "\\" && i + 1 < text.length {
+      if !live { let start = i }
+      let live = true
+      let i = i + 2
+    } else if ch == "\"" {
+      if !live { let start = i }
+      let live = true
+      let quote = !quote
+      let i = i + 1
+    } else if ch == " " && !quote {
+      let live = false
+      let i = i + 1
+    } else {
+      if !live { let start = i }
+      let live = true
+      let i = i + 1
+    }
+  }
+  if !live { return text.length }
+  return start
+}
+
+fn tail(text) {
+  if text == null { return "" }
+  return text.slice(token_at(text), text.length)
+}
+
+fn split(text) {
+  let out = []
+  let cur = ""
+  let i = 0
+  let quote = false
+  if text == null { return out }
+  while i < text.length {
+    let ch = text[i]
+    if ch == "\\" && i + 1 < text.length {
+      let cur = "@{ cur }@{ text[i + 1] }"
+      let i = i + 2
+    } else if ch == "\"" {
+      let quote = !quote
+      let i = i + 1
+    } else if ch == " " && !quote {
+      if cur.length > 0 { let out = out.push(cur) }
+      let cur = ""
+      let i = i + 1
+    } else {
+      let cur = "@{ cur }@{ ch }"
+      let i = i + 1
+    }
+  }
+  if cur.length > 0 { let out = out.push(cur) }
+  return out
+}

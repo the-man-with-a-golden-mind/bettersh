@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install dash, curl, and python3
-        run: sudo apt-get update && sudo apt-get install -y dash curl python3
+      - name: Install dash and curl
+        run: sudo apt-get update && sudo apt-get install -y dash curl
       - name: Ten thousand scripts
         run: make fuzz-nightly

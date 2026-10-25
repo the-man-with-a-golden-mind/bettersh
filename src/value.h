@@ -14,6 +14,13 @@ typedef struct Chunk Chunk;
 typedef struct Cell {
     unsigned refs;
     struct Value *value;
+    /* Collector scratch: the walk that last counted this cell, and its
+       upvalue slots inside that walk's group. */
+    uint32_t walk;
+    uint32_t slots;
+    uint32_t mark;
+    /* A cell of the program's top frame. Its value counts it in roots. */
+    int root;
 } Cell;
 
 struct IEnv;
@@ -50,7 +57,17 @@ typedef enum ValKind {
 
 typedef struct Value {
     unsigned refs;
+    /* Holders that are roots for the whole run: a loaded module's export map
+       and the module cache. A rooted value is never part of a garbage cycle. */
+    unsigned roots;
     ValKind kind;
+    /* Collector scratch: the walk whose group holds this value, and the
+       pointers to it from inside that group. */
+    uint32_t walk;
+    uint32_t inbound;
+    /* Epoch at which this array or map was proved not to reach itself.
+       0 means that proof is not current. Functions stay uncached. */
+    uint64_t cycle_seen;
     union {
         int b;
         int64_t i;
@@ -72,6 +89,12 @@ Value *value_map(Map *map);
 Value *value_fn(Chunk *chunk, uint16_t nparams, uint16_t nlocals);
 void value_ref(Value *value);
 void value_unref(Value *value);
+/* A value was stored into a container. Proofs expire when that value
+   might already point at a parent. A map or array of only scalars does not. */
+void value_note_edge(Value *value);
+/* Marks map as a root that lasts for the run, or clears that mark. Each value
+   it holds counts the map as a root holder while the mark is set. */
+void value_root_map(Map *map, int on);
 
 Cell *cell_new(Value *value);
 void cell_ref(Cell *cell);

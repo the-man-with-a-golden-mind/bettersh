@@ -62,6 +62,7 @@ static const char *param_op_spell(ParamOp op) {
         return ":}";
     case P_LEN:
     case P_NONE:
+    case P_SUBSCRIPT:
         return "";
     }
     return "";

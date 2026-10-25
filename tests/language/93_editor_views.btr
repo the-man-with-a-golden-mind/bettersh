@@ -1,0 +1,108 @@
+#!/usr/bin/env bettersh
+# Word wrap, code folding, the minimap, and saved sessions.
+import std/fs
+import std/edit
+
+fn rows(e, from, to) {
+  let all = edit.frame(e).split("\n")
+  let i = from
+  while i <= to {
+    println(all[i])
+    let i = i + 1
+  }
+}
+
+let e = edit.app(30, 9)
+edit.load(e, "alpha beta gamma delta epsilon zeta\nshort\n", "w.txt")
+edit.key(e, "alt-z")
+println(e.msg)
+rows(e, 2, 5)
+println(edit.cursor(e))
+edit.key(e, "down")
+println(edit.sels(e))
+println(edit.cursor(e))
+edit.key(e, "down")
+println(edit.sels(e))
+edit.key(e, "down")
+println(edit.sels(e))
+edit.key(e, "up")
+println(edit.sels(e))
+edit.key(e, "end")
+println(edit.cursor(e))
+edit.click(e, 8, 4, "")
+println(edit.sels(e))
+edit.key(e, "alt-z")
+rows(e, 2, 3)
+
+let src = "fn a() {\n  one\n\n  two\n}\nfn b() {\n  three\n}\nlast\n"
+let e = edit.app(30, 12)
+edit.load(e, src, "f.btr")
+edit.keys_in(e, ["down", "ctrl-shift-["])
+rows(e, 2, 7)
+println(edit.sels(e))
+edit.key(e, "down")
+println(edit.sels(e))
+edit.key(e, "up")
+println(edit.sels(e))
+edit.keys_in(e, ["end", "right"])
+println(edit.sels(e))
+edit.keys_in(e, ["ctrl-home", "ctrl-shift-]"])
+rows(e, 2, 4)
+edit.keys_in(e, ["ctrl-k", "ctrl-1"])
+rows(e, 2, 5)
+edit.keys_in(e, ["ctrl-end", "ctrl-home"])
+edit.keys_in(e, ["ctrl-shift-down"])
+println(edit.text(e).split("\n")[0])
+edit.keys_in(e, ["ctrl-z", "ctrl-k", "ctrl-1"])
+edit.click(e, 2, 3, "")
+rows(e, 2, 4)
+edit.keys_in(e, ["ctrl-k", "ctrl-1", "ctrl-f"])
+edit.type_text(e, "two")
+edit.key(e, "escape")
+println(edit.sels(e))
+rows(e, 2, 6)
+edit.keys_in(e, ["ctrl-home", "ctrl-k", "ctrl-1", "ctrl-home"])
+edit.keys_in(e, ["end"])
+edit.type_text(e, " ")
+rows(e, 2, 4)
+edit.keys_in(e, ["ctrl-k", "ctrl-j"])
+rows(e, 2, 3)
+
+let lines = []
+let i = 0
+while i < 60 {
+  let lines = lines.push("    code @{ i } here")
+  let i = i + 1
+}
+let e = edit.app(70, 10)
+edit.load(e, "@{ lines.join("\n") }\n", "m.btr")
+edit.key(e, "ctrl-shift-p")
+edit.type_text(e, "minimap")
+edit.key(e, "enter")
+let shot = edit.frame(e).split("\n")
+println(shot[2])
+println(shot[3])
+edit.click(e, 65, 9, "")
+println(edit.current(e).top)
+edit.key(e, "f1")
+edit.type_text(e, "toggle minimap")
+edit.key(e, "enter")
+println(edit.frame(e).split("\n")[2])
+
+let root = "/tmp/btr-session"
+if fs.kind(root) != "dir" { fs.mkdir(root) }
+fs.write("@{ root }/one.txt", "1\n2\n3\n")
+fs.write("@{ root }/two.txt", "x\n")
+let e = edit.app(40, 10)
+edit.open_path(e, "@{ root }/one.txt")
+edit.keys_in(e, ["down", "down", "end"])
+edit.open_path(e, "@{ root }/two.txt")
+edit.load(e, "unsaved\n", null)
+edit.key(e, "ctrl-pageup")
+println(edit.save_session(e, "@{ root }/session"))
+fs.remove("@{ root }/two.txt")
+let again = edit.app(40, 10)
+println(edit.restore_session(again, "@{ root }/session"))
+println(again.names.join(" "))
+println(edit.sels(again))
+println(edit.restore_session(edit.app(40, 10), "@{ root }/none"))

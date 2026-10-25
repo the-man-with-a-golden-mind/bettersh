@@ -130,11 +130,27 @@ static void drop_bound_fns(Value *value, DropSeen *seen) {
     }
 }
 
+/* The cache is going away, so its maps stop being roots. The collector can
+   then free the cycles between module functions. */
+static void unroot(ModEntry *entry) {
+    Value *value = entry->value;
+    if (!value || !entry->chunk || value->kind != VAL_MAP) {
+        return;
+    }
+    value_root_map(value->u.map, 0);
+    if (value->roots > 0) {
+        value->roots--;
+    }
+}
+
 void modcache_free(ModCache *cache) {
     int i;
     DropSeen seen;
     if (!cache) {
         return;
+    }
+    for (i = 0; i < cache->len; i++) {
+        unroot(&cache->items[i]);
     }
     memset(&seen, 0, sizeof seen);
     for (i = 0; i < cache->len; i++) {
@@ -572,6 +588,7 @@ static void cache_remove(ModCache *cache, ModEntry *entry) {
     if (i < 0 || i >= cache->len) {
         return;
     }
+    unroot(&cache->items[i]);
     value_unref(cache->items[i].value);
     ienv_unref(cache->items[i].env);
     chunk_free(cache->items[i].chunk);
@@ -695,6 +712,7 @@ int module_load(ModCache *cache, Jobs *jobs, Arena *arena, const char *from_file
             if (vm_run_module(arena, key, src, len, chunk, argc, argv, envp, cache, jobs, &map) != 0) {
                 goto fail;
             }
+            map->roots++;
             cache->items[slot].value = map;
         }
     }

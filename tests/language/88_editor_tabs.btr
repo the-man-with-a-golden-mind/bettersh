@@ -1,0 +1,143 @@
+#!/usr/bin/env bettersh
+# Tabs, the open and save rows, closing with unsaved changes, quitting, and the side bar.
+import std/fs
+import std/edit
+import std/edit_doc as doc
+
+fn tabs(e) {
+  let out = []
+  let i = 0
+  while i < e.docs.length {
+    let mark = ""
+    if i == e.at { let mark = "*" }
+    if doc.dirty(e.docs[i]) { let mark = "@{ mark }+" }
+    let out = out.push("@{ e.names[i] }@{ mark }")
+    let i = i + 1
+  }
+  return out.join(" ")
+}
+
+fn prompt(e) {
+  if e.prompt == null { return "(no prompt)" }
+  return "@{ e.prompt.label }: @{ e.prompt.text } [@{ e.prompt.shown.join(",") }] pick=@{ e.prompt.pick }"
+}
+
+let root = "/tmp/btr-tabs"
+if fs.kind(root) != "dir" { fs.mkdir(root) }
+if fs.kind("@{ root }/sub") != "dir" { fs.mkdir("@{ root }/sub") }
+if fs.kind("@{ root }/other") != "dir" { fs.mkdir("@{ root }/other") }
+fs.write("@{ root }/alpha.btr", "alpha\n")
+fs.write("@{ root }/beta.btr", "beta\n")
+fs.write("@{ root }/sub/inner.txt", "inner\n")
+fs.write("@{ root }/other/alpha.btr", "other alpha\n")
+if fs.exists("@{ root }/made.txt") { fs.remove("@{ root }/made.txt") }
+if fs.exists("@{ root }/new.txt") { fs.remove("@{ root }/new.txt") }
+
+let e = edit.app(60, 16)
+println(tabs(e))
+edit.key(e, "ctrl-o")
+edit.type_text(e, "@{ root }/")
+println(prompt(e))
+edit.key(e, "down")
+edit.key(e, "tab")
+println(prompt(e))
+edit.key(e, "tab")
+println(prompt(e))
+edit.key(e, "escape")
+println(prompt(e))
+edit.key(e, "ctrl-o")
+edit.type_text(e, "@{ root }/alpha.btr @{ root }/b")
+edit.key(e, "tab")
+println(prompt(e))
+edit.key(e, "enter")
+println(tabs(e))
+edit.key(e, "ctrl-o")
+edit.type_text(e, "@{ root }/other/alpha.btr")
+edit.key(e, "enter")
+println(tabs(e))
+edit.key(e, "ctrl-o")
+edit.type_text(e, "@{ root }/alpha.btr")
+edit.key(e, "enter")
+println(tabs(e))
+edit.key(e, "ctrl-pagedown")
+println(tabs(e))
+edit.key(e, "ctrl-pageup")
+edit.key(e, "ctrl-pageup")
+println(tabs(e))
+edit.key(e, "alt-3")
+println(tabs(e))
+
+edit.type_text(e, "X")
+println(tabs(e))
+edit.key(e, "ctrl-w")
+println(e.overlay.text)
+edit.key(e, "escape")
+println(tabs(e))
+edit.key(e, "ctrl-w")
+edit.key(e, "n")
+println(tabs(e))
+edit.key(e, "ctrl-shift-t")
+println(tabs(e))
+println(edit.text(e))
+
+edit.key(e, "ctrl-n")
+println(tabs(e))
+edit.type_text(e, "made")
+edit.key(e, "ctrl-s")
+println("@{ e.prompt.label }: [@{ e.prompt.text }] lists @{ e.prompt.shown.length > 0 }")
+edit.type_text(e, "@{ root }/made.txt")
+edit.key(e, "enter")
+println(tabs(e))
+println(fs.load("@{ root }/made.txt"))
+edit.key(e, "ctrl-n")
+edit.type_text(e, "again")
+edit.key(e, "ctrl-s")
+edit.type_text(e, "@{ root }/made.txt")
+edit.key(e, "enter")
+println(e.overlay.text)
+edit.key(e, "escape")
+println(fs.load("@{ root }/made.txt"))
+edit.key(e, "ctrl-s")
+edit.type_text(e, "@{ root }/sub")
+edit.key(e, "enter")
+println(e.msg)
+
+let e = edit.app(60, 16)
+edit.load(e, "keep\n", "@{ root }/new.txt")
+edit.type_text(e, "!")
+edit.load(e, "two\n", "@{ root }/two.txt")
+edit.type_text(e, "?")
+edit.key(e, "ctrl-q")
+println(e.overlay.text)
+edit.key(e, "enter")
+println(e.overlay.text)
+edit.key(e, "d")
+println(e.quit)
+println(fs.load("@{ root }/two.txt") == null)
+println(fs.load("@{ root }/new.txt"))
+
+let e = edit.app(60, 16)
+edit.load(e, "x\n", "@{ root }/q.txt")
+edit.type_text(e, "y")
+edit.key(e, "ctrl-q")
+edit.key(e, "escape")
+println(e.quit)
+println(e.overlay == null)
+
+let e = edit.app(60, 12)
+let junk = map_set(e.side, "root", root)
+edit.key(e, "ctrl-k")
+edit.key(e, "ctrl-b")
+println(edit.frame(e))
+edit.key(e, "ctrl-0")
+println(e.focus)
+edit.keys_in(e, ["down", "enter"])
+println(edit.frame(e).split("\n")[3])
+println(edit.frame(e).split("\n")[4])
+edit.keys_in(e, ["down", "enter"])
+println(tabs(e))
+println(e.focus)
+edit.keys_in(e, ["ctrl-0", "up", "left"])
+println(edit.frame(e).split("\n")[4])
+edit.key(e, "escape")
+println(e.focus)

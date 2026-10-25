@@ -1,0 +1,13 @@
+#!/usr/bin/env bettersh
+# Dash 0.5.12 prints one extra blank line after the xtrace of `unset PS4`.
+# Drop only the first occurrence, then require the traces to match.
+let dash = readfile(arg(1))
+let ours = readfile(arg(2))
+if dash != ours {
+  let needle = "unset PS4\n\n"
+  let at = dash.index(needle)
+  if at >= 0 {
+    let dash = "@{ dash.slice(0, at) }unset PS4\n@{ dash.slice(at + needle.length, dash.length) }"
+  }
+}
+if dash != ours { exit 1 }

@@ -30,7 +30,9 @@ typedef enum ParamOp {
     P_PCT,
     P_PCT_PCT,
     /* ${name:}word} — the value, or empty when unset or null, then word. */
-    P_COLON_CONCAT
+    P_COLON_CONCAT,
+    /* ${name[index]} is parsed, then rejected when the expansion runs. */
+    P_SUBSCRIPT
 } ParamOp;
 
 typedef enum NodeKind {

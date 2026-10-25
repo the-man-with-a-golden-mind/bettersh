@@ -56,8 +56,8 @@ The version in the tree is still 0.1.0. The local `v0.1.0` tag is an earlier com
 
 ## Interactive shell
 
-`btr` and `bsh` are a themed prompt and a small line editor, not a finished login-shell replacement. The login path reads `/etc/profile` and `~/.profile` only.
+`btr` and `bsh` are a themed prompt and a small line editor, not a finished login-shell replacement. A login shell reads `/etc/profile` and `~/.profile`. Interactive `btr` and `bsh` then read `~/.btrrc`.
 
 In vi mode, several motions still step by byte, so a multibyte character can be split. The prompt redraw counts every Unicode scalar as one column, so wide characters and combining marks can leave the cursor in the wrong place.
 
-Tab completion splits words on spaces and tabs. It skips a quoted, escaped, or globbing word, does not complete command options, and inserts a file name that contains a space without quoting it.
+Tab completion splits words on spaces and tabs. It skips a quoted, escaped, or globbing word, and inserts a file name that contains a space without quoting it. Option and subcommand help is a fixed list for the shell builtins and a few common commands, not every flag of every program. When several names match, they are shown under the line and Tab and the arrow keys move through them.

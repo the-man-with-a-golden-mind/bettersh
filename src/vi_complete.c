@@ -1,21 +1,22 @@
 #include "vi_complete.h"
 
 #include "arena.h"
+#include "vi_opts.h"
 
 #include <dirent.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-enum { NAME_MAXN = 128, SCAN_MAX = 4000 };
+enum { SCAN_MAX = 4000 };
 
 static const char *const builtins[] = {
-    "alias", "bg",    "break",    "cd",      "command", "continue", "echo",    "eval",
-    "exec",  "exit",  "export",   "false",   "fc",      "fg",       "getopts", "hash",
-    "jobs",  "kill",  "local",    "printf",  "pwd",     "read",     "readonly", "return",
-    "set",   "shift", "source",   "test",    "times",   "trap",     "true",    "type",
+    "alias", "bg",    "break",    "cd",      "command", "continue", "echo",    "edit",
+    "eval",  "exec",  "exit",     "export",  "false",   "fc",       "fg",      "getopts",
+    "hash",  "jobs",  "kill",     "local",   "printf",  "pwd",      "read",    "readonly",
+    "return","set",   "shift",    "source",  "test",    "times",    "trap",    "true",
+    "type",
     "ulimit", "umask", "unalias", "unset",   "wait",    NULL};
 
 static char *dup_n(const char *s, size_t n) {
@@ -35,7 +36,7 @@ static int starts(const char *name, const char *prefix, size_t n) {
 
 static int add_name(char **names, int *n, const char *name) {
     int i;
-    if (!name || !name[0] || *n >= NAME_MAXN) {
+    if (!name || !name[0] || *n >= VI_MATCH_MAX) {
         return 0;
     }
     if (strlen(name) > 1024) {
@@ -49,13 +50,6 @@ static int add_name(char **names, int *n, const char *name) {
     names[*n] = dup_s(name);
     (*n)++;
     return 1;
-}
-
-static void free_names(char **names, int n) {
-    int i;
-    for (i = 0; i < n; i++) {
-        free(names[i]);
-    }
 }
 
 static int cmp_name(const void *a, const void *b) {
@@ -100,32 +94,31 @@ static void splice(char **buf, size_t *len, size_t *cap, size_t from, size_t to,
     (*buf)[*len] = '\0';
 }
 
-static void list_names(char **names, int n) {
+void vi_matches_clear(ViMatches *matches) {
     int i;
-    fputc('\n', stderr);
-    for (i = 0; i < n; i++) {
-        fputs(names[i], stderr);
-        fputs("  ", stderr);
+    if (!matches) {
+        return;
     }
-    fputc('\n', stderr);
-    fflush(stderr);
+    for (i = 0; i < matches->n && i < VI_MATCH_MAX; i++) {
+        free(matches->name[i]);
+        free(matches->help[i]);
+        matches->name[i] = NULL;
+        matches->help[i] = NULL;
+    }
+    matches->n = 0;
+    matches->start = 0;
+    matches->end = 0;
+    matches->command = 0;
+    matches->trail = 0;
 }
 
-static size_t common_len(char **names, int n) {
-    size_t k;
-    int i;
-    if (n <= 0) {
-        return 0;
+void vi_replace_word(char **buf, size_t *cap, size_t *len, size_t *cur, size_t start, size_t end,
+                     const char *put) {
+    if (!buf || !*buf || !cap || !len || !cur || !put || start > end || end > *len) {
+        return;
     }
-    k = strlen(names[0]);
-    for (i = 1; i < n; i++) {
-        size_t j = 0;
-        while (j < k && names[i][j] == names[0][j]) {
-            j++;
-        }
-        k = j;
-    }
-    return k;
+    splice(buf, len, cap, start, end, put);
+    *cur = start + strlen(put);
 }
 
 static void add_commands(char **names, int *n, const char *prefix, size_t plen) {
@@ -143,7 +136,7 @@ static void add_commands(char **names, int *n, const char *prefix, size_t plen) 
         path = "/usr/bin:/bin";
     }
     p = path;
-    while (*p && *n < NAME_MAXN && scanned < SCAN_MAX) {
+    while (*p && *n < VI_MATCH_MAX && scanned < SCAN_MAX) {
         const char *start = p;
         size_t dn;
         char *dir;
@@ -160,7 +153,7 @@ static void add_commands(char **names, int *n, const char *prefix, size_t plen) 
         }
         dp = opendir(dir);
         if (dp) {
-            while ((ent = readdir(dp)) != NULL && *n < NAME_MAXN && scanned < SCAN_MAX) {
+            while ((ent = readdir(dp)) != NULL && *n < VI_MATCH_MAX && scanned < SCAN_MAX) {
                 char *full;
                 scanned++;
                 if (ent->d_name[0] == '.' && (plen == 0 || prefix[0] != '.')) {
@@ -241,7 +234,7 @@ static void add_files(char **names, int *n, const char *buf, size_t start, size_
     base = dup_n(buf + base_at, base_n);
     dp = opendir(dir);
     if (dp) {
-        while ((ent = readdir(dp)) != NULL && *n < NAME_MAXN && scanned < SCAN_MAX) {
+        while ((ent = readdir(dp)) != NULL && *n < VI_MATCH_MAX && scanned < SCAN_MAX) {
             char *full;
             char *shown;
             scanned++;
@@ -266,35 +259,37 @@ static void add_files(char **names, int *n, const char *buf, size_t start, size_
     free(base);
 }
 
-int vi_complete(char **buf, size_t *cap, size_t *len, size_t *cur, int again) {
+int vi_matches_at(const char *buf, size_t len, size_t cur, ViMatches *matches) {
     size_t start;
     size_t end;
     size_t i;
     int command = 1;
     int has_slash = 0;
-    char *names[NAME_MAXN];
-    int n = 0;
-    char *prefix;
-    size_t plen;
-    size_t shared;
-    int rc = 0;
-    char *put = NULL;
-    if (!buf || !*buf || !cap || !len || !cur || *cur > *len) {
+    if (!buf || !matches || cur > len) {
         return 0;
     }
-    end = *cur;
-    start = *cur;
-    while (start > 0 && (*buf)[start - 1] != ' ' && (*buf)[start - 1] != '\t') {
+    end = cur;
+    start = cur;
+    while (start > 0 && buf[start - 1] != ' ' && buf[start - 1] != '\t') {
         start--;
     }
-    while (end < *len && (*buf)[end] != ' ' && (*buf)[end] != '\t') {
+    while (end < len && buf[end] != ' ' && buf[end] != '\t') {
         end++;
     }
-    if (start == *cur) {
-        return 0;
+    if (start == cur) {
+        int blank = 1;
+        for (i = 0; i < start; i++) {
+            if (buf[i] != ' ' && buf[i] != '\t') {
+                blank = 0;
+                break;
+            }
+        }
+        if (blank) {
+            return 0;
+        }
     }
-    for (i = start; i < *cur; i++) {
-        char c = (*buf)[i];
+    for (i = start; i < cur; i++) {
+        char c = buf[i];
         if (c == '\'' || c == '"' || c == '`' || c == '*' || c == '?' || c == '[' || c == '$' || c == '\\') {
             return 0;
         }
@@ -303,50 +298,27 @@ int vi_complete(char **buf, size_t *cap, size_t *len, size_t *cur, int again) {
         }
     }
     for (i = 0; i < start; i++) {
-        if ((*buf)[i] != ' ' && (*buf)[i] != '\t') {
+        if (buf[i] != ' ' && buf[i] != '\t') {
             command = 0;
         }
     }
-    plen = *cur - start;
-    prefix = dup_n(*buf + start, plen);
-    if (command && !has_slash) {
-        add_commands(names, &n, prefix, plen);
-    } else {
-        add_files(names, &n, *buf, start, *cur);
+    matches->start = start;
+    matches->end = end;
+    matches->command = command && !has_slash;
+    matches->trail = 0;
+    matches->n = 0;
+    if (vi_opts_at(buf, start, cur, matches->name, matches->help, &matches->n, &matches->trail)) {
+        return matches->n > 0;
     }
-    free(prefix);
-    if (n == 0) {
+    if (matches->command) {
+        add_commands(matches->name, &matches->n, buf + start, cur - start);
+        matches->trail = 1;
+    } else {
+        add_files(matches->name, &matches->n, buf, start, cur);
+    }
+    if (matches->n == 0) {
         return 0;
     }
-    qsort(names, (size_t)n, sizeof names[0], cmp_name);
-    shared = common_len(names, n);
-    if (n == 1) {
-        size_t ln = strlen(names[0]);
-        int slash = ln > 0 && names[0][ln - 1] == '/';
-        if (command && !has_slash && !slash) {
-            put = xmalloc(ln + 2);
-            memcpy(put, names[0], ln);
-            put[ln] = ' ';
-            put[ln + 1] = '\0';
-        } else {
-            put = dup_s(names[0]);
-        }
-    } else if (shared > plen) {
-        put = dup_n(names[0], shared);
-    }
-    if (put) {
-        splice(buf, len, cap, start, end, put);
-        *cur = start + strlen(put);
-        rc |= VI_COMP_CHANGED;
-        free(put);
-    }
-    if (n > 1) {
-        rc |= VI_COMP_MULTI;
-        if (again) {
-            list_names(names, n);
-            rc |= VI_COMP_LISTED;
-        }
-    }
-    free_names(names, n);
-    return rc;
+    qsort(matches->name, (size_t)matches->n, sizeof matches->name[0], cmp_name);
+    return 1;
 }

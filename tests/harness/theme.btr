@@ -1,0 +1,36 @@
+#!/usr/bin/env bettersh
+# Checks the editor theme bytes: one cut per section. A piece starts with ESC [ 0 ; and its codes.
+
+fn cut(text, sep) {
+  let at = text.index(sep)
+  if at < 0 { return null }
+  return [text.slice(0, at), text.slice(at + sep.length, text.length)]
+}
+
+fn need(text, sep) {
+  let pair = cut(text, sep)
+  if pair == null { exit 1 }
+  return pair
+}
+
+let b = readfile(arg(1))
+let pair = need(b, "PLAIN\n")
+let head = pair[0]
+let rest = pair[1]
+if head != "false\n" { exit 1 }
+let pair = need(rest, "THEME\n")
+let plain = pair[0]
+let rest = pair[1]
+let pair = need(rest, "PY\n")
+let theme = pair[0]
+let rest = pair[1]
+let pair = need(rest, "TXT\n")
+let py = pair[0]
+let txt = pair[1]
+let esc = chr(27)
+if plain.contains(";35m") { exit 1 }
+if !theme.contains(";35mlet@{ esc }[") { exit 1 }
+if !py.contains(";35mdef@{ esc }[") { exit 1 }
+if !py.contains(";32m\"s\"@{ esc }[") { exit 1 }
+if !py.contains(";2m# c@{ esc }[") { exit 1 }
+if txt.contains(";35m") { exit 1 }

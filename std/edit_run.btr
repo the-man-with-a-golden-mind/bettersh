@@ -1,0 +1,672 @@
+#!/usr/bin/env bettersh
+
+# Bottom panel: run the buffer, a bettersh REPL, or a shell line.
+# Commands stream beside the editor. The REPL remembers lets.
+
+import std/ui
+import std/strings
+import std/fs
+import std/path
+
+fn fresh() {
+  return {
+    open: false,
+    focus: false,
+    mode: "shell",
+    lines: [],
+    input: "",
+    icol: 0,
+    cwd: "",
+    repl: "",
+    pending: "",
+    hist: [],
+    hpos: 0,
+    scroll: 0,
+    gen: 0,
+    prev: "",
+    bin: "",
+    pid: "",
+    job: 0,
+    job_file: "",
+    job_buf: "",
+    job_status: 0,
+    busy: false,
+    kind: "",
+    repl_id: 0,
+    repl_file: ""
+  }
+}
+
+fn sh_quote(text) {
+  let out = "'"
+  let i = 0
+  if text == null { return "''" }
+  while i < text.length {
+    let ch = text[i]
+    if ch == "'" { let out = "@{ out }'\"'\"'" }
+    else { let out = "@{ out }@{ ch }" }
+    let i = i + 1
+  }
+  return "@{ out }'"
+}
+
+fn num(text) {
+  let n = 0
+  let i = 0
+  while i < text.length {
+    let c = text[i]
+    if c < "0" || c > "9" { return n }
+    let n = n * 10 + "0123456789".index(c)
+    let i = i + 1
+  }
+  return n
+}
+
+fn word_of(text) {
+  let t = text.trim()
+  let i = 0
+  while i < t.length {
+    if t[i] == " " || t[i] == "\n" || t[i] == "\t" { return t.slice(0, i) }
+    let i = i + 1
+  }
+  return t
+}
+
+let box = fresh()
+
+fn scratch(name) {
+  let dir = getenv("TMPDIR")
+  if dir == null || dir == "" { let dir = "/tmp" }
+  let pid = box.pid
+  if pid == "" { let pid = capture("printf %s $PPID").trim() }
+  let box = map_set(box, "pid", pid)
+  let box = map_set(box, "gen", box.gen + 1)
+  let stem = path.stem(name)
+  let ext = path.ext(name)
+  let leaf = "@{ stem }-@{ box.pid }-@{ box.gen }"
+  if ext != "" { let leaf = "@{ leaf }.@{ ext }" }
+  if dir.length > 0 && dir[dir.length - 1] == "/" { return "@{ dir }@{ leaf }" }
+  return "@{ dir }/@{ leaf }"
+}
+
+fn put(key, value) {
+  let box = map_set(box, key, value)
+}
+
+fn touch() {
+  put("gen", box.gen + 1)
+}
+
+fn bin_of() {
+  if box.bin != "" { return box.bin }
+  let raw = capture("ps -ww -p $PPID -o command=")
+  let word = word_of(raw)
+  let bin = word
+  if word == "" || word.index("/") < 0 {
+    let found = capture("command -v @{ word } || command -v bettersh || echo bettersh").trim()
+    let bin = found
+  }
+  put("bin", bin)
+  return bin
+}
+
+fn trim_lines(lines) {
+  if lines.length <= 300 { return lines }
+  let out = []
+  let i = lines.length - 300
+  while i < lines.length {
+    let out = out.push(lines[i])
+    let i = i + 1
+  }
+  return out
+}
+
+fn add_line(text) {
+  let lines = trim_lines(box.lines.push(text))
+  put("lines", lines)
+  touch()
+}
+
+fn note_status(status) {
+  if status == 0 { return }
+  add_line("exit @{ status }")
+}
+
+fn shell_script(line) {
+  let head = "trap 'st=$?; echo __PWD:$PWD; echo __ST:$st; exit 0' EXIT\n"
+  if box.cwd != "" { let head = "@{ head }cd -- @{ sh_quote(box.cwd) } || exit 1\n" }
+  return "@{ head }@{ line }\n"
+}
+
+fn spill_line(line) {
+  let at = line.index("@@ST:")
+  if at >= 0 {
+    if at > 0 { add_line(line.slice(0, at)) }
+    put("job_status", num(line.slice(at + 5, line.length)))
+    return
+  }
+  if strings.starts(line, "__ST:") {
+    put("job_status", num(line.slice(5, line.length)))
+    return
+  }
+  if strings.starts(line, "__PWD:") {
+    let cwd = line.slice(6, line.length)
+    if cwd != "" { put("cwd", cwd) }
+    return
+  }
+  add_line(line)
+}
+
+fn absorb(chunk) {
+  if chunk == null || chunk == "" { return false }
+  let before = box.gen
+  let buf = "@{ box.job_buf }@{ chunk }"
+  let parts = buf.split("\n")
+  let n = parts.length
+  let i = 0
+  let last = n - 1
+  while i < last {
+    spill_line(parts[i])
+    let i = i + 1
+  }
+  put("job_buf", parts[last])
+  return box.gen != before
+}
+
+fn flush_tail() {
+  let tail = box.job_buf
+  put("job_buf", "")
+  if tail == "" { return }
+  spill_line(tail)
+}
+
+fn note_job() {
+  let status = box.job_status
+  put("job_status", 0)
+  if status < 0 { return }
+  note_status(status)
+}
+
+fn drop_file(key) {
+  let file = ""
+  if key == "job" { let file = box.job_file }
+  if key == "repl" { let file = box.repl_file }
+  if file != "" && fs.exists(file) { fs.remove(file) }
+  if key == "job" { put("job_file", "") }
+  if key == "repl" { put("repl_file", "") }
+}
+
+fn close_pipe(id) {
+  if id == 0 { return }
+  pipe_close(id)
+}
+
+fn finish_shell() {
+  flush_tail()
+  note_job()
+  drop_file("job")
+  close_pipe(box.job)
+  put("job", 0)
+  put("busy", false)
+  put("kind", "")
+}
+
+fn end_repl_turn() {
+  flush_tail()
+  note_job()
+  drop_file("repl")
+  put("busy", false)
+  put("kind", "")
+}
+
+fn repl_died() {
+  flush_tail()
+  note_job()
+  add_line("repl stopped")
+  drop_file("repl")
+  close_pipe(box.repl_id)
+  put("repl_id", 0)
+  put("busy", false)
+  put("kind", "")
+}
+
+fn current_id() {
+  if box.kind == "repl" { return box.repl_id }
+  return box.job
+}
+
+fn take_chunk(ms) {
+  let id = current_id()
+  if id == 0 { return null }
+  return pipe_read(id, ms)
+}
+
+fn after_chunk(chunk) {
+  if chunk == null {
+    if box.kind == "repl" { repl_died() }
+    else { finish_shell() }
+    return true
+  }
+  absorb(chunk)
+  if box.kind == "repl" && box.job_status >= 0 {
+    end_repl_turn()
+    return true
+  }
+  return false
+}
+
+fn drain_sync() {
+  let i = 0
+  while i < 20000 {
+    if !box.busy { return }
+    let chunk = take_chunk(30)
+    if chunk != "" {
+      let done = after_chunk(chunk)
+      if done { return }
+    }
+    let i = i + 1
+  }
+  add_line("timed out")
+  if box.kind == "repl" { repl_died() }
+  else { finish_shell() }
+}
+
+fn begin_busy(kind) {
+  put("kind", kind)
+  put("job_buf", "")
+  put("job_status", 0 - 1)
+  put("busy", true)
+}
+
+fn launch(script, file, kind) {
+  let id = pipe_open(script)
+  put("job", id)
+  put("job_file", file)
+  begin_busy(kind)
+  if !term_tty() { drain_sync() }
+}
+
+fn submit_shell(line) {
+  add_line("$ @{ line }")
+  if box.busy {
+    add_line("busy")
+    return
+  }
+  launch(shell_script(line), "", "shell")
+}
+
+# Runs text as the file at p. A .sh file runs with sh, anything else with bettersh.
+fn submit_run(p, text, args) {
+  let label = "untitled"
+  if p != null && p != "" {
+    let base = path.base(p)
+    if base != "" { let label = base }
+  }
+  let shown = "run @{ label }"
+  if args != "" { let shown = "@{ shown } @{ args }" }
+  add_line(shown)
+  if box.busy {
+    add_line("busy")
+    return
+  }
+  let name = "bettersh-edit-run.btr"
+  let bin = bin_of()
+  if p != null && path.ext(p) == "sh" {
+    let name = "bettersh-edit-run.sh"
+    let bin = "sh"
+  }
+  let file = scratch(name)
+  if !fs.save(file, text) {
+    add_line("cannot write")
+    return
+  }
+  let tail = ""
+  if args != "" { let tail = " @{ args }" }
+  let script = "trap 'st=$?; echo __ST:$st; exit 0' EXIT\n@{ sh_quote(bin) } @{ sh_quote(file) }@{ tail } 2>&1\n"
+  launch(script, file, "run")
+}
+
+fn balanced(text) {
+  let n = 0
+  let i = 0
+  while i < text.length {
+    let ch = text[i]
+    if ch == "{" { let n = n + 1 }
+    if ch == "}" { let n = n - 1 }
+    if n < 0 { return false }
+    let i = i + 1
+  }
+  return n == 0
+}
+
+fn repl_driver() {
+  let at = chr(64)
+  let q = chr(34)
+  let bs = chr(92)
+  let piece = "@{ q }@{ at }{ acc }@{ at }{ line }@{ bs }n@{ q }"
+  let st = "@{ q }@@ST:@{ at }{ got.status }@@@{ q }"
+  return "while true {\n  let acc = @{ q }@{ q }\n  let line = readln()\n  if line == null { exit 0 }\n  while line != null && line != @{ q }@@END@@@{ q } {\n    let acc = @{ piece }\n    let line = readln()\n  }\n  if line == null { exit 0 }\n  let got = btr_eval(acc)\n  if got.err != @{ q }@{ q } { print(got.err) }\n  println(@{ st })\n}\n"
+}
+
+fn ensure_repl() {
+  if box.repl_id != 0 { return true }
+  let file = scratch("bettersh-edit-repl.btr")
+  if !fs.save(file, repl_driver()) {
+    add_line("cannot write")
+    return false
+  }
+  let cmd = "@{ sh_quote(bin_of()) } @{ sh_quote(file) }"
+  let id = pipe_open(cmd)
+  put("repl_id", id)
+  put("repl_file", file)
+  return true
+}
+
+fn submit_repl(line) {
+  let chunk = "@{ box.pending }@{ line }\n"
+  add_line("btr> @{ line }")
+  if !balanced(chunk) {
+    put("pending", chunk)
+    add_line("…")
+    return
+  }
+  put("pending", "")
+  if box.busy {
+    add_line("busy")
+    return
+  }
+  if !ensure_repl() { return }
+  let payload = "@{ chunk }@@END@@\n"
+  if pipe_write(box.repl_id, payload) != true {
+    repl_died()
+    return
+  }
+  begin_busy("repl")
+  if !term_tty() { drain_sync() }
+}
+
+fn finish_input(line) {
+  if line != "" {
+    let hist = box.hist.push(line)
+    put("hist", hist)
+  }
+  put("hpos", box.hist.length)
+  put("input", "")
+  put("icol", 0)
+  put("scroll", 0)
+  touch()
+}
+
+fn greet() {
+  if box.lines.length > 0 { return }
+  add_line("Tab switches Shell, REPL, and Run. Enter runs the line. Esc goes back to the text.")
+}
+
+# Opens the panel in mode and gives it the keys.
+fn open_mode(mode) {
+  put("open", true)
+  put("focus", true)
+  put("mode", mode)
+  put("input", "")
+  put("icol", 0)
+  greet()
+  touch()
+}
+
+# Runs the file in the panel.
+fn run_file(p, text) {
+  open_mode("run")
+  submit_run(p, text, "")
+}
+
+fn close_panel() {
+  put("open", false)
+  put("focus", false)
+  touch()
+}
+
+fn blur() {
+  put("focus", false)
+  touch()
+}
+
+fn focus_panel() {
+  if !box.open { return }
+  put("focus", true)
+  touch()
+}
+
+fn label_run() {
+  if box.mode == "run" { return "[Run] " }
+  return " Run "
+}
+
+fn label_repl() {
+  if box.mode == "repl" { return "[REPL] " }
+  return " REPL "
+}
+
+fn label_shell() {
+  if box.mode == "shell" { return "[Shell] " }
+  return " Shell "
+}
+
+fn title_line() {
+  let tail = ""
+  if box.mode == "shell" && box.cwd != "" { let tail = "  @{ box.cwd }" }
+  return "─@{ label_run() }│@{ label_repl() }│@{ label_shell() }─  tab mode   esc text   ^` close@{ tail }"
+}
+
+fn prompt_mark() {
+  if box.mode == "repl" { return "btr>" }
+  if box.mode == "run" { return "args>" }
+  return "$"
+}
+
+fn prompt_line() {
+  return "@{ prompt_mark() } @{ box.input }"
+}
+
+fn body_line(slot, deck) {
+  let mid = deck - 2
+  if mid < 1 { return "" }
+  let lines = box.lines
+  let start = lines.length - mid - box.scroll
+  if start < 0 { let start = 0 }
+  let at = start + slot - 1
+  if at < 0 || at >= lines.length { return "" }
+  return lines[at]
+}
+
+# Text for row slot of a panel deck rows high. Row 0 is the title and the last row is the prompt.
+fn row_text(slot, deck) {
+  if slot == 0 { return title_line() }
+  if slot == deck - 1 { return prompt_line() }
+  return body_line(slot, deck)
+}
+
+fn ins(ch) {
+  let input = box.input
+  let at = box.icol
+  if at < 0 { let at = 0 }
+  if at > input.length { let at = input.length }
+  let input = "@{ input.slice(0, at) }@{ ch }@{ input.slice(at, input.length) }"
+  put("input", input)
+  put("icol", at + ch.length)
+  touch()
+}
+
+fn back_input() {
+  let at = box.icol
+  let input = box.input
+  if at > input.length { let at = input.length }
+  if at < 1 { return }
+  let input = "@{ input.slice(0, at - 1) }@{ input.slice(at, input.length) }"
+  put("input", input)
+  put("icol", at - 1)
+  touch()
+}
+
+fn delete_word() {
+  let input = box.input
+  let at = box.icol
+  if at > input.length { let at = input.length }
+  let i = at
+  while i > 0 && input[i - 1] == " " { let i = i - 1 }
+  while i > 0 && input[i - 1] != " " { let i = i - 1 }
+  let input = "@{ input.slice(0, i) }@{ input.slice(at, input.length) }"
+  put("input", input)
+  put("icol", i)
+  touch()
+}
+
+fn hist_step(dir) {
+  let n = box.hist.length
+  if n == 0 { return }
+  let i = box.hpos + dir
+  if i < 0 { let i = 0 }
+  if i > n { let i = n }
+  let line = ""
+  if i < n { let line = box.hist[i] }
+  put("hpos", i)
+  put("input", line)
+  put("icol", line.length)
+  touch()
+}
+
+fn scroll_by(n) {
+  let scroll = box.scroll + n
+  if scroll < 0 { let scroll = 0 }
+  if scroll > box.lines.length { let scroll = box.lines.length }
+  put("scroll", scroll)
+  touch()
+}
+
+fn next_mode(mode) {
+  if mode == "shell" { return "repl" }
+  if mode == "repl" { return "run" }
+  return "shell"
+}
+
+# Handles one key while the panel has focus. p and text are the file for a run.
+# Returns "blur" when the keys should go back to the text, otherwise "".
+fn key(k, clip, p, text) {
+  if k == "escape" {
+    blur()
+    return "blur"
+  }
+  if k == "tab" {
+    open_mode(next_mode(box.mode))
+    return ""
+  }
+  if k == "enter" {
+    let line = box.input
+    if box.mode == "run" {
+      finish_input(line)
+      submit_run(p, text, line)
+      return ""
+    }
+    if line == "" { return "" }
+    finish_input(line)
+    if box.mode == "repl" { submit_repl(line) }
+    else { submit_shell(line) }
+    return ""
+  }
+  if k == "backspace" { back_input() }
+  else if k == "ctrl-u" || k == "ctrl-c" {
+    put("input", "")
+    put("icol", 0)
+    touch()
+  }
+  else if k == "ctrl-w" || k == "ctrl-backspace" || k == "alt-backspace" { delete_word() }
+  else if k == "ctrl-v" || k == "paste" || k == "text" { ins(clip.replace("\n", " ")) }
+  else if k == "left" {
+    if box.icol > 0 { put("icol", box.icol - 1) }
+    touch()
+  }
+  else if k == "right" {
+    if box.icol < box.input.length { put("icol", box.icol + 1) }
+    touch()
+  }
+  else if k == "home" || k == "ctrl-a" {
+    put("icol", 0)
+    touch()
+  }
+  else if k == "end" || k == "ctrl-e" {
+    put("icol", box.input.length)
+    touch()
+  }
+  else if k == "up" { hist_step(0 - 1) }
+  else if k == "down" { hist_step(1) }
+  else if k == "pageup" { scroll_by(4) }
+  else if k == "pagedown" { scroll_by(0 - 4) }
+  else if k.length == 1 { ins(k) }
+  return ""
+}
+
+# The mode whose label is under column x of the title row, or "".
+fn title_hit(x) {
+  let p0 = ui.width("─")
+  let a = ui.width(label_run())
+  let b = ui.width(label_repl())
+  let c = ui.width(label_shell())
+  if x < p0 { return "" }
+  if x < p0 + a { return "run" }
+  if x < p0 + a + 1 + b { return "repl" }
+  if x < p0 + a + 1 + b + 1 + c { return "shell" }
+  return ""
+}
+
+fn is_open() {
+  return box.open
+}
+
+fn stamp() {
+  if !box.open { return "" }
+  return "g@{ box.gen }"
+}
+
+fn focused() {
+  if !box.open { return false }
+  return box.focus
+}
+
+fn mode() {
+  return box.mode
+}
+
+fn caret_col() {
+  let prefix = "@{ prompt_mark() } "
+  return ui.width(prefix) + ui.width_at(box.input, box.icol)
+}
+
+fn text() {
+  return box.lines.join("\n")
+}
+
+fn busy() {
+  return box.busy
+}
+
+fn pump() {
+  if !box.busy { return false }
+  let before = box.gen
+  let chunk = take_chunk(0)
+  if chunk == "" { return false }
+  after_chunk(chunk)
+  return box.gen != before
+}
+
+fn shutdown() {
+  if box.busy {
+    if box.kind == "repl" { end_repl_turn() }
+    else { finish_shell() }
+  }
+  if box.repl_id != 0 {
+    close_pipe(box.repl_id)
+    put("repl_id", 0)
+  }
+  drop_file("repl")
+  put("busy", false)
+  put("kind", "")
+}

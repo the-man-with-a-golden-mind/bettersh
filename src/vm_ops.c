@@ -540,7 +540,7 @@ static int field_method(ValKind kind, int id) {
     if (id == METH_LENGTH) {
         return kind == VAL_STR || kind == VAL_ARRAY;
     }
-    if (id == METH_POP || id == METH_SORT) {
+    if (id == METH_POP || id == METH_SORT || id == METH_CLONE) {
         return kind == VAL_ARRAY;
     }
     if (id == METH_KEYS || id == METH_VALUES) {

@@ -1,0 +1,24 @@
+#!/usr/bin/env bettersh
+# Writes r0.sh .. r47.sh. The generator is the same 32-bit LCG the suite used
+# before, so the byte files stay fixed. arg(1) is the directory.
+let rng = { n: 659918 }
+
+fn nxt() {
+  let n = (rng.n * 1664525 + 1013904223) % 4294967296
+  map_set(rng, "n", n)
+  return n
+}
+
+let dir = arg(1)
+let i = 0
+while i < 48 {
+  let n = 1 + (nxt() % 80)
+  let body = ""
+  let k = 0
+  while k < n {
+    let body = "@{ body }@{ chr(nxt() % 256) }"
+    let k = k + 1
+  }
+  writefile("@{ dir }/r@{ i }.sh", body)
+  let i = i + 1
+}

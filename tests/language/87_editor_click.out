@@ -1,0 +1,27 @@
+Goto Anything
+lines.txt (lines.txt), README.md (README.md), main.btr (src/main.btr), util.btr (src/util.btr)
+main.btr (src/main.btr)
+/tmp/btr-goto/src/main.btr
+true
+start (:1), stop (:5)
+stop (:5)
+5:1
+1:1
+5:1
+1:1
+util.btr
+lines.txt (lines.txt)
+lines.txt
+Go to line 4 ()
+4:1
+4:1
+Type a line number ()
+4:1
+Command Palette
+Edit: Sort Lines (F9)
+five|four|one|three|two
+true
+Theme dracula. Add "theme name dracula" to editor.conf to keep it.
+py
+Keyboard Shortcuts
+true

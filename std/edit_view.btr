@@ -1,296 +1,1792 @@
 #!/usr/bin/env bettersh
 
+# The editor screen. Each frame is built as rows of styled pieces, then only the rows that
+# differ from the last frame are written. A piece is [style, text, width], where style is SGR
+# parameter text such as "38;2;216;222;233;48;2;46;52;64", and width is display columns.
+
 import std/ui
 import std/strings
 import std/theme
-import std/edit_syntax
+import std/edit_text
+import std/edit_doc as doc
+import std/edit_run
+import std/edit_lsp
 
-# Screen for the editor. A theme with no colors draws the same text as before.
+# Painted rows and cell styles, for the palette whose id is pal. Another palette starts over.
+let cache = { rows: {}, n: 0, codes: [], pal: 0, next: 1, shapes: {}, shaped: 0 }
 
-fn gutter_cols(buf) {
-  let n = buf.lines.length
-  if n < 1 { let n = 1 }
-  let w = 1
-  let lim = 10
-  while n >= lim && w < 16 {
-    let w = w + 1
-    let lim = lim * 10
-  }
-  if w < 4 { let w = 4 }
-  return w + 1
+# Drops cached rows and styles.
+fn reset_cache() {
+  let junk = map_set(cache, "rows", {})
+  let junk = map_set(cache, "n", 0)
+  let junk = map_set(cache, "codes", [])
 }
 
-fn carry(buf, row, top, left) {
+# Makes the cache belong to pal.
+fn use_palette(pal) {
+  if cache.pal == pal.id { return null }
+  reset_cache()
+  let junk = map_set(cache, "pal", pal.id)
+}
+
+fn atoi(text) {
+  return edit_text.to_int(text)
+}
+
+# Red, green, and blue from SGR text that holds want (38;2; or 48;2;), or null.
+fn rgb_of(style, want) {
+  if style == null || style == "" { return null }
+  let code = theme.sgr(style)
+  let at = code.index(want)
+  if at < 0 { return null }
+  let parts = code.slice(at + want.length, code.length).split(";")
+  if parts.length < 3 { return null }
+  return { r: atoi(parts[0]), g: atoi(parts[1]), b: atoi(parts[2]) }
+}
+
+fn clamp8(n) {
+  if n < 0 { return 0 }
+  if n > 255 { return 255 }
+  return n
+}
+
+fn fg(c) {
+  return "38;2;@{ c.r };@{ c.g };@{ c.b }"
+}
+
+fn bg(c) {
+  return "48;2;@{ c.r };@{ c.g };@{ c.b }"
+}
+
+fn lift(c, d) {
+  return { r: clamp8(c.r + d), g: clamp8(c.g + d), b: clamp8(c.b + d) }
+}
+
+# A mix of a and b. t is the share of b, in percent.
+fn mix(a, b, t) {
+  return { r: clamp8(a.r + (b.r - a.r) * t / 100), g: clamp8(a.g + (b.g - a.g) * t / 100), b: clamp8(a.b + (b.b - a.b) * t / 100) }
+}
+
+# The attribute codes in a theme style, without its colors.
+fn attrs_of(style) {
+  if style == null || style == "" { return "" }
+  let code = theme.sgr(style)
+  let parts = code.split(";")
+  let out = []
+  let i = 0
+  let skip = 0
+  while i < parts.length {
+    let p = parts[i]
+    if skip > 0 {
+      let skip = skip - 1
+    } else if p == "38" || p == "48" {
+      let skip = 4
+    } else if p == "1" || p == "2" || p == "3" || p == "4" || p == "7" {
+      let out = out.push(p)
+    } else if p.length == 2 && (p[0] == "3" || p[0] == "9") {
+      let out = out.push(p)
+    }
+    let i = i + 1
+  }
+  return out.join(";")
+}
+
+# The foreground part of a theme style: an RGB color, a basic color code, or attributes.
+fn fg_of(style) {
+  if style == null || style == "" { return "" }
+  let c = rgb_of(style, "38;2;")
+  let a = attrs_of(style)
+  if c == null { return a }
+  if a == "" { return fg(c) }
+  return "@{ a };@{ fg(c) }"
+}
+
+fn join_sgr(a, b) {
+  if a == "" { return b }
+  if b == "" { return a }
+  return "@{ a };@{ b }"
+}
+
+# Derived colors for the screen. A theme with an RGB status panel gets filled backgrounds.
+# Other themes use reverse video for bars and selections.
+fn palette(t) {
+  let id = cache.next
+  let junk = map_set(cache, "next", id + 1)
+  let colors = t
+  if colors == null { let colors = theme.plain() }
+  let panel = rgb_of(colors.status, "48;2;")
+  let text = rgb_of(colors.text, "38;2;")
+  let accent = rgb_of(colors.keyword, "38;2;")
+  let warm = rgb_of(colors.number, "38;2;")
+  let roles = [fg_of(colors.text), fg_of(colors.comment), fg_of(colors.string), fg_of(colors.keyword), fg_of(colors.number), fg_of(colors.function), fg_of(colors.type), fg_of(colors.constant), fg_of(colors.macro), fg_of(colors.variable), fg_of(colors.diag)]
+  if panel == null || text == null {
+    return {
+      id: id, rich: false, roles: roles, page: "", line: "", sel: "7", find: "4;7", gutter: fg_of(colors.gutter),
+      gutter_on: "1", guide: "2", bar: "7", bar_dim: "7", tab_on: "1", tab_off: "7", popup: "7", popup_on: "1",
+      accent: "1", dim: "2", diag: fg_of(colors.diag), warn: "1", caret: "7", thumb: "7"
+    }
+  }
+  if accent == null { let accent = text }
+  if warm == null { let warm = text }
+  let page = lift(panel, 0 - 18)
+  let line = lift(page, 10)
+  let sel = mix(page, accent, 32)
+  let find = mix(page, warm, 40)
+  let pop = lift(panel, 6)
+  let dimc = rgb_of(colors.gutter, "38;2;")
+  if dimc == null { let dimc = mix(page, text, 45) }
+  let guide = mix(page, text, 16)
+  let bar_fg = rgb_of(colors.status, "38;2;")
+  if bar_fg == null { let bar_fg = text }
   return {
-    lines: buf.lines,
-    row: row,
-    col: buf.col,
-    mode: buf.mode,
-    top: top,
-    pending: buf.pending,
-    yank: buf.yank,
-    undo: buf.undo,
-    dirty: buf.dirty,
-    path: buf.path,
-    cmd: buf.cmd,
-    hint: buf.hint,
-    confirm: buf.confirm,
-    request: buf.request,
-    find: buf.find,
-    anchor: buf.anchor,
-    left: left,
-    eol: buf.eol,
-    redo: buf.redo,
-    lsp: buf.lsp,
-    theme: buf.theme
+    id: id,
+    rich: true,
+    roles: roles,
+    page: bg(page),
+    line: bg(line),
+    sel: bg(sel),
+    find: bg(find),
+    gutter: fg(dimc),
+    gutter_on: fg(text),
+    guide: fg(guide),
+    bar: "@{ fg(bar_fg) };@{ bg(panel) }",
+    bar_dim: "@{ fg(dimc) };@{ bg(panel) }",
+    tab_on: "1;@{ fg(text) };@{ bg(page) }",
+    tab_off: "@{ fg(dimc) };@{ bg(panel) }",
+    popup: "@{ fg(text) };@{ bg(pop) }",
+    popup_on: "1;@{ fg(text) };@{ bg(sel) }",
+    accent: fg(accent),
+    dim: fg(dimc),
+    diag: fg_of(colors.diag),
+    warn: fg(warm),
+    caret: "7",
+    thumb: bg(mix(page, text, 22))
   }
 }
 
-fn fit(buf, cols, rows) {
-  if cols < 1 { let cols = 1 }
-  if rows < 2 { let rows = 2 }
-  let view = rows - 2
-  if view < 1 { let view = 1 }
-  let row = buf.row
-  if row < 0 { let row = 0 }
-  if row >= buf.lines.length { let row = buf.lines.length - 1 }
-  let top = buf.top
-  if top < 0 { let top = 0 }
-  if row < top { let top = row }
-  if row >= top + view { let top = row - view + 1 }
-  if top < 0 { let top = 0 }
-  let gutter = gutter_cols(buf)
-  let room = cols - 1 - gutter
-  if room < 1 { let room = 1 }
-  let line = buf.lines[row].visible()
-  let caret = ui.width_at(line, buf.col)
-  let span = ui.span(line, buf.col)
-  let left = buf.left
-  if left < 0 { let left = 0 }
-  if caret < left { let left = caret }
-  if caret + span > left + room { let left = caret + span - room }
-  if left < 0 { let left = 0 }
-  if caret < left { let left = caret }
-  return carry(buf, row, top, left)
+fn piece(style, text) {
+  return [style, text, ui.width(text)]
+}
+
+fn pad(style, n) {
+  if n < 1 { return [style, "", 0] }
+  return [style, " ".repeat(n), n]
+}
+
+fn pieces_width(list) {
+  let w = 0
+  let i = 0
+  while i < list.length {
+    let w = w + list[i][2]
+    let i = i + 1
+  }
+  return w
+}
+
+# Cuts text to the columns from..to. A wide character split by an edge becomes spaces.
+fn cut_cols(text, from, to) {
+  let out = []
+  let col = 0
+  let i = 0
+  while i < text.length && col < to {
+    let ch = text[i]
+    let w = edit_text.cell(ch, col, 8)
+    let next = col + w
+    if col >= from && next <= to {
+      let out = out.push(ch)
+    } else if next > from && col < to {
+      let a = col
+      if a < from { let a = from }
+      let b = next
+      if b > to { let b = to }
+      if b > a { let out = out.push(" ".repeat(b - a)) }
+    }
+    let col = next
+    let i = i + 1
+  }
+  return out.join("")
+}
+
+# Pieces filled or cut to exactly width columns.
+fn fit(list, width, style) {
+  let out = []
+  let used = 0
+  let i = 0
+  while i < list.length && used < width {
+    let p = list[i]
+    if used + p[2] <= width {
+      let out = out.push(p)
+      let used = used + p[2]
+    } else {
+      let t = cut_cols(p[1], 0, width - used)
+      let tw = ui.width(t)
+      let out = out.push([p[0], t, tw])
+      let used = used + tw
+    }
+    let i = i + 1
+  }
+  if used < width { let out = out.push(pad(style, width - used)) }
+  return out
+}
+
+# Lays patch, width wide, over the row at column col.
+fn overlay(row, col, patch) {
+  let pw = pieces_width(patch)
+  let out = []
+  let at = 0
+  let placed = false
+  let i = 0
+  while i < row.length {
+    let p = row[i]
+    let a = at
+    let b = at + p[2]
+    if b <= col || a >= col + pw {
+      if a >= col + pw && !placed {
+        let k = 0
+        while k < patch.length {
+          let out = out.push(patch[k])
+          let k = k + 1
+        }
+        let placed = true
+      }
+      let out = out.push(p)
+    } else {
+      if a < col {
+        let t = cut_cols(p[1], 0, col - a)
+        let out = out.push([p[0], t, ui.width(t)])
+      }
+      if !placed {
+        let k = 0
+        while k < patch.length {
+          let out = out.push(patch[k])
+          let k = k + 1
+        }
+        let placed = true
+      }
+      if b > col + pw {
+        let t = cut_cols(p[1], col + pw - a, p[2])
+        let out = out.push([p[0], t, ui.width(t)])
+      }
+    }
+    let at = b
+    let i = i + 1
+  }
+  if !placed {
+    let k = 0
+    while k < patch.length {
+      let out = out.push(patch[k])
+      let k = k + 1
+    }
+  }
+  return out
+}
+
+fn ansi(list) {
+  let esc = chr(27)
+  let parts = []
+  let last = "-"
+  let i = 0
+  while i < list.length {
+    let p = list[i]
+    if p[1] != "" {
+      if p[0] != last {
+        if p[0] == "" { let parts = parts.push("@{ esc }[0m") }
+        else { let parts = parts.push("@{ esc }[0;@{ p[0] }m") }
+        let last = p[0]
+      }
+      let parts = parts.push(p[1])
+    }
+    let i = i + 1
+  }
+  let parts = parts.push("@{ esc }[0m")
+  return parts.join("")
+}
+
+fn plain(list) {
+  let parts = []
+  let i = 0
+  while i < list.length {
+    let parts = parts.push(list[i][1])
+    let i = i + 1
+  }
+  return parts.join("")
 }
 
 fn digits(n) {
-  let text = "@{ n } "
-  return strings.slice(text, 0, text.length - 1)
+  return edit_text.str(n).length
 }
 
-fn visible(text) {
-  let n = text.length
-  if n == 0 { return "" }
-  return text.visible()
-}
-
-fn gutter(buf, row) {
-  let w = gutter_cols(buf) - 1
-  return "@{ strings.pad_left(digits(row + 1), w, " ") } "
-}
-
-fn row_text(buf, row, room) {
-  return "@{ gutter(buf, row) }@{ ui.take(buf.lines[row], buf.left, room) }"
-}
-
-fn status_line(buf) {
-  let mark = ""
-  if buf.dirty { let mark = "*" }
-  return visible("@{ buf.path }@{ mark }  @{ buf.row + 1 }:@{ buf.col + 1 }  @{ buf.mode }")
-}
-
-fn bottom_line(buf) {
-  if buf.mode == "command" { return visible(":@{ buf.cmd }") }
-  if buf.mode == "search" { return visible("/@{ buf.cmd }") }
-  return buf.hint
-}
-
-fn frame(buf, cols, rows) {
-  let buf = fit(buf, cols, rows)
-  if cols < 1 { let cols = 1 }
-  if rows < 2 { let rows = 2 }
-  let view = rows - 2
-  if view < 1 { let view = 1 }
-  let room = cols - gutter_cols(buf)
-  if room < 1 { let room = 1 }
-  let screen = ui.blank(cols, rows)
-  let i = 0
-  while i < view {
-    let row = buf.top + i
-    if row < buf.lines.length { let screen = ui.put(screen, i, 0, row_text(buf, row, room)) }
-    let i = i + 1
+# Row and column ranges for every part of the screen.
+fn layout(e) {
+  let rows = e.rows
+  let cols = e.cols
+  let d = e.docs[e.at]
+  let small = rows < 8
+  let menu = 0 - 1
+  let tabs = 0 - 1
+  let next = 0
+  if e.settings.menu_bar && !small {
+    let menu = 0
+    let next = 1
   }
-  let screen = ui.put(screen, rows - 2, 0, status_line(buf))
-  return ui.paint(ui.put(screen, rows - 1, 0, bottom_line(buf)))
-}
-
-fn esc(seq) {
-  print("@{ chr(27) }[@{ seq }")
-}
-
-fn simple(line) {
-  let i = 0
-  while i < line.length {
-    if line[i] == "\t" || ord(line[i]) > 127 { return false }
-    let i = i + 1
+  if !small || rows >= 5 {
+    let tabs = next
+    let next = next + 1
   }
-  return true
-}
-
-fn paint_diag(marks, start, end) {
-  if start < 0 { let start = 0 }
-  if end <= start { let end = start + 1 }
-  if start >= marks.length { return marks }
-  if end > marks.length { let end = marks.length }
-  let parts = []
-  let i = 0
-  while i < marks.length {
-    let ch = marks[i]
-    if i >= start && i < end { let ch = "d" }
-    let parts = parts.push(ch)
-    let i = i + 1
+  let status = rows - 1
+  let bottom = status
+  let bar_h = 0
+  if e.bar != null {
+    let bar_h = 1
+    if e.bar.kind == "replace" { let bar_h = 2 }
   }
-  return parts.join("")
-}
-
-fn diags_of(buf) {
-  if buf.lsp == null { return [] }
-  return buf.lsp.diags
-}
-
-fn marks(buf, row) {
-  let line = buf.lines[row]
-  let text = edit_syntax.line_marks(buf.lines, row, edit_syntax.lang(buf.path))
-  if !simple(line) { return text }
-  let diags = diags_of(buf)
-  let i = 0
-  while i < diags.length {
-    let d = diags[i]
-    if d.line == row { let text = paint_diag(text, d.start, d.end) }
-    let i = i + 1
+  if e.prompt != null { let bar_h = 1 }
+  let bar_top = bottom - bar_h
+  let deck_h = 0
+  if edit_run.is_open() {
+    let deck_h = rows / 3
+    if deck_h > 12 { let deck_h = 12 }
+    if deck_h < 4 { let deck_h = 0 }
   }
-  return text
+  let deck_top = bar_top - deck_h
+  let top = next
+  let view = deck_top - top
+  if view < 1 {
+    let view = 1
+    let deck_h = 0
+    let deck_top = bar_top
+  }
+  let side_w = 0
+  if e.side.open && cols >= 40 {
+    let side_w = cols / 5
+    if side_w < 18 { let side_w = 18 }
+    if side_w > 32 { let side_w = 32 }
+  }
+  let gx = side_w
+  let gw = 1
+  if e.settings.line_numbers {
+    let gw = digits(d.lines.length) + 2
+    if gw < 4 { let gw = 4 }
+  }
+  let area = cols - gx
+  let sb = 0 - 1
+  let mm_w = 0
+  if e.settings.minimap && area >= 60 {
+    let mm_w = 10
+    if area >= 120 { let mm_w = 14 }
+  } else if area > 20 && d.lines.length > view {
+    let sb = cols - 1
+  }
+  let tw = area - gw - mm_w
+  if sb >= 0 { let tw = tw - 1 }
+  if tw < 1 { let tw = 1 }
+  # Word wrap breaks lines at the text width, so a resize rewraps them.
+  let wrap = 0
+  if d.wrap_on { let wrap = tw }
+  if d.wrap != wrap { let junk = map_set(d, "wrap", wrap) }
+  return { menu: menu, tabs: tabs, top: top, view: view, side_w: side_w, gx: gx, gw: gw, tw: tw, sb: sb, mm_w: mm_w, mm_x: cols - mm_w, deck_top: deck_top, deck_h: deck_h, bar_top: bar_top, bar_h: bar_h, status: status }
 }
 
-fn role_style(colors, role) {
-  if role == "c" { return colors.comment }
-  if role == "s" { return colors.string }
-  if role == "k" { return colors.keyword }
-  if role == "n" { return colors.number }
-  if role == "d" { return colors.diag }
-  if role == "f" { return colors.function }
-  if role == "t" { return colors.type }
-  if role == "o" { return colors.constant }
-  if role == "m" { return colors.macro }
-  if role == "v" { return colors.variable }
-  return colors.text
-}
-
-fn color_span(shown, marks, left, colors) {
-  let parts = []
-  let i = 0
-  while i < shown.length {
-    let role = "."
-    let at = left + i
-    if at >= 0 && at < marks.length { let role = marks[at] }
-    let j = i + 1
-    let same = true
-    while same && j < shown.length {
-      let role2 = "."
-      let at2 = left + j
-      if at2 >= 0 && at2 < marks.length { let role2 = marks[at2] }
-      if role2 != role { let same = false }
-      else { let j = j + 1 }
+# The screen lines from the top of the view: [{ r, a, b, k, last }]. a and b bound the
+# scalars of row r on that screen line, and k counts the screen lines of the row.
+fn visual_rows(d, top, count) {
+  let out = []
+  let r = top
+  if r >= 0 && r < d.lines.length && doc.hidden(d, r) { let r = doc.fold_over(d, r).a }
+  while out.length < count && r >= 0 && r < d.lines.length {
+    let list = doc.segs(d, r)
+    let n = d.lines[r].length
+    let k = 0
+    while k < list.length && out.length < count {
+      let b = n
+      if k + 1 < list.length { let b = list[k + 1] }
+      let out = out.push({ r: r, a: list[k], b: b, k: k, last: k == list.length - 1 })
+      let k = k + 1
     }
-    let parts = parts.push(theme.wrap(role_style(colors, role), shown.slice(i, j)))
-    let i = j
+    let r = doc.shown_row(d, r, 1)
   }
-  return parts.join("")
+  return out
 }
 
-fn clip(text, limit) {
-  return ui.take(text, 0, limit)
+# How many screen lines lie from the start of row top to the screen line of r, c.
+# Stops counting at limit.
+fn lines_between(d, top, r, c, limit) {
+  let n = 0
+  let at = top
+  while at >= 0 && at < r && n <= limit {
+    let n = n + doc.segs(d, at).length
+    let at = doc.shown_row(d, at, 1)
+  }
+  if at != r { return limit + 1 }
+  return n + doc.seg_of(doc.segs(d, r), c)
 }
 
-fn draw_color(buf, cols, rows) {
-  let buf = fit(buf, cols, rows)
-  if cols < 1 { let cols = 1 }
-  if rows < 2 { let rows = 2 }
-  let view = rows - 2
-  if view < 1 { let view = 1 }
-  let limit = cols - 1
-  if limit < 1 { let limit = 1 }
-  let text_room = limit - gutter_cols(buf)
-  if text_room < 1 { let text_room = 1 }
-  let colors = buf.theme
-  let i = 0
-  while i < rows {
-    esc("@{ i + 1 };1H")
-    let text = ""
-    if i < view {
-      let row = buf.top + i
-      if row < buf.lines.length {
-        let body = ui.take(buf.lines[row], buf.left, text_room)
-        let text = "@{ theme.wrap(colors.gutter, gutter(buf, row)) }@{ color_span(body, marks(buf, row), buf.left, colors) }"
+# Scrolls so the primary caret is on screen, with a margin of two rows when there is room.
+# A fold that hides a caret opens first.
+fn reveal(e) {
+  let d = e.docs[e.at]
+  let lay = layout(e)
+  if d.folds.length > 0 {
+    let i = 0
+    while i < d.sels.length {
+      if doc.hidden(d, d.sels[i].hr) { let junk = doc.open_folds(d, d.sels[i].hr) }
+      let i = i + 1
+    }
+  }
+  let s = doc.primary(d)
+  let view = lay.view
+  let margin = 2
+  if view < 8 { let margin = 0 }
+  let top = d.top
+  if top >= d.lines.length { let top = d.lines.length - 1 }
+  if top < 0 { let top = 0 }
+  if doc.hidden(d, top) { let top = doc.fold_over(d, top).a }
+  if s.hr <= top {
+    let top = s.hr
+    let m = 0
+    while m < margin && doc.shown_row(d, top, 0 - 1) >= 0 {
+      let top = doc.shown_row(d, top, 0 - 1)
+      let m = m + 1
+    }
+  } else {
+    let want = view - 1 - margin
+    if want < 0 { let want = 0 }
+    let n = lines_between(d, top, s.hr, s.hc, view + margin)
+    if n > want {
+      if n > view * 2 {
+        # A far jump: count back from the caret instead of forward from the old top.
+        let top = s.hr
+        let used = doc.seg_of(doc.segs(d, s.hr), s.hc)
+        let going = true
+        while going {
+          let up = doc.shown_row(d, top, 0 - 1)
+          if up < 0 || used + doc.segs(d, up).length > want { let going = false }
+          else {
+            let used = used + doc.segs(d, up).length
+            let top = up
+          }
+        }
+      } else {
+        while n > want && top < s.hr {
+          let n = n - doc.segs(d, top).length
+          let top = doc.shown_row(d, top, 1)
+        }
       }
     }
-    if i == rows - 2 { let text = theme.wrap(colors.status, clip(status_line(buf), limit)) }
-    if i == rows - 1 { let text = theme.wrap(colors.hint, clip(bottom_line(buf), limit)) }
-    print(text)
-    esc("K")
+  }
+  let limit = d.lines.length - 1
+  if !e.settings.scroll_past_end { let limit = d.lines.length - view }
+  if top > limit && d.folds.length == 0 && d.wrap == 0 { let top = limit }
+  if top < 0 { let top = 0 }
+  let junk = map_set(d, "top", top)
+  if d.wrap > 0 {
+    let junk = map_set(d, "left", 0)
+    return null
+  }
+  let x = edit_text.col_at(d.lines[s.hr], s.hc, d.tab)
+  let left = d.left
+  let room = lay.tw
+  let edge = 4
+  if room < 20 { let edge = 0 }
+  if x < left + edge { let left = x - edge }
+  if x > left + room - 1 - edge { let left = x - room + 1 + edge }
+  if left < 0 { let left = 0 }
+  let junk = map_set(d, "left", left)
+}
+
+# Keeps top inside the document after a scroll.
+fn clamp_top(e, top) {
+  let d = e.docs[e.at]
+  let lay = layout(e)
+  let limit = d.lines.length - 1
+  if !e.settings.scroll_past_end { let limit = d.lines.length - lay.view }
+  let t = top
+  if t > limit { let t = limit }
+  if t < 0 { let t = 0 }
+  return t
+}
+
+fn role_index(m) {
+  if m == "c" { return 1 }
+  if m == "s" { return 2 }
+  if m == "k" { return 3 }
+  if m == "n" { return 4 }
+  if m == "f" { return 5 }
+  if m == "t" { return 6 }
+  if m == "o" { return 7 }
+  if m == "m" { return 8 }
+  if m == "v" { return 9 }
+  if m == "d" { return 10 }
+  return 0
+}
+
+# Flag bits for a cell. The style for role plus flags is built once per palette.
+fn bit_sel() { return 16 }
+
+fn bit_find() { return 32 }
+
+fn bit_caret() { return 64 }
+
+fn bit_bracket() { return 128 }
+
+fn bit_word() { return 256 }
+
+fn bit_diag() { return 512 }
+
+fn bit_guide() { return 1024 }
+
+fn bit_ctrl() { return 2048 }
+
+fn bit_line() { return 4096 }
+
+fn has_bit(code, bit) {
+  return (code / bit) % 2 == 1
+}
+
+fn style_for(pal, code) {
+  let codes = cache.codes
+  if code < codes.length && codes[code] != null { return codes[code] }
+  let role = code % 16
+  let f = pal.roles[0]
+  if role < pal.roles.length && pal.roles[role] != "" { let f = pal.roles[role] }
+  let b = pal.page
+  if has_bit(code, bit_line()) && pal.rich { let b = pal.line }
+  let a = ""
+  if has_bit(code, bit_guide()) { let f = pal.guide }
+  if has_bit(code, bit_ctrl()) { let f = pal.dim }
+  if has_bit(code, bit_diag()) {
+    if pal.diag != "" { let f = pal.diag }
+    let a = join_sgr(a, "4")
+  }
+  if has_bit(code, bit_word()) { let a = join_sgr(a, "4") }
+  if has_bit(code, bit_bracket()) { let a = join_sgr(a, "1;4") }
+  if has_bit(code, bit_sel()) {
+    if pal.rich { let b = pal.sel }
+    else { let a = join_sgr(a, "7") }
+  }
+  if has_bit(code, bit_find()) {
+    if pal.rich { let b = pal.find }
+    else { let a = join_sgr(a, "4;7") }
+  }
+  if has_bit(code, bit_caret()) { let a = join_sgr(a, "7") }
+  let style = join_sgr(join_sgr(a, f), b)
+  while codes.length <= code { let junk = codes.push(null) }
+  let junk = codes.set(code, style)
+  return style
+}
+
+# True when col falls in one of the [a, b) ranges.
+fn in_ranges(list, col) {
+  let i = 0
+  while i < list.length {
+    let r = list[i]
+    if col >= r[0] && col < r[1] { return true }
     let i = i + 1
   }
-  let crow = buf.row - buf.top
-  if crow < 0 { let crow = 0 }
-  if crow >= view { let crow = view - 1 }
-  let caret = ui.width_at(buf.lines[buf.row].visible(), buf.col)
-  let ccol = gutter_cols(buf) + caret - buf.left
-  if ccol >= limit { let ccol = limit - 1 }
-  if ccol < 0 { let ccol = 0 }
-  esc("@{ crow + 1 };@{ ccol + 1 }H")
-  esc("?25h")
+  return false
+}
+
+fn has_col(list, col) {
+  let i = 0
+  while i < list.length {
+    if list[i] == col { return true }
+    let i = i + 1
+  }
+  return false
+}
+
+# A visible stand-in for a control or invalid scalar, or "" when ch is fine to print.
+fn shown_char(ch) {
+  let n = ord(ch)
+  if n >= 32 && n < 127 { return "" }
+  if n == 9 { return "" }
+  if n < 32 { return chr(9216 + n) }
+  if n == 127 { return chr(9249) }
+  if n < 160 { return "?" }
+  if n < 256 && bytes(ch).length == 1 { return "?" }
+  return ""
+}
+
+# Indent width that a blank line shows guides for: the smaller indent of its neighbours.
+fn blank_guides(d, r) {
+  let up = r - 1
+  let k = 0
+  while up >= 0 && k < 40 && edit_text.blank(d.lines[up]) {
+    let up = up - 1
+    let k = k + 1
+  }
+  let down = r + 1
+  let k = 0
+  while down < d.lines.length && k < 40 && edit_text.blank(d.lines[down]) {
+    let down = down + 1
+    let k = k + 1
+  }
+  if up < 0 || down >= d.lines.length { return 0 }
+  let a = edit_text.col_at(d.lines[up], edit_text.lead(d.lines[up]), d.tab)
+  let b = edit_text.col_at(d.lines[down], edit_text.lead(d.lines[down]), d.tab)
+  if b < a { return b }
+  return a
+}
+
+# Pieces for the text of row r: columns left..left+width, with every highlight in info.
+fn paint_text(e, d, r, left, width, info) {
+  let pal = e.pal
+  let text = d.lines[r]
+  let marks = info.marks
+  let tab = d.tab
+  let base = 0
+  if info.cur { let base = bit_line() }
+  let guide_w = 0
+  if e.settings.draw_indent_guides && info.first {
+    let lead = edit_text.lead(text)
+    if lead == text.length { let guide_w = info.blank_w }
+    else { let guide_w = edit_text.col_at(text, lead, tab) }
+  }
+  let out = []
+  let run = []
+  let run_code = 0 - 1
+  let run_w = 0
+  let col = 0
+  let i = 0
+  let stop = left + width
+  let n = info.seg_b
+  while i < n && col < stop {
+    let ch = text[i]
+    let w = edit_text.cell(ch, col, tab)
+    let next = col + w
+    if next > left {
+      let code = base
+      if i < marks.length { let code = code + role_index(marks[i]) }
+      if info.sels.length > 0 && in_ranges(info.sels, i) { let code = code + bit_sel() }
+      if info.finds.length > 0 && in_ranges(info.finds, i) { let code = code + bit_find() }
+      if info.words.length > 0 && in_ranges(info.words, i) { let code = code + bit_word() }
+      if info.diags.length > 0 && in_ranges(info.diags, i) { let code = code + bit_diag() }
+      if info.carets.length > 0 && has_col(info.carets, i) { let code = code + bit_caret() }
+      if info.brackets.length > 0 && has_col(info.brackets, i) { let code = code + bit_bracket() }
+      let glyph = ch
+      if ch == "\t" {
+        let glyph = " ".repeat(w)
+        if col < guide_w && col % tab == 0 {
+          let glyph = "│@{ " ".repeat(w - 1) }"
+          if !has_bit(code, bit_sel()) { let code = code + bit_guide() - (code % 16) }
+        }
+      } else if ch == " " && col < guide_w && col % tab == 0 {
+        let glyph = "│"
+        if !has_bit(code, bit_sel()) && !has_bit(code, bit_find()) { let code = code + bit_guide() - (code % 16) }
+      } else {
+        let alt = shown_char(ch)
+        if alt != "" {
+          let glyph = alt
+          let w = 1
+          let next = col + 1
+          let code = code + bit_ctrl()
+        }
+      }
+      if col < left || next > stop {
+        let a = col
+        if a < left { let a = left }
+        let b = next
+        if b > stop { let b = stop }
+        let glyph = " ".repeat(b - a)
+        let w = b - a
+      }
+      if code != run_code {
+        if run.length > 0 { let out = out.push([style_for(pal, run_code), run.join(""), run_w]) }
+        let run = [glyph]
+        let run_code = code
+        let run_w = w
+      } else {
+        let junk = run.push(glyph)
+        let run_w = run_w + w
+      }
+    }
+    let col = next
+    let i = i + 1
+  }
+  if run.length > 0 { let out = out.push([style_for(pal, run_code), run.join(""), run_w]) }
+  let used = col - left
+  if used < 0 { let used = 0 }
+  if used > width { let used = width }
+  # Guides continue through a short or blank line.
+  if col < guide_w && col >= left {
+    let g = col
+    while g < guide_w && g < stop {
+      if g % tab == 0 {
+        if g > col { let out = out.push(pad(style_for(pal, base), g - col)) }
+        let out = out.push([style_for(pal, base + bit_guide()), "│", 1])
+        let col = g + 1
+      }
+      let g = g + 1
+    }
+    let used = col - left
+  }
+  # A selection that goes on to the next line shows one cell after the text.
+  if used < width && col >= left && info.seg_last {
+    if info.eol_sel {
+      let out = out.push([style_for(pal, base + bit_sel()), " ", 1])
+      let used = used + 1
+    } else if info.eol_caret {
+      let out = out.push([style_for(pal, base + bit_caret()), " ", 1])
+      let used = used + 1
+    }
+  }
+  if info.folded && info.seg_last && used + 3 <= width {
+    let out = out.push([style_for(pal, base + bit_ctrl()), " ⋯ ", 3])
+    let used = used + 3
+  }
+  if used < width { let out = out.push(pad(style_for(pal, base), width - used)) }
+  return out
+}
+
+# Highlight data for row r: selection ranges, secondary carets, find hits, and brackets.
+fn row_info(e, d, r, ctx) {
+  let text = d.lines[r]
+  let sels = []
+  let carets = []
+  let eol_sel = false
+  let eol_caret = false
+  let cur = false
+  let i = ctx.first_sel
+  let going = true
+  while i < d.sels.length && going {
+    let s = d.sels[i]
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    if a.r > r {
+      let going = false
+    } else {
+      if s.hr == r && e.settings.highlight_line && doc.empty(s) { let cur = true }
+      if b.r >= r {
+        if !doc.empty(s) {
+          let c1 = 0
+          if a.r == r { let c1 = a.c }
+          let c2 = text.length
+          if b.r == r { let c2 = b.c }
+          else { let eol_sel = true }
+          if c2 > c1 { let sels = sels.push([c1, c2]) }
+        }
+        if s.hr == r && !s.p {
+          if s.hc >= text.length { let eol_caret = true }
+          else { let carets = carets.push(s.hc) }
+        }
+      }
+    }
+    let i = i + 1
+  }
+  let finds = []
+  if ctx.pat != "" {
+    let hay = text
+    if ctx.fold { let hay = text.lower() }
+    let hits = edit_text.find_all(text, hay, ctx.pat, ctx.whole)
+    let k = 0
+    while k < hits.length {
+      let finds = finds.push([hits[k], hits[k] + ctx.pat.length])
+      let k = k + 1
+    }
+  }
+  let words = []
+  if ctx.word != "" {
+    let hits = edit_text.find_all(text, text, ctx.word, true)
+    let k = 0
+    while k < hits.length {
+      if !(r == ctx.word_row && hits[k] == ctx.word_col) { let words = words.push([hits[k], hits[k] + ctx.word.length]) }
+      let k = k + 1
+    }
+  }
+  let brackets = []
+  let k = 0
+  while k < ctx.brackets.length {
+    if ctx.brackets[k].r == r { let brackets = brackets.push(ctx.brackets[k].c) }
+    let k = k + 1
+  }
+  let diags = []
+  let k = 0
+  while k < d.diags.length {
+    let dg = d.diags[k]
+    if dg.line == r {
+      let a = edit_lsp.units_to_col(text, dg.start)
+      let b = edit_lsp.units_to_col(text, dg.end)
+      if b <= a { let b = a + 1 }
+      let diags = diags.push([a, b])
+    }
+    let k = k + 1
+  }
+  let blank_w = 0
+  if e.settings.draw_indent_guides && edit_text.blank(text) { let blank_w = blank_guides(d, r) }
+  return { marks: doc.marks(d, r), sels: sels, carets: carets, eol_sel: eol_sel, eol_caret: eol_caret, cur: cur, finds: finds, words: words, brackets: brackets, diags: diags, blank_w: blank_w }
+}
+
+fn ranges_key(list) {
+  let parts = []
+  let i = 0
+  while i < list.length {
+    let parts = parts.push("@{ list[i][0] }-@{ list[i][1] }")
+    let i = i + 1
+  }
+  return parts.join(",")
+}
+
+# Pieces for a text row, from the cache when nothing that paints it changed.
+fn text_row(e, d, vr, lay, ctx) {
+  let r = vr.r
+  let info = row_info(e, d, r, ctx)
+  let text = d.lines[r]
+  let left = d.left
+  if d.wrap > 0 { let left = edit_text.col_at(text, vr.a, d.tab) }
+  let junk = map_set(info, "first", vr.k == 0)
+  let junk = map_set(info, "seg_b", vr.b)
+  let junk = map_set(info, "seg_last", vr.last)
+  let junk = map_set(info, "folded", d.folds.length > 0 && doc.folded_at(d, r))
+  let key = ""
+  let cacheable = text.index(chr(0)) < 0 && text.length < 4000
+  if cacheable {
+    let key = "@{ ctx.stamp }|@{ left }|@{ vr.k }|@{ vr.b }|@{ vr.last }|@{ info.folded }|@{ lay.tw }|@{ info.cur }|@{ ranges_key(info.sels) }|@{ info.carets.join(",") }|@{ info.eol_sel }|@{ info.eol_caret }|@{ ranges_key(info.finds) }|@{ ranges_key(info.words) }|@{ info.brackets.join(",") }|@{ ranges_key(info.diags) }|@{ info.blank_w }|@{ info.marks }|@{ text }"
+    if cache.rows.has(key) { return cache.rows[key] }
+  }
+  let got = paint_text(e, d, r, left, lay.tw, info)
+  if cacheable {
+    if cache.n > 4000 {
+      let junk = map_set(cache, "rows", {})
+      let junk = map_set(cache, "n", 0)
+    }
+    let junk = map_set(cache.rows, key, got)
+    let junk = map_set(cache, "n", cache.n + 1)
+  }
+  return got
+}
+
+# The line number, a ● for a diagnostic, and a ▸ for a folded row. A wrapped line's later
+# screen lines leave it blank.
+fn gutter(e, d, r, lay, cur, first) {
+  let pal = e.pal
+  let w = lay.gw
+  if !first { return [pad(join_sgr(pal.gutter, pal.page), w)] }
+  let folded = d.folds.length > 0 && doc.folded_at(d, r)
+  if !e.settings.line_numbers {
+    if folded { return [[join_sgr(pal.accent, pal.page), "▸", 1]] }
+    return [pad(style_for(pal, 0), w)]
+  }
+  let num = edit_text.str(r + 1)
+  let style = join_sgr(pal.gutter, pal.page)
+  if cur && pal.rich { let style = join_sgr(join_sgr(pal.gutter_on, "1"), pal.page) }
+  else if cur { let style = "1" }
+  if folded {
+    return [[join_sgr(pal.accent, pal.page), "▸", 1], [style, "@{ " ".repeat(w - 2 - num.length) }@{ num } ", w - 1]]
+  }
+  if edit_lsp.message_at(d, r) != "" {
+    return [[join_sgr(pal.diag, pal.page), "●", 1], [style, "@{ " ".repeat(w - 2 - num.length) }@{ num } ", w - 1]]
+  }
+  return [[style, "@{ " ".repeat(w - 1 - num.length) }@{ num } ", w]]
+}
+
+# The matching bracket for the one at r, c, skipping strings and comments, or null.
+# The search stops after 4000 rows.
+fn match_bracket(d, r, c) {
+  let ch = d.lines[r][c]
+  let open = edit_text.closer_of(ch) != ""
+  let want = edit_text.closer_of(ch)
+  if !open { let want = edit_text.opener_of(ch) }
+  let depth = 0
+  let row = r
+  let col = c
+  let steps = 0
+  while steps < 4000 && row >= 0 && row < d.lines.length {
+    let text = d.lines[row]
+    let marks = doc.marks(d, row)
+    if open {
+      let i = 0
+      if row == r { let i = c }
+      while i < text.length {
+        let m = "."
+        if i < marks.length { let m = marks[i] }
+        if m != "s" && m != "c" {
+          let x = text[i]
+          if x == ch { let depth = depth + 1 }
+          if x == want {
+            let depth = depth - 1
+            if depth == 0 { return { r: row, c: i } }
+          }
+        }
+        let i = i + 1
+      }
+      let row = row + 1
+    } else {
+      let i = text.length - 1
+      if row == r { let i = c }
+      while i >= 0 {
+        let m = "."
+        if i < marks.length { let m = marks[i] }
+        if m != "s" && m != "c" {
+          let x = text[i]
+          if x == ch { let depth = depth + 1 }
+          if x == want {
+            let depth = depth - 1
+            if depth == 0 { return { r: row, c: i } }
+          }
+        }
+        let i = i - 1
+      }
+      let row = row - 1
+    }
+    let steps = steps + 1
+  }
   return null
 }
 
-fn draw(buf, cols, rows) {
-  if theme.themed(buf.theme) {
-    draw_color(buf, cols, rows)
-    return null
-  }
-  let buf = fit(buf, cols, rows)
-  if cols < 1 { let cols = 1 }
-  if rows < 2 { let rows = 2 }
-  let view = rows - 2
-  if view < 1 { let view = 1 }
-  let limit = cols - 1
-  if limit < 1 { let limit = 1 }
-  let text_room = limit - gutter_cols(buf)
-  if text_room < 1 { let text_room = 1 }
-  let status = status_line(buf)
-  let bottom = bottom_line(buf)
+# The bracket under or before the primary caret, and its mate, or [].
+fn bracket_pair(e, d) {
+  let s = doc.primary(d)
+  if !doc.empty(s) || d.lines.length > 20000 { return [] }
+  let text = d.lines[s.hr]
+  let at = 0 - 1
+  if s.hc < text.length && edit_text.is_bracket(text[s.hc]) { let at = s.hc }
+  else if s.hc > 0 && s.hc - 1 < text.length && edit_text.is_bracket(text[s.hc - 1]) { let at = s.hc - 1 }
+  if at < 0 { return [] }
+  let mate = match_bracket(d, s.hr, at)
+  if mate == null { return [] }
+  return [{ r: s.hr, c: at }, mate]
+}
+
+# The selected word that other copies of it get underlined for, or "".
+fn word_hint(d) {
+  if d.sels.length != 1 { return { word: "", r: 0, c: 0 } }
+  let s = d.sels[0]
+  if doc.empty(s) || s.ar != s.hr { return { word: "", r: 0, c: 0 } }
+  let a = doc.lo(s)
+  let b = doc.hi(s)
+  let text = d.lines[a.r]
+  let w = text.slice(a.c, b.c)
+  if w.length < 2 || w.length > 60 { return { word: "", r: 0, c: 0 } }
   let i = 0
-  while i < rows {
-    esc("@{ i + 1 };1H")
-    let text = ""
-    if i < view {
-      let row = buf.top + i
-      if row < buf.lines.length { let text = row_text(buf, row, text_room) }
-    }
-    if i == rows - 2 { let text = status }
-    if i == rows - 1 { let text = bottom }
-    print(ui.take(text, 0, limit))
-    esc("K")
+  while i < w.length {
+    if !edit_text.is_word(w[i]) { return { word: "", r: 0, c: 0 } }
     let i = i + 1
   }
-  let crow = buf.row - buf.top
-  if crow < 0 { let crow = 0 }
-  if crow >= view { let crow = view - 1 }
-  let caret = ui.width_at(buf.lines[buf.row].visible(), buf.col)
-  let ccol = gutter_cols(buf) + caret - buf.left
-  if ccol >= limit { let ccol = limit - 1 }
-  if ccol < 0 { let ccol = 0 }
-  esc("@{ crow + 1 };@{ ccol + 1 }H")
-  esc("?25h")
-  return null
+  if !edit_text.whole_at(text, a.c, w.length) { return { word: "", r: 0, c: 0 } }
+  return { word: w, r: a.r, c: a.c }
+}
+
+# Which minimap cells of a line hold text: a string of 0 and 1, one per four columns.
+fn shape(text, cells, tab) {
+  let key = "@{ cells }|@{ text }"
+  if cache.shapes.has(key) { return cache.shapes[key] }
+  let on = []
+  let k = 0
+  while k < cells {
+    let on = on.push("0")
+    let k = k + 1
+  }
+  let col = 0
+  let i = 0
+  while i < text.length && col < cells * 4 {
+    let ch = text[i]
+    if !edit_text.is_space(ch) { let junk = on.set(col / 4, "1") }
+    let col = col + edit_text.cell(ch, col, tab)
+    let i = i + 1
+  }
+  let got = on.join("")
+  if text.index(chr(0)) < 0 {
+    if cache.shaped > 5000 {
+      let junk = map_set(cache, "shapes", {})
+      let junk = map_set(cache, "shaped", 0)
+    }
+    let junk = map_set(cache.shapes, key, got)
+    let junk = map_set(cache, "shaped", cache.shaped + 1)
+  }
+  return got
+}
+
+# The first document row the minimap shows. Each minimap row is two document rows, and the
+# map scrolls with the view so both ends of the file can be reached.
+fn minimap_top(d, lay) {
+  let total = (d.lines.length + 1) / 2
+  if total <= lay.view { return 0 }
+  let span = d.lines.length - lay.view
+  if span < 1 { return 0 }
+  let top = d.top
+  if top > span { let top = span }
+  return (top * (total - lay.view) / span) * 2
+}
+
+# One list of pieces per view row: a scaled outline of the text, with the rows on screen lit.
+fn minimap_rows(e, d, lay) {
+  let pal = e.pal
+  let cells = lay.mm_w - 1
+  let first = minimap_top(d, lay)
+  let lo = d.top
+  let hi = d.top + lay.view - 1
+  let dim = join_sgr(pal.dim, pal.page)
+  let lit = join_sgr(pal.dim, pal.line)
+  if !pal.rich { let lit = "7" }
+  let out = []
+  let i = 0
+  while i < lay.view {
+    let r1 = first + i * 2
+    let r2 = r1 + 1
+    let style = dim
+    if (r1 >= lo && r1 <= hi) || (r2 >= lo && r2 <= hi) { let style = lit }
+    let up = ""
+    let down = ""
+    if r1 < d.lines.length { let up = shape(d.lines[r1], cells, d.tab) }
+    if r2 < d.lines.length { let down = shape(d.lines[r2], cells, d.tab) }
+    let glyphs = [" "]
+    let k = 0
+    while k < cells {
+      let a = up != "" && up[k] == "1"
+      let b = down != "" && down[k] == "1"
+      let g = " "
+      if a && b { let g = "█" }
+      else if a { let g = "▀" }
+      else if b { let g = "▄" }
+      let glyphs = glyphs.push(g)
+      let k = k + 1
+    }
+    let out = out.push([[style, glyphs.join(""), lay.mm_w]])
+    let i = i + 1
+  }
+  return out
+}
+
+fn scroll_cell(e, d, lay, i) {
+  let pal = e.pal
+  let n = d.lines.length
+  let view = lay.view
+  let total = n + view - 1
+  let size = view * view / total
+  if size < 1 { let size = 1 }
+  let start = 0
+  if total > view { let start = d.top * (view - size) / (n - 1) }
+  if start + size > view { let start = view - size }
+  if i >= start && i < start + size {
+    if pal.rich { return [pal.thumb, " ", 1] }
+    return ["7", " ", 1]
+  }
+  return [style_for(pal, 0), " ", 1]
+}
+
+fn menu_row(e, lay) {
+  let pal = e.pal
+  let out = []
+  let i = 0
+  while i < e.menus.length {
+    let m = e.menus[i]
+    let style = pal.bar
+    if e.overlay != null && e.overlay.kind == "menu" && e.overlay.id == i { let style = pal.popup_on }
+    let out = out.push(piece(style, " @{ m.title } "))
+    let i = i + 1
+  }
+  return fit(out, e.cols, pal.bar)
+}
+
+fn tab_label(e, k) {
+  let d = e.docs[k]
+  let mark = "×"
+  if doc.dirty(d) { let mark = "●" }
+  return " @{ e.names[k] } @{ mark } "
+}
+
+# Column ranges of the tabs: [{ k, a, b }]. The strip scrolls so the active tab shows.
+fn tab_spans(e, lay) {
+  let width = e.cols - lay.side_w
+  let spans = []
+  let x = 0
+  let k = 0
+  while k < e.docs.length {
+    let w = ui.width(tab_label(e, k))
+    let spans = spans.push({ k: k, a: x, b: x + w })
+    let x = x + w
+    let k = k + 1
+  }
+  let shift = 0
+  let on = spans[e.at]
+  if on.b > width { let shift = on.b - width }
+  let k = 0
+  while k < spans.length {
+    let junk = map_set(spans[k], "a", spans[k].a - shift + lay.side_w)
+    let junk = map_set(spans[k], "b", spans[k].b - shift + lay.side_w)
+    let k = k + 1
+  }
+  return spans
+}
+
+fn tab_row(e, lay) {
+  let pal = e.pal
+  let spans = tab_spans(e, lay)
+  let out = []
+  if lay.side_w > 0 {
+    let title = " FOLDERS"
+    let out = out.push([pal.bar_dim, cut_cols(title, 0, lay.side_w), ui.width(cut_cols(title, 0, lay.side_w))])
+    let out = fit(out, lay.side_w, pal.bar_dim)
+  }
+  let x = lay.side_w
+  let k = 0
+  while k < spans.length {
+    let sp = spans[k]
+    let label = tab_label(e, sp.k)
+    let style = pal.tab_off
+    if sp.k == e.at { let style = pal.tab_on }
+    if sp.a >= lay.side_w {
+      let out = out.push(piece(style, label))
+      let x = sp.b
+    } else if sp.b > lay.side_w {
+      let t = cut_cols(label, lay.side_w - sp.a, sp.b - sp.a)
+      let out = out.push([style, t, ui.width(t)])
+      let x = sp.b
+    }
+    let k = k + 1
+  }
+  return fit(out, e.cols, pal.bar_dim)
+}
+
+fn sel_summary(d) {
+  let n = d.sels.length
+  let chars = 0
+  let lines = 0
+  let i = 0
+  while i < n {
+    let s = d.sels[i]
+    if !doc.empty(s) {
+      let t = doc.sel_text(d, s)
+      let chars = chars + t.length
+      let lines = lines + doc.hi(s).r - doc.lo(s).r + 1
+    }
+    let i = i + 1
+  }
+  if n > 1 {
+    if chars > 0 { return "@{ n } selection regions, @{ chars } characters" }
+    return "@{ n } carets"
+  }
+  if chars == 0 { return "" }
+  if lines > 1 { return "@{ lines } lines, @{ chars } characters selected" }
+  if chars == 1 { return "1 character selected" }
+  return "@{ chars } characters selected"
+}
+
+fn status_row(e, lay) {
+  let pal = e.pal
+  let d = e.docs[e.at]
+  let s = doc.primary(d)
+  let col = edit_text.col_at(d.lines[s.hr], s.hc, d.tab) + 1
+  let left = " Line @{ s.hr + 1 }, Column @{ col }"
+  let extra = sel_summary(d)
+  if extra != "" { let left = "@{ left }; @{ extra }" }
+  let msg = e.msg
+  if msg == "" && e.chord != "" { let msg = "@{ e.chord } was pressed. Waiting for the second key." }
+  if msg == "" && edit_run.focused() { let msg = "Panel · Enter runs · Tab mode · Esc back" }
+  if msg == "" {
+    let m = edit_lsp.message_at(d, s.hr)
+    if m != "" { let msg = m }
+  }
+  let indent = "Tab Size: @{ d.tab }"
+  if d.spaces { let indent = "Spaces: @{ d.tab }" }
+  let ends = "Unix"
+  if d.crlf { let ends = "Windows" }
+  let out = [piece(pal.bar, left)]
+  if msg != "" {
+    let style = pal.bar
+    if e.msg_bad && pal.rich { let style = join_sgr("1", join_sgr(pal.diag, pal.bar)) }
+    else if e.msg_bad { let style = "1;7" }
+    let out = out.push(piece(pal.bar, "    "))
+    let out = out.push(piece(style, msg))
+  }
+  let used = pieces_width(out)
+  # The syntax name stays longest when the row is short.
+  let parts = [indent, ends, edit_text.lang_title(d.lang)]
+  let right = ""
+  let k = 0
+  while k < parts.length && right == "" {
+    let tail = parts.slice(k, parts.length).join("    ")
+    if used + ui.width(tail) + 3 <= e.cols { let right = "@{ tail } " }
+    let k = k + 1
+  }
+  if right != "" {
+    let out = out.push(pad(pal.bar, e.cols - used - ui.width(right)))
+    let out = out.push(piece(pal.bar_dim, right))
+  }
+  return fit(out, e.cols, pal.bar)
+}
+
+# A one-line text field: label, then text with the caret at col. all shows the text selected.
+# Returns { pieces, caret }.
+fn field(e, label, text, col, width, all) {
+  let pal = e.pal
+  let lw = ui.width(label)
+  let room = width - lw - 1
+  if room < 1 { let room = 1 }
+  let cx = ui.width(text.slice(0, col))
+  let skip = 0
+  if cx >= room { let skip = cx - room + 1 }
+  let shown = cut_cols(text.visible(), skip, skip + room)
+  let style = pal.bar
+  if all && shown != "" {
+    if pal.rich { let style = join_sgr(fg_of(e.colors.text), pal.sel) }
+    else { let style = "7" }
+  }
+  let out = [piece(pal.bar_dim, label), piece(style, shown)]
+  return { pieces: fit(out, width, pal.bar), caret: lw + cx - skip }
+}
+
+fn toggle(e, on, text) {
+  let pal = e.pal
+  if on {
+    if pal.rich { return piece(join_sgr("1", pal.popup_on), text) }
+    return piece("1", text)
+  }
+  return piece(pal.bar_dim, text)
+}
+
+fn bar_rows(e, lay) {
+  let pal = e.pal
+  let out = []
+  let caret = null
+  if e.prompt != null {
+    let p = e.prompt
+    let f = field(e, " @{ p.label }: ", p.text, p.col, e.cols, p.has("all") && p.all)
+    let caret = { r: lay.bar_top, c: f.caret }
+    return { rows: [f.pieces], caret: caret }
+  }
+  let b = e.bar
+  let info = "  "
+  if b.count >= 0 {
+    if b.count == 0 { let info = "  No results " }
+    else if b.at > 0 { let info = "  @{ b.at } of @{ b.count } " }
+    else { let info = "  @{ b.count } matches " }
+  }
+  let tail = [toggle(e, !b.fold, " Aa "), piece(pal.bar, " "), toggle(e, b.whole, " “ab” "), piece(pal.bar_dim, info)]
+  let tw = pieces_width(tail)
+  let label = " Find: "
+  if b.kind == "replace" { let label = " Find:    " }
+  let f = field(e, label, b.query, b.qcol, e.cols - tw, b.qall && b.field == 0)
+  let row = f.pieces
+  let i = 0
+  while i < tail.length {
+    let row = row.push(tail[i])
+    let i = i + 1
+  }
+  let out = out.push(fit(row, e.cols, pal.bar))
+  if b.field == 0 { let caret = { r: lay.bar_top, c: f.caret } }
+  if b.kind == "replace" {
+    let hint = "  enter replace   alt+enter all "
+    let g = field(e, " Replace: ", b.repl, b.rcol, e.cols - ui.width(hint), b.rall && b.field == 1)
+    let row2 = g.pieces
+    let row2 = row2.push(piece(pal.bar_dim, hint))
+    let out = out.push(fit(row2, e.cols, pal.bar))
+    if b.field == 1 { let caret = { r: lay.bar_top + 1, c: g.caret } }
+  }
+  return { rows: out, caret: caret }
+}
+
+fn deck_rows(e, lay) {
+  let pal = e.pal
+  let out = []
+  let style = pal.popup
+  let i = 0
+  while i < lay.deck_h {
+    let t = edit_run.row_text(i, lay.deck_h).visible()
+    let st = style
+    if i == 0 { let st = pal.bar }
+    let out = out.push(fit([piece(st, cut_cols(t, 0, e.cols))], e.cols, st))
+    let i = i + 1
+  }
+  return out
+}
+
+fn side_rows(e, lay) {
+  let pal = e.pal
+  let out = []
+  let side = e.side
+  let i = 0
+  let base = pal.bar_dim
+  while i < lay.view {
+    let k = side.top + i
+    let row = []
+    if k < side.items.length {
+      let item = side.items[k]
+      let mark = "  "
+      if item.dir {
+        let mark = "▸ "
+        if item.open { let mark = "▾ " }
+      }
+      let label = "@{ "  ".repeat(item.depth) }@{ mark }@{ item.name }"
+      let style = base
+      if k == side.pick && e.focus == "side" { let style = pal.popup_on }
+      else if item.path == e.docs[e.at].path { let style = pal.bar }
+      let row = [piece(style, " @{ cut_cols(label, 0, lay.side_w - 2) }")]
+      let row = fit(row, lay.side_w, style)
+    } else {
+      let row = [pad(base, lay.side_w)]
+    }
+    let out = out.push(row)
+    let i = i + 1
+  }
+  return out
+}
+
+# A bordered list box: title on the top edge, rows of [left, right] text, one picked.
+fn list_box(e, title, rows, pick, first, count, width, marks) {
+  let pal = e.pal
+  let out = []
+  let inner = width - 2
+  let head = "┌─ @{ title } "
+  if title == "" { let head = "┌" }
+  let line = "@{ head }@{ "─".repeat(inner + 1 - ui.width(head)) }┐"
+  let out = out.push([piece(pal.popup, cut_cols(line, 0, width))])
+  let i = 0
+  while i < count {
+    let k = first + i
+    let style = pal.popup
+    let left = ""
+    let right = ""
+    if k < rows.length {
+      let left = rows[k][0]
+      let right = rows[k][1]
+      if k == pick { let style = pal.popup_on }
+    }
+    let lt = " @{ left }"
+    let rt = ""
+    if right != "" { let rt = " @{ right } " }
+    let room = inner - ui.width(rt)
+    if room < 4 {
+      let rt = ""
+      let room = inner
+    }
+    let lt = cut_cols(lt.visible(), 0, room)
+    let body = [piece(style, lt), pad(style, room - ui.width(lt))]
+    if rt != "" {
+      let rs = join_sgr(pal.dim, pal.popup)
+      if k == pick { let rs = pal.popup_on }
+      if !pal.rich { let rs = style }
+      let body = body.push(piece(rs, cut_cols(rt.visible(), 0, inner)))
+    }
+    let row = [piece(pal.popup, "│")]
+    let j = 0
+    while j < body.length {
+      let row = row.push(body[j])
+      let j = j + 1
+    }
+    let row = row.push(piece(pal.popup, "│"))
+    let out = out.push(row)
+    let i = i + 1
+  }
+  let bottom = "└@{ "─".repeat(inner) }┘"
+  if marks != "" {
+    let bottom = "└─ @{ marks } "
+    let bottom = "@{ bottom }@{ "─".repeat(inner + 1 - ui.width(bottom)) }┘"
+  }
+  let out = out.push([piece(pal.popup, cut_cols(bottom, 0, width))])
+  return out
+}
+
+# One row of a box: the side borders around inner pieces filled to the width.
+fn boxed(e, inner, width) {
+  let pal = e.pal
+  let row = [piece(pal.popup, "│")]
+  let body = fit(inner, width - 2, pal.popup)
+  let i = 0
+  while i < body.length {
+    let row = row.push(body[i])
+    let i = i + 1
+  }
+  return row.push(piece(pal.popup, "│"))
+}
+
+fn window_start(n, pick, slots) {
+  if n <= slots || slots < 1 { return 0 }
+  let start = pick - slots / 2
+  if start < 0 { let start = 0 }
+  if start + slots > n { let start = n - slots }
+  return start
+}
+
+# Patches for the open overlay: [{ r, c, pieces }], and the caret it wants, or null.
+fn popups(e, lay) {
+  let out = []
+  let caret = null
+  let o = e.overlay
+  if o == null { return { patches: out, caret: null } }
+  if o.kind == "pick" {
+    let width = e.cols - 4
+    if width > 90 { let width = 90 }
+    if width < 20 { let width = e.cols }
+    let c = (e.cols - width) / 2
+    let r = lay.top
+    let slots = lay.view - 3
+    if slots > 12 { let slots = 12 }
+    if slots < 1 { let slots = 1 }
+    let n = o.items.length
+    let count = n
+    if count > slots { let count = slots }
+    if count < 1 { let count = 1 }
+    let rows = []
+    let i = 0
+    while i < n {
+      let rows = rows.push([o.items[i].name, o.items[i].detail])
+      let i = i + 1
+    }
+    if n == 0 { let rows = [["No matches", ""]] }
+    let first = window_start(n, o.pick, count)
+    let pal = e.pal
+    let input = field(e, " > ", o.text, o.col, width - 2, o.has("all") && o.all)
+    let top_line = [piece(pal.popup, "┌@{ "─".repeat(width - 2) }┐")]
+    let in_row = [piece(pal.popup, "│")]
+    let k = 0
+    while k < input.pieces.length {
+      let in_row = in_row.push(input.pieces[k])
+      let k = k + 1
+    }
+    let in_row = in_row.push(piece(pal.popup, "│"))
+    let out = out.push({ r: r, c: c, pieces: top_line })
+    let out = out.push({ r: r + 1, c: c, pieces: in_row })
+    let box = list_box(e, o.title, rows, o.pick, first, count, width, "")
+    let k = 1
+    while k < box.length {
+      let out = out.push({ r: r + 1 + k, c: c, pieces: box[k] })
+      let k = k + 1
+    }
+    let caret = { r: r + 1, c: c + 1 + input.caret }
+    return { patches: out, caret: caret }
+  }
+  if o.kind == "menu" {
+    let rows = []
+    let i = 0
+    while i < o.items.length {
+      let rows = rows.push([o.items[i].name, o.items[i].key])
+      let i = i + 1
+    }
+    let width = o.width
+    let c = o.c
+    if c + width > e.cols { let c = e.cols - width }
+    if c < 0 { let c = 0 }
+    let count = rows.length
+    let r = o.r
+    if r + count + 2 > lay.status { let r = lay.status - count - 2 }
+    if r < 0 { let r = 0 }
+    let box = list_box(e, "", rows, o.pick, 0, count, width, "")
+    let k = 0
+    while k < box.length {
+      let out = out.push({ r: r + k, c: c, pieces: box[k] })
+      let k = k + 1
+    }
+    let junk = map_set(o, "at_r", r)
+    let junk = map_set(o, "at_c", c)
+    return { patches: out, caret: null }
+  }
+  if o.kind == "confirm" {
+    let pal = e.pal
+    let width = ui.width(o.text) + 6
+    let bw = 0
+    let i = 0
+    while i < o.buttons.length {
+      let bw = bw + ui.width(o.buttons[i]) + 6
+      let i = i + 1
+    }
+    if bw + 4 > width { let width = bw + 4 }
+    if width > e.cols { let width = e.cols }
+    let c = (e.cols - width) / 2
+    let r = lay.top + lay.view / 2 - 3
+    if r < 0 { let r = 0 }
+    let inner = width - 2
+    let rows = []
+    let rows = rows.push([piece(pal.popup, "┌@{ "─".repeat(inner) }┐")])
+    let rows = rows.push(boxed(e, [], width))
+    let rows = rows.push(boxed(e, [piece(join_sgr("1", pal.popup), cut_cols("  @{ o.text }", 0, inner))], width))
+    let rows = rows.push(boxed(e, [], width))
+    let brow = [piece(pal.popup, "  ")]
+    let i = 0
+    while i < o.buttons.length {
+      let style = pal.popup
+      if i == o.pick { let style = pal.popup_on }
+      let brow = brow.push(piece(style, "[ @{ o.buttons[i] } ]"))
+      let brow = brow.push(piece(pal.popup, "  "))
+      let i = i + 1
+    }
+    let rows = rows.push(boxed(e, brow, width))
+    let rows = rows.push([piece(pal.popup, "└@{ "─".repeat(inner) }┘")])
+    let k = 0
+    while k < rows.length {
+      let out = out.push({ r: r + k, c: c, pieces: rows[k] })
+      let k = k + 1
+    }
+    let junk = map_set(o, "at_r", r)
+    let junk = map_set(o, "at_c", c)
+    return { patches: out, caret: null }
+  }
+  if o.kind == "hover" {
+    let pal = e.pal
+    let width = ui.width(o.text) + 4
+    if width > e.cols - 2 { let width = e.cols - 2 }
+    if width < 6 { let width = 6 }
+    let r = o.r - 3
+    if r < lay.top { let r = o.r + 1 }
+    let c = o.c
+    if c + width > e.cols { let c = e.cols - width }
+    if c < 0 { let c = 0 }
+    let box = list_box(e, "", [[o.text, ""]], 0 - 1, 0, 1, width, "")
+    let k = 0
+    while k < box.length {
+      let out = out.push({ r: r + k, c: c, pieces: box[k] })
+      let k = k + 1
+    }
+    return { patches: out, caret: null }
+  }
+  return { patches: out, caret: null }
+}
+
+# The completion list under the caret.
+fn completion(e, lay, cx, cy) {
+  let out = []
+  let comp = e.comp
+  if comp == null || comp.items.length == 0 { return out }
+  let rows = []
+  let width = 12
+  let i = 0
+  while i < comp.items.length {
+    let it = comp.items[i]
+    let detail = it.blurb
+    if detail == it.name { let detail = "" }
+    let rows = rows.push([it.name, detail])
+    let w = ui.width(it.name) + ui.width(detail) + 5
+    if w > width { let width = w }
+    let i = i + 1
+  }
+  if width > 64 { let width = 64 }
+  if width > e.cols { let width = e.cols }
+  let count = rows.length
+  if count > 8 { let count = 8 }
+  let r = cy + 1
+  if r + count + 2 > lay.top + lay.view && cy - count - 2 >= lay.top { let r = cy - count - 2 }
+  let c = cx - comp.prefix - 2
+  if c + width > e.cols { let c = e.cols - width }
+  if c < 0 { let c = 0 }
+  let box = list_box(e, "", rows, comp.pick, window_start(rows.length, comp.pick, count), count, width, "")
+  let k = 0
+  while k < box.length {
+    let out = out.push({ r: r + k, c: c, pieces: box[k] })
+    let k = k + 1
+  }
+  return out
+}
+
+# Choices for the open and save prompt, listed above it.
+fn prompt_list(e, lay) {
+  let out = []
+  let p = e.prompt
+  if p == null || p.shown.length == 0 { return out }
+  let rows = []
+  let i = 0
+  while i < p.shown.length {
+    let rows = rows.push([p.shown[i], ""])
+    let i = i + 1
+  }
+  let count = rows.length
+  if count > 8 { let count = 8 }
+  let width = 40
+  if width > e.cols { let width = e.cols }
+  let r = lay.bar_top - count - 2
+  if r < 0 { return out }
+  let box = list_box(e, "", rows, p.pick, window_start(rows.length, p.pick, count), count, width, "tab completes")
+  let k = 0
+  while k < box.length {
+    let out = out.push({ r: r + k, c: 0, pieces: box[k] })
+    let k = k + 1
+  }
+  return out
+}
+
+# Builds every row. Returns { rows: [pieces], caret: { r, c } or null }.
+fn build(e) {
+  let pal = e.pal
+  use_palette(pal)
+  let lay = layout(e)
+  let d = e.docs[e.at]
+  let rows = []
+  let i = 0
+  while i < e.rows {
+    let rows = rows.push(null)
+    let i = i + 1
+  }
+  if lay.menu >= 0 { let junk = rows.set(lay.menu, menu_row(e, lay)) }
+  if lay.tabs >= 0 { let junk = rows.set(lay.tabs, tab_row(e, lay)) }
+  let vrows = visual_rows(d, d.top, lay.view)
+  let last = d.top
+  if vrows.length > 0 { let last = vrows[vrows.length - 1].r }
+  doc.syn_ensure(d, d.top, last)
+  let pat = ""
+  let fold = false
+  let whole = false
+  if e.bar != null && e.bar.query != "" {
+    let pat = e.bar.query
+    let fold = e.bar.fold
+    let whole = e.bar.whole
+    if fold { let pat = pat.lower() }
+  }
+  let hint = word_hint(d)
+  if pat != "" { let hint = { word: "", r: 0, c: 0 } }
+  let first = 0
+  while first < d.sels.length && doc.hi(d.sels[first]).r < d.top { let first = first + 1 }
+  let ctx = {
+    first_sel: first, pat: pat, fold: fold, whole: whole,
+    word: hint.word, word_row: hint.r, word_col: hint.c,
+    brackets: bracket_pair(e, d), stamp: d.lang
+  }
+  let side = []
+  if lay.side_w > 0 { let side = side_rows(e, lay) }
+  let prim = doc.primary(d)
+  let mini = []
+  if lay.mm_w > 0 { let mini = minimap_rows(e, d, lay) }
+  let caret = null
+  let i = 0
+  while i < lay.view {
+    let row = []
+    if lay.side_w > 0 { let row = side[i] }
+    if i < vrows.length {
+      let vr = vrows[i]
+      let r = vr.r
+      let f = ctx.first_sel
+      while f < d.sels.length && doc.hi(d.sels[f]).r < r { let f = f + 1 }
+      let junk = map_set(ctx, "first_sel", f)
+      let cur = r == prim.hr
+      let g = gutter(e, d, r, lay, cur, vr.k == 0)
+      let k = 0
+      while k < g.length {
+        let row = row.push(g[k])
+        let k = k + 1
+      }
+      let t = text_row(e, d, vr, lay, ctx)
+      let k = 0
+      while k < t.length {
+        let row = row.push(t[k])
+        let k = k + 1
+      }
+      if cur && prim.hc >= vr.a && (prim.hc < vr.b || vr.last) {
+        let text = d.lines[r]
+        let x = edit_text.col_at(text, prim.hc, d.tab) - d.left
+        if d.wrap > 0 { let x = edit_text.col_at(text, prim.hc, d.tab) - edit_text.col_at(text, vr.a, d.tab) }
+        if x >= 0 && x < lay.tw { let caret = { r: lay.top + i, c: lay.gx + lay.gw + x } }
+      }
+    } else {
+      let row = row.push(pad(style_for(pal, 0), lay.gw + lay.tw))
+    }
+    if lay.mm_w > 0 {
+      let k = 0
+      while k < mini[i].length {
+        let row = row.push(mini[i][k])
+        let k = k + 1
+      }
+    }
+    if lay.sb >= 0 { let row = row.push(scroll_cell(e, d, lay, i)) }
+    let junk = rows.set(lay.top + i, row)
+    let i = i + 1
+  }
+  if lay.deck_h > 0 {
+    let deck = deck_rows(e, lay)
+    let i = 0
+    while i < deck.length {
+      let junk = rows.set(lay.deck_top + i, deck[i])
+      let i = i + 1
+    }
+  }
+  if lay.bar_h > 0 {
+    let got = bar_rows(e, lay)
+    let i = 0
+    while i < got.rows.length {
+      let junk = rows.set(lay.bar_top + i, got.rows[i])
+      let i = i + 1
+    }
+    if got.caret != null { let caret = got.caret }
+  }
+  if edit_run.focused() && lay.deck_h > 0 {
+    let cx = edit_run.caret_col()
+    if cx >= e.cols { let cx = e.cols - 1 }
+    let caret = { r: lay.deck_top + lay.deck_h - 1, c: cx }
+  }
+  if e.focus == "side" { let caret = null }
+  let junk = rows.set(lay.status, status_row(e, lay))
+  let i = 0
+  while i < e.rows {
+    if rows[i] == null { let junk = rows.set(i, [pad(pal.page, e.cols)]) }
+    let i = i + 1
+  }
+  let patches = []
+  if e.comp != null && e.overlay == null && caret != null {
+    let patches = completion(e, lay, caret.c, caret.r)
+  }
+  if e.prompt != null {
+    let more = prompt_list(e, lay)
+    let i = 0
+    while i < more.length {
+      let patches = patches.push(more[i])
+      let i = i + 1
+    }
+  }
+  let pop = popups(e, lay)
+  let i = 0
+  while i < pop.patches.length {
+    let patches = patches.push(pop.patches[i])
+    let i = i + 1
+  }
+  if e.overlay != null && e.overlay.kind != "hover" {
+    let caret = pop.caret
+  }
+  let i = 0
+  while i < patches.length {
+    let p = patches[i]
+    if p.r >= 0 && p.r < e.rows { let junk = rows.set(p.r, overlay(rows[p.r], p.c, p.pieces)) }
+    let i = i + 1
+  }
+  if caret != null && (caret.r < 0 || caret.r >= e.rows || caret.c < 0 || caret.c >= e.cols) { let caret = null }
+  return { rows: rows, caret: caret }
+}
+
+# The screen as plain text, one line per row, for tests.
+fn frame(e) {
+  let got = build(e)
+  let out = []
+  let i = 0
+  while i < got.rows.length {
+    let out = out.push(plain(got.rows[i]))
+    let i = i + 1
+  }
+  return out.join("\n")
+}
+
+# The screen with its colors, one line per row.
+fn paint(e) {
+  let got = build(e)
+  let out = []
+  let i = 0
+  while i < got.rows.length {
+    let out = out.push(ansi(got.rows[i]))
+    let i = i + 1
+  }
+  return out.join("\n")
+}
+
+fn caret_of(e) {
+  return build(e).caret
+}
+
+# Writes the rows that changed since the last frame, then places the caret.
+fn present(e, force) {
+  let got = build(e)
+  let esc = chr(27)
+  let parts = ["@{ esc }[?2026h@{ esc }[?25l"]
+  let old = e.screen
+  if force || old.length != got.rows.length { let old = [] }
+  let fresh = []
+  let i = 0
+  while i < got.rows.length {
+    let line = ansi(got.rows[i])
+    let fresh = fresh.push(line)
+    if i >= old.length || old[i] != line {
+      let parts = parts.push("@{ esc }[@{ i + 1 };1H@{ line }")
+    }
+    let i = i + 1
+  }
+  let junk = map_set(e, "screen", fresh)
+  if got.caret != null {
+    let parts = parts.push("@{ esc }[@{ got.caret.r + 1 };@{ got.caret.c + 1 }H@{ esc }[?25h")
+  }
+  let parts = parts.push("@{ esc }[?2026l")
+  print(parts.join(""))
 }

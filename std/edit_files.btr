@@ -1,0 +1,253 @@
+#!/usr/bin/env bettersh
+
+# Files for the editor: reading a path, completing a typed path, listing a project for
+# Goto Anything, and searching a folder for Find in Files.
+
+import std/fs
+import std/path
+import std/strings
+import std/edit_path
+import std/edit_text
+
+# { ok, text, err }. A missing file is ok with null text, so it can be created by a save.
+fn read(p) {
+  if p == null || p == "" { return { ok: false, text: null, err: "no file name" } }
+  if !fs.exists(p) { return { ok: true, text: null, err: "" } }
+  let k = fs.kind(p)
+  if k == "dir" { return { ok: false, text: null, err: "is a directory" } }
+  if k != "file" { return { ok: false, text: null, err: "cannot read file" } }
+  let text = fs.load(p)
+  if text == null { return { ok: false, text: null, err: "cannot read file" } }
+  return { ok: true, text: text, err: "" }
+}
+
+fn sh_quote(text) {
+  if text == null { return "''" }
+  return "'@{ text.replace("'", "'\"'\"'") }'"
+}
+
+# The file a save should write. A symlink, or a chain of them, resolves to its target so the
+# link stays. Anything else is p.
+fn write_target(p) {
+  if p == null || p == "" { return p }
+  let cmd = "p=@{ sh_quote(p) }; n=0; while [ -L \"$p\" ] && [ $n -lt 8 ]; do t=$(readlink \"$p\") || break; case $t in /*) p=$t ;; *) p=$(dirname \"$p\")/$t ;; esac; n=$((n+1)); done; printf %s \"$p\" || true"
+  let got = capture(cmd)
+  if got == "" { return p }
+  return got
+}
+
+fn is_dir(p) {
+  if p == null || p == "" { return false }
+  return fs.kind(p) == "dir"
+}
+
+# Path typed into the open or save row, split on spaces that are not quoted or escaped.
+fn split_paths(text) {
+  return edit_path.split(text)
+}
+
+fn token_tail(text) {
+  return edit_path.tail(text)
+}
+
+fn token_head(text) {
+  let tail = token_tail(text)
+  if tail.length == text.length { return "" }
+  return text.slice(0, text.length - tail.length)
+}
+
+# Directory of the path before the one being typed. Empty means the working directory.
+fn scope_dir(prompt) {
+  let head = token_head(prompt)
+  if head.length == 0 { return "" }
+  let trimmed = head
+  if trimmed[trimmed.length - 1] == " " { let trimmed = trimmed.slice(0, trimmed.length - 1) }
+  let prev = edit_path.unquote(token_tail(trimmed))
+  if prev.length == 0 { return "" }
+  if prev[prev.length - 1] == "/" {
+    if prev == "/" { return "/" }
+    return prev.slice(0, prev.length - 1)
+  }
+  return path.dir(prev)
+}
+
+# The path the row should complete. A bare name continues in the previous path's directory.
+fn browse_token(prompt) {
+  let tail = edit_path.unquote(token_tail(prompt))
+  if tail.length == 0 {
+    let dir = scope_dir(prompt)
+    if dir == "" { return "" }
+    if dir == "/" { return "/" }
+    return "@{ dir }/"
+  }
+  if tail.index("/") >= 0 { return tail }
+  let dir = scope_dir(prompt)
+  if dir == "" { return tail }
+  if dir == "/" { return "/@{ tail }" }
+  return "@{ dir }/@{ tail }"
+}
+
+# Hidden names show only when the typed name starts with a dot.
+fn wanted(name, prefix) {
+  if !strings.starts(name, prefix) { return false }
+  if prefix.length > 0 && prefix[0] == "." { return true }
+  if name.length > 0 && name[0] == "." { return false }
+  return true
+}
+
+# Names in the token's directory that start with its last part, sorted.
+fn lookup(token) {
+  let dir = ""
+  let prefix = token
+  if token.length > 0 && token[token.length - 1] == "/" {
+    let dir = token
+    if token != "/" { let dir = token.slice(0, token.length - 1) }
+    let prefix = ""
+  } else {
+    let dir = path.dir(token)
+    let prefix = path.base(token)
+  }
+  let at = dir
+  if at == "" { let at = "." }
+  if fs.kind(at) != "dir" { return { dir: dir, names: [] } }
+  let names = fs.list(at)
+  let out = []
+  let i = 0
+  while i < names.length {
+    if wanted(names[i], prefix) { let out = out.push(names[i]) }
+    let i = i + 1
+  }
+  return { dir: dir, names: out.sort() }
+}
+
+fn join_name(dir, name) {
+  if dir.length == 0 { return name }
+  return path.join(dir, name)
+}
+
+fn shown_name(dir, name) {
+  if fs.kind(join_name(dir, name)) == "dir" { return "@{ name }/" }
+  return name
+}
+
+fn finish_path(full) {
+  if fs.kind(full) != "dir" { return full }
+  if full.length > 0 && full[full.length - 1] == "/" { return full }
+  return "@{ full }/"
+}
+
+# Choices for the prompt text: { names, shown }. shown has a slash after each directory.
+fn choices(prompt) {
+  let got = lookup(browse_token(prompt))
+  let shown = []
+  let i = 0
+  while i < got.names.length && i < 200 {
+    let shown = shown.push(shown_name(got.dir, got.names[i]))
+    let i = i + 1
+  }
+  return { dir: got.dir, names: got.names, shown: shown }
+}
+
+# The prompt with the last path completed to choice at. A directory ends with a slash.
+fn complete_at(prompt, at) {
+  let got = lookup(browse_token(prompt))
+  if got.names.length == 0 { return prompt }
+  let k = at
+  if k < 0 || k >= got.names.length { let k = 0 }
+  let full = finish_path(join_name(got.dir, got.names[k]))
+  return "@{ token_head(prompt) }@{ edit_path.quote(full) }"
+}
+
+# Directory names Goto Anything and the side bar skip.
+fn skipped(name) {
+  if name.length > 0 && name[0] == "." { return true }
+  return name == "node_modules" || name == "target" || name == "__pycache__" || name == "dist" || name == "venv"
+}
+
+fn junk_file(name) {
+  return strings.ends(name, ".o") || strings.ends(name, ".pyc") || strings.ends(name, ".dSYM") || name == ".DS_Store"
+}
+
+# Breadth-first listing without recursion. Hidden and build directories are skipped.
+fn walk(base, limit) {
+  let out = []
+  let todo = [""]
+  let at = 0
+  while at < todo.length && out.length < limit {
+    let rel = todo[at]
+    let at = at + 1
+    let dir = base
+    if rel != "" { let dir = path.join(base, rel) }
+    let names = fs.list(dir)
+    if names != null {
+      let names = names.sort()
+      let i = 0
+      while i < names.length && out.length < limit {
+        let name = names[i]
+        let child = name
+        if rel != "" { let child = "@{ rel }/@{ name }" }
+        let k = fs.kind(path.join(dir, name))
+        if k == "dir" {
+          if !skipped(name) && todo.length < 5000 { let todo = todo.push(child) }
+        } else if k == "file" && !junk_file(name) {
+          let out = out.push(child)
+        }
+        let i = i + 1
+      }
+    }
+  }
+  return out
+}
+
+# Files under root, relative to it. A git work tree uses git ls-files. At most limit names.
+fn project_files(root, limit) {
+  let base = root
+  if base == null || base == "" { let base = "." }
+  let cmd = "cd @{ sh_quote(base) } 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git ls-files -co --exclude-standard 2>/dev/null | head -n @{ limit } || true"
+  let listed = capture(cmd)
+  if listed.length > 0 {
+    let out = []
+    let parts = listed.split("\n")
+    let i = 0
+    while i < parts.length {
+      let name = parts[i]
+      if name.length > 0 && !junk_file(path.base(name)) {
+        let out = out.push(name)
+      }
+      let i = i + 1
+    }
+    return out
+  }
+  return walk(base, limit)
+}
+
+# Lines that contain pat under root: [{ path, row, text }]. Binary files are skipped.
+fn grep(root, pat, fold, whole, limit) {
+  if pat == "" { return [] }
+  let base = root
+  if base == null || base == "" { let base = "." }
+  let flags = "-rnIF"
+  if fold { let flags = "@{ flags }i" }
+  if whole { let flags = "@{ flags }w" }
+  let skip = "--exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target"
+  let cmd = "cd @{ sh_quote(base) } 2>/dev/null && grep @{ flags } @{ skip } -e @{ sh_quote(pat) } -- . 2>/dev/null | head -n @{ limit } || true"
+  let raw = capture(cmd)
+  let out = []
+  let rows = raw.split("\n")
+  let i = 0
+  while i < rows.length {
+    let row = rows[i]
+    let a = row.index(":")
+    if a > 0 {
+      let rest = row.slice(a + 1, row.length)
+      let b = rest.index(":")
+      if b > 0 && edit_text.is_digits(rest.slice(0, b)) {
+        let p = row.slice(0, a)
+        if strings.starts(p, "./") { let p = p.slice(2, p.length) }
+        let out = out.push({ path: p, row: edit_text.to_int(rest.slice(0, b)) - 1, text: rest.slice(b + 1, rest.length) })
+      }
+    }
+    let i = i + 1
+  }
+  return out
+}

@@ -6,6 +6,11 @@ case $bin in
 esac
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
+# A live editor saves its session on quit. Keep that out of the home directory.
+BETTERSH_SESSION=$d/session
+export BETTERSH_SESSION
+repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
+peer=$repo/tests/lsp_peer
 fail=0
 bad() {
     printf 'FAIL %s\n' "$1" >&2
@@ -271,7 +276,7 @@ for badchr in 'chr(1114112)' 'chr(-1)' 'chr(1.5)' 'chr(55296)' 'chr(57343)' 'ord
     fi
 done
 
-python3 -c 'open("'"$d"'/badbyte.btr", "wb").write(b"let s = \"" + bytes([255]) + b"\"\nprintln(s.length)\nprintln(ord(s))\n")'
+"$bin" "$repo/tests/harness/badbyte.btr" "$d/badbyte.btr"
 both 'bad byte' "$d/badbyte.btr" || true
 printf '%s\n' 1 255 >"$d/want"
 if [ "$st" -ne 0 ] || [ -s "$d/ve" ] || ! cmp -s "$d/want" "$d/vo"; then
@@ -339,12 +344,22 @@ if [ "$st" != "$is" ] || [ "$st" -ne 2 ] || [ -s "$d/vo" ] || ! cmp -s "$d/ve" "
     bad term_poll
 fi
 
+printf '%s\n' '#!/usr/bin/env bettersh' 'term_take()' >"$d/take.btr"
+"$bin" "$d/take.btr" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+"$bin" --interp "$d/take.btr" </dev/null >"$d/io" 2>"$d/ie"
+is=$?
+if [ "$st" != "$is" ] || [ "$st" -ne 2 ] || [ -s "$d/vo" ] || ! cmp -s "$d/ve" "$d/ie" ||
+    ! grep -q 'bad terminal' "$d/ve"; then
+    bad term_take
+fi
+
 "$bin" std/edit.btr </dev/null >"$d/vo" 2>"$d/ve"
 st=$?
 "$bin" --interp std/edit.btr </dev/null >"$d/io" 2>"$d/ie"
 is=$?
 if [ "$st" -ne 1 ] || [ "$is" != "$st" ] || [ -s "$d/vo" ] || ! cmp -s "$d/vo" "$d/io" ||
-    ! cmp -s "$d/ve" "$d/ie" || ! grep -qx 'usage: bettersh std/edit.btr file' "$d/ve"; then
+    ! cmp -s "$d/ve" "$d/ie" || ! grep -qx 'not a terminal' "$d/ve"; then
     bad 'edit usage'
     printf 'status %s interp %s\n' "$st" "$is" >&2
     cat "$d/ve" >&2
@@ -371,86 +386,154 @@ if [ "$st" != "$is" ] || [ "$st" -ne 0 ] || [ -s "$d/vo" ] || ! cmp -s "$d/vo" "
     cat "$d/ve" >&2
 fi
 
-cat >"$d/edit_pty.py" << 'PY'
-import fcntl, os, pty, select, signal, struct, subprocess, sys, termios, time
-
-bin, edit, dest = sys.argv[1:]
-master, slave = pty.openpty()
-try:
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-    before = termios.tcgetattr(slave)
-    env = os.environ.copy()
-    env["BETTERSH_EDITOR"] = "/no/such/bettersh-editor.conf"
-    proc = subprocess.Popen([bin, edit, dest], stdin=slave, stdout=slave, stderr=slave, close_fds=True, env=env)
-    try:
-        saw = False
-        deadline = time.time() + 2
-        while time.time() < deadline and not saw:
-            ready, _, _ = select.select([master], [], [], 0.1)
-            if master in ready:
-                os.read(master, 8192)
-                saw = True
-            if proc.poll() is not None:
-                break
-        if not saw:
-            sys.stderr.write("editor did not paint\n")
-            sys.exit(1)
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
-        os.kill(proc.pid, signal.SIGWINCH)
-        time.sleep(0.2)
-        keys = b"ihello\x1b:w\r:q\r"
-        sent = 0
-        deadline = time.time() + 4
-        while time.time() < deadline:
-            if proc.poll() is not None and sent >= len(keys):
-                break
-            write_fd = [master] if sent < len(keys) else []
-            ready, write_ready, _ = select.select([master], write_fd, [], 0.1)
-            if master in ready:
-                try:
-                    os.read(master, 8192)
-                except OSError:
-                    break
-            if write_ready and sent < len(keys):
-                sent += os.write(master, keys[sent:sent + 8])
-        else:
-            sys.stderr.write("editor timed out\n")
-            sys.exit(1)
-        rc = proc.wait(timeout=2)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-    after = termios.tcgetattr(slave)
-finally:
-    os.close(master)
-    os.close(slave)
-if rc != 0:
-    sys.stderr.write("editor status %s\n" % rc)
-    sys.exit(1)
-if not (before[3] & termios.ICANON) or not (after[3] & termios.ICANON) or not (after[3] & termios.ECHO):
-    sys.stderr.write("tty was not restored\n")
-    sys.exit(1)
-saved = open(dest, "rb").read()
-if saved != b"hello\n":
-    sys.stderr.write("saved %r\n" % saved)
-    sys.exit(1)
-PY
-if ! python3 "$d/edit_pty.py" "$bin" std/edit.btr "$d/saved.txt"; then
+if ! "$repo/tests/pty_edit" save "$bin" std/edit.btr "$d/saved.txt"; then
     bad 'edit pty'
+fi
+
+"$bin" -e "$d/missing.txt" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+"$bin" --interp -e "$d/missing.txt" </dev/null >"$d/io" 2>"$d/ie"
+is=$?
+if [ "$st" -ne 1 ] || [ "$is" != "$st" ] || [ -s "$d/vo" ] || [ -s "$d/io" ] ||
+    ! cmp -s "$d/ve" "$d/ie" || ! grep -qx 'not a terminal' "$d/ve" || [ -e "$d/missing.txt" ]; then
+    bad 'edit -e'
+    printf 'status %s interp %s\n' "$st" "$is" >&2
+    cat "$d/ve" >&2
+fi
+
+ln -sf "$bin" "$d/btrname"
+"$d/btrname" -e "$d/missing.txt" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'not a terminal' "$d/ve"; then
+    bad 'edit btr -e'
+    cat "$d/ve" >&2
+fi
+
+"$bin" edit "$d/missing.txt" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+"$bin" --interp edit "$d/missing.txt" </dev/null >"$d/io" 2>"$d/ie"
+is=$?
+if [ "$st" -ne 1 ] || [ "$is" != "$st" ] || [ -s "$d/vo" ] || [ -s "$d/io" ] ||
+    ! cmp -s "$d/ve" "$d/ie" || ! grep -qx 'not a terminal' "$d/ve" || [ -e "$d/missing.txt" ]; then
+    bad 'edit word'
+    printf 'status %s interp %s\n' "$st" "$is" >&2
+    cat "$d/ve" >&2
+fi
+
+"$d/btrname" edit "$d/missing.txt" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'not a terminal' "$d/ve"; then
+    bad 'edit btr word'
+    cat "$d/ve" >&2
+fi
+
+"$bin" edit </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'not a terminal' "$d/ve"; then
+    bad 'edit word usage'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/ve" >&2
+fi
+
+"$bin" edit "$d/missing.txt" "$d/extra.txt" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'not a terminal' "$d/ve" ||
+    [ -e "$d/missing.txt" ] || [ -e "$d/extra.txt" ]; then
+    bad 'edit word args'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/ve" >&2
+fi
+
+"$bin" -- edit </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'bettersh: edit: No such file or directory' "$d/ve"; then
+    bad 'edit dash file'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/ve" >&2
+fi
+
+printf 'echo fromfile\n' >"$d/edit"
+(
+    cd "$d" || exit 1
+    "$bin" -- edit >"$d/vo" 2>"$d/ve"
+    printf '%s\n' "$?" >"$d/rc"
+)
+st=$(cat "$d/rc")
+if [ "$st" != 0 ] || ! grep -qx 'fromfile' "$d/vo" || [ -s "$d/ve" ]; then
+    bad 'edit dash runs'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/vo" "$d/ve" >&2
+fi
+rm -f "$d/edit"
+
+"$bin" -e "$d/missing.txt" extra </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'bettersh: -e: too many arguments' "$d/ve"; then
+    bad 'edit -e args'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/ve" >&2
+fi
+
+"$bin" -c "edit ''; echo AFTER" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 0 ] || ! grep -qx 'AFTER' "$d/vo" || ! grep -q 'edit: usage: edit \[path...\]' "$d/ve"; then
+    bad 'edit usage builtin'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/vo" "$d/ve" >&2
+fi
+
+"$bin" -c "edit $d/missing.txt; echo AFTER" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 0 ] || ! grep -qx 'AFTER' "$d/vo" || ! grep -qx 'not a terminal' "$d/ve" ||
+    [ -e "$d/missing.txt" ]; then
+    bad 'edit builtin notty'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/vo" "$d/ve" >&2
+fi
+
+got=$("$bin" -c 'command -V edit')
+if [ "$got" != "edit is a shell builtin" ]; then
+    bad 'edit command -V'
+    printf 'got=%s\n' "$got" >&2
+fi
+
+if ! "$repo/tests/pty_edit" save "$bin" -e "$d/flag.txt"; then
+    bad 'edit -e pty'
+fi
+if ! "$repo/tests/pty_edit" save "$bin" edit "$d/word.txt"; then
+    bad 'edit word pty'
+fi
+if ! "$repo/tests/pty_edit" builtin "$bin" "$d/builtin.txt"; then
+    bad 'edit builtin pty'
+fi
+
+mkdir -p "$d/alone"
+cp "$bin" "$d/alone/bettersh"
+chmod 755 "$d/alone/bettersh"
+(
+    cd "$d/alone" || exit 1
+    unset BETTERSH_PATH
+    ./bettersh -e "$d/missing.txt" >"$d/vo" 2>"$d/ve"
+    printf '%s\n' "$?" >"$d/rc"
+)
+st=$(cat "$d/rc")
+if [ "$st" != 1 ] || [ -s "$d/vo" ] || ! grep -qx 'bettersh: editor not found' "$d/ve"; then
+    bad 'edit missing'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/ve" >&2
 fi
 
 cat >"$d/save.btr" << EOF
 #!/usr/bin/env bettersh
 import std/fs
-import std/edit
+import std/edit_files
 println(fs.save("$d/dir", "x"))
 println(fs.save("$d/no-such/out.txt", "ab"))
 println(fs.save("$d/kept.txt", "ab"))
 println(fs.read("$d/kept.txt"))
 println(fs.load("$d/kept.txt"))
 println(fs.load("$d/no-kept.txt") == null)
-println(edit.open("$d/dir") == null)
+println(edit_files.read("$d/dir").ok == false)
 EOF
 both 'fs save' "$d/save.btr" || true
 printf '%s\n' false false true ab ab true true >"$d/want"
@@ -460,85 +543,81 @@ if [ "$st" -ne 0 ] || [ -s "$d/ve" ] || ! cmp -s "$d/want" "$d/vo"; then
     cat "$d/ve" >&2
 fi
 
-cat >"$d/edit_more.py" << 'PY'
-import fcntl, os, pty, select, struct, subprocess, sys, termios, time
+mkdir -p "$d/ro"
+printf 'keep\n' >"$d/ro/file.txt"
+chmod 555 "$d/ro"
+printf 'old\n' >"$d/atom.txt"
+printf 'target\n' >"$d/sym-target.txt"
+ln -s sym-target.txt "$d/via.txt"
+cat >"$d/atom.btr" << EOF
+#!/usr/bin/env bettersh
+import std/fs
+println(fs.save("$d/atom.txt", "new\n"))
+println(fs.save("$d/ro/file.txt", "clobber\n"))
+println(fs.save("$d/via.txt", "fresh\n"))
+println(fs.save("$d/missing/nope.txt", "x"))
+println(fs.load("$d/atom.txt"))
+println(fs.load("$d/ro/file.txt"))
+println(fs.load("$d/via.txt"))
+println(fs.load("$d/sym-target.txt"))
+EOF
+both 'fs atomic' "$d/atom.btr" || true
+cat >"$d/want" << 'EOF'
+true
+false
+true
+false
+new
 
-mode = sys.argv[1]
-dest = sys.argv[2]
-cmd = sys.argv[3:] + [dest]
-master, slave = pty.openpty()
-rc = 1
-buf = b""
-try:
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-    env = os.environ.copy()
-    env["BETTERSH_EDITOR"] = "/no/such/bettersh-editor.conf"
-    proc = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave, close_fds=True, env=env)
-    try:
-        deadline = time.time() + 4
-        sent = 0
-        keys = b"ihello\x1b:w\r:q!\r" if mode == "fail" else b""
-        while time.time() < deadline:
-            if proc.poll() is not None and (mode == "dir" or sent >= len(keys)):
-                break
-            write_fd = []
-            if mode == "fail" and sent < len(keys) and buf.find(b"\x1b[?1049h") >= 0:
-                write_fd = [master]
-            ready, write_ready, _ = select.select([master], write_fd, [], 0.1)
-            if master in ready:
-                try:
-                    buf += os.read(master, 8192)
-                except OSError:
-                    break
-            if write_ready:
-                sent += os.write(master, keys[sent:sent + 8])
-        else:
-            sys.stderr.write("editor timed out\n")
-            sys.exit(1)
-        if proc.poll() is None:
-            proc.kill()
-            sys.stderr.write("editor still running\n")
-            sys.exit(1)
-        rc = proc.wait(timeout=2)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-    after = termios.tcgetattr(slave)
-finally:
-    os.close(master)
-    os.close(slave)
-if not (after[3] & termios.ICANON) or not (after[3] & termios.ECHO):
-    sys.stderr.write("tty was not restored\n")
-    sys.exit(1)
-if mode == "dir":
-    if rc != 1 or b"cannot read file" not in buf or b"\x1b[?1049h" in buf or not os.path.isdir(dest):
-        sys.stderr.write("dir rc %s %r\n" % (rc, buf))
-        sys.exit(1)
-elif rc != 0 or b"cannot write file" not in buf or os.path.exists(dest):
-    sys.stderr.write("fail rc %s %r\n" % (rc, buf[-400:]))
-    sys.exit(1)
-PY
-if ! python3 "$d/edit_more.py" dir "$d/dir" "$bin" std/edit.btr; then
+keep
+
+fresh
+
+target
+
+EOF
+chmod 755 "$d/ro"
+if [ "$st" -ne 0 ] || [ -s "$d/ve" ] || ! cmp -s "$d/want" "$d/vo" || [ -L "$d/via.txt" ]; then
+    bad 'fs atomic'
+    cat "$d/vo" >&2
+    cat "$d/ve" >&2
+fi
+if find "$d" -name '.bshsave-*' -print | grep -q .; then
+    bad 'fs atomic temp'
+fi
+
+if ! "$repo/tests/pty_edit" folder "$d/dir" "$bin" std/edit.btr; then
     bad 'edit dir'
 fi
-if ! python3 "$d/edit_more.py" dir "$d/dir" "$bin" --interp std/edit.btr; then
+if ! "$repo/tests/pty_edit" folder "$d/dir" "$bin" --interp edit; then
     bad 'edit dir interp'
 fi
-if ! python3 "$d/edit_more.py" fail "$d/no-such/out.txt" "$bin" std/edit.btr; then
+printf 'secret\n' >"$d/locked.txt"
+chmod 000 "$d/locked.txt"
+if [ ! -r "$d/locked.txt" ]; then
+    if ! "$repo/tests/pty_edit" bad "$d/locked.txt" "$bin" std/edit.btr; then
+        bad 'edit unreadable'
+    fi
+    if ! "$repo/tests/pty_edit" bad "$d/locked.txt" "$bin" --interp edit; then
+        bad 'edit unreadable interp'
+    fi
+fi
+chmod 644 "$d/locked.txt"
+if ! "$repo/tests/pty_edit" fail "$d/no-such/out.txt" "$bin" std/edit.btr; then
     bad 'edit save fail'
 fi
-if ! python3 "$d/edit_more.py" fail "$d/no-such/out.txt" "$bin" --interp std/edit.btr; then
+if ! "$repo/tests/pty_edit" fail "$d/no-such/out.txt" "$bin" --interp std/edit.btr; then
     bad 'edit save fail interp'
 fi
 
 cat >"$d/esc.btr" << 'EOF'
 #!/usr/bin/env bettersh
 import std/edit
-let buf = edit.buffer("@{ chr(27) }[2J", "name")
-let text = edit.frame(buf, 16, 5)
+let e = edit.app(16, 5)
+edit.load(e, "@{ chr(27) }[2J", "name")
+let text = edit.frame(e)
 println(text.contains(chr(27)))
-println(text.contains("?"))
+println(text.contains(chr(9243)))
 EOF
 both 'edit esc' "$d/esc.btr" || true
 printf '%s\n' false true >"$d/want"
@@ -644,79 +723,15 @@ let screen = tui.place(screen, tui.label("ready"), 0, 2)
 tui.run(screen, step)
 EOF
 
-cat >"$d/tui_pty.py" << 'PY'
-import fcntl, os, pty, select, signal, struct, subprocess, sys, termios, time
-
-dest = sys.argv[1]
-cmd = sys.argv[2:] + [dest]
-master, slave = pty.openpty()
-rc = 1
-buf = b""
-try:
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-    before = termios.tcgetattr(slave)
-    proc = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
-    try:
-        deadline = time.time() + 4
-        sent = 0
-        keys = b"hello\r"
-        winch = False
-        while time.time() < deadline:
-            if proc.poll() is not None and sent >= len(keys):
-                break
-            write_fd = []
-            if sent < len(keys) and winch and buf.find(b"\x1b[?1049h") >= 0:
-                write_fd = [master]
-            ready, write_ready, _ = select.select([master], write_fd, [], 0.1)
-            if master in ready:
-                try:
-                    buf += os.read(master, 8192)
-                except OSError:
-                    break
-            if not winch and buf.find(b"\x1b[?1049h") >= 0 and proc.poll() is None:
-                time.sleep(0.2)
-                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
-                os.kill(proc.pid, signal.SIGWINCH)
-                winch = True
-                time.sleep(0.2)
-            if write_ready and sent < len(keys):
-                sent += os.write(master, keys[sent:sent + 8])
-        else:
-            sys.stderr.write("tui timed out\n")
-            sys.exit(1)
-        rc = proc.wait(timeout=2)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
-    after = termios.tcgetattr(slave)
-finally:
-    os.close(master)
-    os.close(slave)
-if rc != 0:
-    sys.stderr.write("tui status %s\n" % rc)
-    sys.exit(1)
-if not (before[3] & termios.ICANON) or not (after[3] & termios.ICANON) or not (after[3] & termios.ECHO):
-    sys.stderr.write("tty was not restored\n")
-    sys.exit(1)
-if b"\x1b[?1049h" not in buf or b"\x1b[?1049l" not in buf or b"hello" not in buf or b"( Go )" not in buf or b"ready" not in buf:
-    sys.stderr.write("tui frame %r\n" % buf[-500:])
-    sys.exit(1)
-saved = open(dest, "rb").read()
-if saved != b"hello":
-    sys.stderr.write("saved %r\n" % saved)
-    sys.exit(1)
-PY
 rm -f "$d/typed.txt"
-if ! python3 "$d/tui_pty.py" "$d/typed.txt" "$bin" "$d/tui_run.btr"; then
+if ! "$repo/tests/pty_edit" tui "$d/typed.txt" "$bin" "$d/tui_run.btr"; then
     bad 'tui pty'
 fi
 rm -f "$d/typed.txt"
-if ! python3 "$d/tui_pty.py" "$d/typed.txt" "$bin" --interp "$d/tui_run.btr"; then
+if ! "$repo/tests/pty_edit" tui "$d/typed.txt" "$bin" --interp "$d/tui_run.btr"; then
     bad 'tui pty interp'
 fi
 
-cp tests/unit/lsp_peer.py "$d/peer.py"
 cat >"$d/editor.conf" << EOF
 # editor
 theme gutter red
@@ -724,7 +739,7 @@ theme name dark
 theme keyword blue
 
 server py first-cmd
-server py python3 -u $d/peer.py $d/log 2>$d/lsp_err
+server py $peer $d/log 2>$d/lsp_err
 root $d
 EOF
 printf '%s\n' 'theme nope' >"$d/bad.conf"
@@ -734,11 +749,12 @@ import std/fs
 import std/env
 import std/edit
 import std/edit_lsp
-import std/lsp
+import std/edit_doc as doc
 import std/theme
 
 env.set("BETTERSH_EDITOR", "$d/bad.conf")
 println(edit_lsp.read_config() == null)
+println(edit_lsp.config_note() == "$d/bad.conf has a line that cannot be read; using the defaults")
 env.set("BETTERSH_EDITOR", "")
 println(edit_lsp.read_config() == null)
 env.set("BETTERSH_EDITOR", "$d/editor.conf")
@@ -748,46 +764,48 @@ println(cfg.keyword)
 println(cfg.status)
 println(cfg.servers.length)
 println(cfg.servers[0].cmd)
-println(cfg.servers[1].cmd == "python3 -u $d/peer.py $d/log 2>$d/lsp_err")
+println(cfg.servers[1].cmd == "$peer $d/log 2>$d/lsp_err")
 println(cfg.root == "$d")
 println(theme.themed(cfg))
 
-let gone = theme.load("server py true\n")
-let b = edit.buffer("z\n", "$d/none.py")
-let b = edit_lsp.attach(b, gone)
-println(b.hint)
-println(edit_lsp.stop(b) == null)
+fs.write("$d/none.py", "z\n")
+let gone = edit.app_with(40, 10, theme.load("server py true\n"))
+edit.open_path(gone, "$d/none.py")
+println(gone.msg)
+edit.key(gone, "ctrl-w")
+println(edit.current(gone).lsp == null)
 
 let path = "$d/sample.py"
-let b = edit.buffer("al beta\nsecond\n", path)
-let b = edit_lsp.attach(b, cfg)
-println(b.lsp != null)
-println(b.lsp.ready)
-println(b.lsp.lang)
-println(lsp.line_message(b.lsp, 0))
-let b = edit.press(b, "K")
-println(b.hint)
-let b = edit.press(b, "i")
-let b = edit.press(b, "ctrl-x")
-println(b.hint)
-let b = edit.press(b, "ctrl-u")
-println(edit.text(b))
-let b = edit.press(b, "escape")
-let b = edit.press(b, "g")
-let b = edit.press(b, "d")
-println("@{ b.row }:@{ b.col }")
-println(b.mode)
-let b = edit_lsp.define(b)
-println(b.hint)
-let b = edit.press(b, "ctrl-s")
-let b = edit.commit(b)
-println(b.dirty)
+fs.write(path, "al beta\nsecond\n")
+let e = edit.app_with(60, 12, cfg)
+edit.open_path(e, path)
+let d = edit.current(e)
+println(d.lsp != null)
+println(d.lsp.ready)
+println(d.lsp.lang)
+println(edit_lsp.message_at(d, 0))
+edit.keys_in(e, ["ctrl-k", "ctrl-i"])
+println(e.overlay.text)
+edit.key(e, "escape")
+edit.keys_in(e, ["right", "right", "ctrl-space"])
+println(e.comp.items[e.comp.items.length - 1].name)
+edit.key(e, "up")
+edit.key(e, "enter")
+println(edit.text(e))
+edit.key(e, "f12")
+println(edit.sels(e))
+edit.key(e, "f12")
+println(e.msg)
+edit.key(e, "ctrl-s")
+println(doc.dirty(d))
 println(fs.load(path))
-println(edit_lsp.stop(b) == null)
+edit.key(e, "ctrl-w")
+println(d.lsp == null)
 println(fs.load("$d/log"))
 EOF
 both lsp "$d/lsp.btr" || true
 cat >"$d/want" << 'EOF'
+true
 true
 true
 dim
@@ -798,19 +816,18 @@ first-cmd
 true
 true
 true
-lsp: stopped
+language server stopped
 true
 true
 true
 python
 unused
-lsp: a name
-lsp: alpha
+a name
+alpha
 alpha beta
 second
-1:2
-normal
-/tmp/other.py:5:6
+2:3
+The definition is in /tmp/other.py:5, which cannot be opened
 false
 alpha beta
 second
@@ -842,34 +859,26 @@ cat >"$d/theme.btr" << 'EOF'
 #!/usr/bin/env bettersh
 import std/edit
 import std/theme
-let plain = edit.buffer("let x\n", "a.btr")
-let themed = edit.buffer("let x\n", "a.btr")
-let themed = map_set(themed, "theme", theme.dark())
-println(edit.frame(themed, 24, 6).contains(chr(27)))
+let plain = edit.app_with(24, 6, theme.plain())
+edit.load(plain, "let x\n", "a.btr")
+let themed = edit.app_with(24, 6, theme.dark())
+edit.load(themed, "let x\n", "a.btr")
+println(edit.frame(themed).contains(chr(27)))
 println("PLAIN")
-edit.draw(plain, 24, 6)
+println(edit.paint(plain))
 println("THEME")
-edit.draw(themed, 24, 6)
+println(edit.paint(themed))
 println("PY")
-let py = map_set(edit.buffer("def \"s\" # c\n", "a.py"), "theme", theme.dark())
-edit.draw(py, 40, 6)
+let py = edit.app_with(40, 6, theme.dark())
+edit.load(py, "def \"s\" # c\n", "a.py")
+println(edit.paint(py))
 println("TXT")
-let txt = map_set(edit.buffer("let x\n", "a.txt"), "theme", theme.dark())
-edit.draw(txt, 40, 6)
+let txt = edit.app_with(40, 6, theme.dark())
+edit.load(txt, "let x\n", "a.txt")
+println(edit.paint(txt))
 EOF
 both 'edit theme' "$d/theme.btr" || true
-python3 -c '
-import pathlib, sys
-b = pathlib.Path(sys.argv[1]).read_bytes()
-head, rest = b.split(b"PLAIN\n", 1)
-plain, theme = rest.split(b"THEME\n", 1)
-theme, py = theme.split(b"PY\n", 1)
-py, txt = py.split(b"TXT\n", 1)
-ok = head == b"false\n" and b"[35m" not in plain and b"[35mlet\x1b[0m" in theme and b"[36m" in theme and b"[2m" in theme
-ok = ok and b"[35mdef\x1b[0m" in py and b"[32m\"s\"\x1b[0m" in py and b"[2m# c\x1b[0m" in py
-ok = ok and b"[35m" not in txt
-sys.exit(0 if ok else 1)
-' "$d/vo" || bad 'edit theme bytes'
+"$bin" "$repo/tests/harness/theme.btr" "$d/vo" || bad 'edit theme bytes'
 if [ "$st" -ne 0 ] || [ -s "$d/ve" ]; then
     bad 'edit theme'
     cat "$d/ve" >&2

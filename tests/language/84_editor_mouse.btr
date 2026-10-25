@@ -1,0 +1,98 @@
+#!/usr/bin/env bettersh
+# The mouse: clicks, drags, the wheel, tabs, menus, and the scroll bar. x and y are 1-based cells.
+import std/edit
+
+fn ev(act, button, x, y, t) {
+  return { key: "mouse", act: act, button: button, x: x, y: y, shift: false, alt: false, ctrl: false, dir: "", t: t }
+}
+
+fn show(e, label) {
+  println("@{ label }: @{ edit.sels(e) } top=@{ edit.current(e).top }")
+}
+
+let lines = []
+let i = 1
+while i <= 40 {
+  let lines = lines.push("line @{ i } word")
+  let i = i + 1
+}
+let e = edit.app(50, 12)
+edit.load(e, "@{ lines.join("\n") }\n", "m.txt")
+# Row 3 is the first text row: the menu and tabs are above it. The gutter is 4 cells.
+edit.click(e, 8, 3, "")
+show(e, "click")
+edit.key(e, ev("down", 0, 8, 3, 1000))
+edit.key(e, ev("up", 0, 8, 3, 1000))
+edit.key(e, ev("down", 0, 8, 3, 1100))
+edit.key(e, ev("up", 0, 8, 3, 1100))
+show(e, "double click")
+edit.key(e, ev("down", 0, 8, 3, 1200))
+edit.key(e, ev("up", 0, 8, 3, 1200))
+show(e, "triple click")
+edit.click(e, 30, 4, "")
+show(e, "past line end")
+edit.click(e, 6, 5, "shift")
+show(e, "shift click")
+edit.click(e, 6, 7, "alt")
+show(e, "alt click")
+edit.key(e, ev("down", 0, 6, 3, 5000))
+edit.key(e, ev("drag", 0, 9, 4, 5000))
+edit.key(e, ev("drag", 0, 11, 5, 5000))
+edit.key(e, ev("up", 0, 11, 5, 5000))
+show(e, "drag")
+edit.key(e, ev("down", 0, 2, 4, 7000))
+edit.key(e, ev("drag", 0, 2, 5, 7000))
+edit.key(e, ev("up", 0, 2, 5, 7000))
+show(e, "gutter drag")
+let wheel = ev("wheel", 0, 10, 6, 0)
+let junk = map_set(wheel, "dir", "down")
+edit.key(e, wheel)
+show(e, "wheel down")
+let junk = map_set(wheel, "dir", "up")
+edit.key(e, wheel)
+show(e, "wheel up")
+edit.key(e, ev("down", 0, 50, 11, 9000))
+show(e, "scroll bar")
+edit.key(e, ev("down", 0, 10, 12, 9500))
+show(e, "status row")
+
+let e = edit.app(50, 12)
+edit.load(e, "first\n", "a.txt")
+edit.load(e, "second\n", "b.txt")
+println(edit.frame(e).split("\n")[1])
+edit.click(e, 3, 2, "")
+println(edit.current(e).name)
+edit.click(e, 12, 2, "")
+println(edit.current(e).name)
+edit.click(e, 17, 2, "")
+println(edit.frame(e).split("\n")[1])
+println(e.quit)
+
+let e = edit.app(50, 14)
+edit.load(e, "pick me\n", "c.txt")
+edit.click(e, 2, 1, "")
+println(e.overlay.kind)
+println(edit.frame(e).contains("Open"))
+edit.click(e, 2, 1, "")
+println(e.overlay == null)
+edit.click(e, 9, 1, "")
+println(e.overlay.items[0].name)
+edit.key(e, ev("down", 0, 9, 6, 0))
+edit.key(e, ev("up", 0, 9, 6, 0))
+println(e.overlay == null)
+println(e.clip.text)
+edit.key(e, ev("down", 2, 6, 3, 0))
+println(e.overlay.kind)
+println(e.overlay.items[3].name)
+edit.key(e, ev("down", 0, 9, 8, 0))
+println(edit.sels(e))
+println(edit.text(e))
+
+let e = edit.app(40, 10)
+edit.load(e, "abcdef\nab\nabcdefgh\n", "b.txt")
+edit.key(e, ev("down", 1, 6, 3, 0))
+edit.key(e, ev("drag", 1, 8, 5, 0))
+edit.key(e, ev("up", 1, 8, 5, 0))
+println(edit.sels(e))
+edit.type_text(e, "X")
+println(edit.text(e).replace("\n", "|"))

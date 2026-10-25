@@ -1,0 +1,34 @@
+true
+true
+true
+true
+true
+true
+FRAME
+ sample.btr ×                                   
+  1 let name = "hi" # c                         
+                                                
+                                                
+                                                
+ Line 1, Column 1              Unix    BetterSh 
+PLAIN
+false
+false
+false
+SETTINGS
+2
+false
+2
+false
+ plain.txt ×                  
+ a                            
+                              
+                              
+                              
+ Line 1, Column 1  Plain Text 
+true
+true
+true
+SERVER
+false
+1
