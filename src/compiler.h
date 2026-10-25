@@ -5,6 +5,18 @@
 #include "error.h"
 #include "mod.h"
 
+/* The innermost loop being compiled: where break and continue jump. A while
+   loop continues at its head, a for loop at its step, which comes later. */
+typedef struct CLoop {
+    struct CLoop *outer;
+    int head_known;
+    uint32_t head;
+    uint32_t breaks[256];
+    int nbreaks;
+    uint32_t conts[256];
+    int nconts;
+} CLoop;
+
 typedef struct Compiler {
     Arena *arena;
     Diag *diag;
@@ -24,6 +36,7 @@ typedef struct Compiler {
         uint8_t local;
     } ups[256];
     int nups;
+    CLoop *loop;
     int failed;
 } Compiler;
 
@@ -46,6 +59,8 @@ int compile_while(Compiler *c, const MNode *node);
 int compile_for(Compiler *c, const MNode *node);
 int compile_case(Compiler *c, const MNode *node);
 int compile_return(Compiler *c, const MNode *node);
+int compile_jump(Compiler *c, const MNode *node);
+int compile_assign(Compiler *c, const MNode *node);
 
 void c_emit(Compiler *c, uint8_t op);
 void c_emit_u8(Compiler *c, uint8_t value);

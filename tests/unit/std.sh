@@ -855,6 +855,152 @@ if [ "$st" -ne 0 ] || [ -s "$d/ve" ] || [ -s "$d/lsp_err" ] || ! cmp -s "$d/want
     cat "$d/lsp_err" >&2
 fi
 
+cat >"$d/shell.conf" << EOF
+server sh $peer $d/shlog 2>$d/shl_err
+root $d
+EOF
+cat >"$d/shell_lsp.btr" << EOF
+#!/usr/bin/env bettersh
+import std/fs
+import std/env
+import std/edit
+import std/edit_lsp
+import std/edit_doc as doc
+
+env.set("BETTERSH_EDITOR", "$d/shell.conf")
+let cfg = edit_lsp.read_config()
+let path = "$d/sample.btr"
+fs.write(path, "let n = 1\nsh {\n  ls -l\n}\n$ echo " + "@" + "{ n } x\n")
+let e = edit.app_with(60, 12, cfg)
+edit.open_path(e, path)
+let d = edit.current(e)
+println(d.lsp == null)
+println(d.shl.ready)
+println(d.shl.lang)
+println(edit_lsp.message_at(d, 0))
+edit.keys_in(e, ["down", "down", "right", "right", "ctrl-k", "ctrl-i"])
+println(e.overlay.text)
+edit.key(e, "escape")
+edit.keys_in(e, ["ctrl-space"])
+println(e.comp.items[e.comp.items.length - 1].name)
+edit.key(e, "escape")
+edit.key(e, "f12")
+println(edit.sels(e))
+edit.key(e, "ctrl-w")
+println(d.shl == null)
+println(fs.load("$d/shlog"))
+EOF
+both shell_lsp "$d/shell_lsp.btr" || true
+cat >"$d/want" << 'EOF'
+true
+true
+shellscript
+sh: unused
+a name
+alpha
+2:3
+true
+initialize
+config
+initialized
+didOpen '#!/bin/sh\n\n  ls -l\n\n  echo $XXXXX x\n'
+hover
+completion
+definition
+didClose
+shutdown
+exit
+
+EOF
+if [ "$st" -ne 0 ] || [ -s "$d/ve" ] || [ -s "$d/shl_err" ] || ! cmp -s "$d/want" "$d/vo"; then
+    bad shell_lsp
+    diff -u "$d/want" "$d/vo" >&2
+    cat "$d/ve" >&2
+    cat "$d/shl_err" >&2
+fi
+
+mkdir -p "$d/tree/src"
+printf 'a\n' >"$d/tree/src/a.btr"
+printf 'b\n' >"$d/tree/b.txt"
+(cd "$d/tree" && git init -q && git add . && git -c user.email=t@t -c user.name=t commit -qm init) >/dev/null 2>&1
+printf 'more\n' >>"$d/tree/b.txt"
+cat >"$d/side.btr" << 'EOF'
+#!/usr/bin/env bettersh
+import std/edit
+import std/edit_tree
+import std/fs
+import std/theme
+import std/path
+let e = edit.app_with(60, 12, theme.load("theme name nord"))
+edit.keys_in(e, ["ctrl-k", "ctrl-b", "ctrl-0"])
+println(e.side.items.length)
+println(edit_tree.state_of(e.side.git, edit_tree.full("b.txt"), false))
+edit.key(e, "n")
+edit.keys_in(e, ["n", "e", "w", ".", "t", "x", "t", "enter"])
+println(fs.exists("src/new.txt"))
+println(edit.current(e).name)
+edit.key(e, "ctrl-0")
+println(e.side.items[e.side.pick].path)
+println(edit_tree.state_of(e.side.git, edit_tree.full("src"), true))
+edit.key(e, "N")
+edit.keys_in(e, ["d", "/", "e", "enter"])
+println(fs.kind("src/d/e"))
+edit.keys_in(e, ["end", "c", "home", "v"])
+println(e.msg)
+edit.keys_in(e, ["end", "r"])
+println(e.prompt.text)
+edit.keys_in(e, ["backspace", "backspace", "backspace", "m", "d", "enter"])
+println(e.msg)
+println(fs.exists("b.md"))
+edit.keys_in(e, ["end", "D", "enter"])
+println(fs.exists("b copy.md"))
+edit.keys_in(e, ["end", "d"])
+println(e.overlay.text)
+edit.key(e, "y")
+println(e.msg)
+println(fs.exists("b copy.md"))
+edit.key(e, "home")
+edit.key(e, "d")
+println(e.overlay.text.contains("folder"))
+edit.key(e, "n")
+println(fs.kind("src"))
+println(edit_tree.bad_name("../x"))
+println(edit_tree.move("src", "src/inner"))
+println(edit_tree.free_copy(".", "src/a.btr"))
+edit.key(e, "u")
+println(e.side.root == path.dir(edit_tree.full(".")))
+EOF
+(cd "$d/tree" && BETTERSH_TRASH=off "$bin" "$d/side.btr") >"$d/vo" 2>"$d/ve"
+st=$?
+cat >"$d/want" << 'EOF'
+2
+M
+true
+new.txt
+src/new.txt
+•
+dir
+Pasted src/b.txt
+b.txt
+Moved to b.md
+true
+true
+Delete the file: b.md?
+Deleted b.md
+true
+true
+dir
+a name cannot use . or ..
+cannot move a folder into itself
+a.btr
+true
+EOF
+if [ "$st" -ne 0 ] || [ -s "$d/ve" ] || ! cmp -s "$d/want" "$d/vo"; then
+    bad side_bar
+    diff -u "$d/want" "$d/vo" >&2
+    cat "$d/ve" >&2
+fi
+
 cat >"$d/theme.btr" << 'EOF'
 #!/usr/bin/env bettersh
 import std/edit

@@ -7,6 +7,10 @@ import std/path
 # The language comes from the file extension. An unknown extension stays plain.
 # A block comment or a string that is still open keeps going on the next line.
 # State F means the next identifier is a function name.
+# In a .btr file the shell text of `$ cmd`, `$( )` and `sh { }` uses the same marks in upper
+# case, with _ for plain. $ marks the opening delimiter and % the closing one. @ marks the
+# `@{` and `}` around an inserted modern value, whose own marks are the usual lower case ones.
+# State Z carries a shell region that is still open: Zkind|depth|flow|quote|.
 
 fn lang(file) {
   if file == null { return "" }
@@ -25,7 +29,7 @@ fn lang(file) {
 }
 
 fn words(which) {
-  if which == "btr" { return "let fn if else while for return import case in" }
+  if which == "btr" { return "let fn if else while for return import case in break continue sh true false null" }
   if which == "js" { return "await break case catch class const continue debugger default delete do else export extends false finally for function if import in instanceof let new null return static super switch this throw true try typeof var void while with yield async" }
   if which == "ts" { return "abstract as asserts declare enum implements infer interface is keyof namespace never readonly type unique unknown override" }
   if which == "rust" { return "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while" }
@@ -324,6 +328,284 @@ fn take_var(parts, keep, line, i) {
   return { parts: push(parts, keep, "."), i: i + 1 }
 }
 
+# True for a mark inside shell text, delimiters included.
+fn in_shell(m) {
+  if m == "_" || m == "$" || m == "%" { return true }
+  return m >= "A" && m <= "Z"
+}
+
+# The role of a mark with the shell flag dropped: S is s, _ is plain, $ and % are m.
+fn role_of(m) {
+  if m == "_" { return "." }
+  if m == "$" || m == "%" { return "m" }
+  if m >= "A" && m <= "Z" { return m.lower() }
+  return m
+}
+
+# True when the mark is a string or a comment, in shell text or not.
+fn literal(m) {
+  return m == "s" || m == "c" || m == "S" || m == "C"
+}
+
+fn shell_mark(m) {
+  if m == "." { return "_" }
+  return m.upper()
+}
+
+fn sh_push(parts, keep, m) {
+  return push(parts, keep, shell_mark(m))
+}
+
+fn sh_fill(parts, keep, m, from, to) {
+  return fill(parts, keep, shell_mark(m), from, to)
+}
+
+fn sh_state(kind, depth, flow, q) {
+  return "Z@{ kind }|@{ depth }|@{ flow }|@{ q }|"
+}
+
+fn sh_parse(state) {
+  let p = state.slice(1, state.length).split("|")
+  return { kind: p[0], depth: num_arg("x@{ p[1] }"), flow: num_arg("x@{ p[2] }"), q: p[3] }
+}
+
+# A shell word ends at a space or an operator.
+fn sh_word_char(ch) {
+  if ch == " " || ch == "\t" || ch == ";" || ch == "|" || ch == "&" || ch == "(" || ch == ")" { return false }
+  if ch == "<" || ch == ">" || ch == "'" || ch == "\"" || ch == "`" || ch == "$" || ch == "{" || ch == "}" { return false }
+  if ch == "@" { return false }
+  return true
+}
+
+fn sh_word_start(line, i) {
+  if i == 0 { return true }
+  let p = line[i - 1]
+  return p == " " || p == "\t" || p == ";" || p == "|" || p == "&" || p == "(" || p == ")" || p == "<" || p == ">"
+}
+
+fn all_digits(word) {
+  if word.length == 0 { return false }
+  let i = 0
+  while i < word.length {
+    if !is_digit(word[i]) { return false }
+    let i = i + 1
+  }
+  return true
+}
+
+# Where the `}` that closes `@{` at i is, or the line's end.
+fn hole_end(line, i) {
+  let j = i + 2
+  let depth = 0
+  let q = ""
+  while j < line.length {
+    let ch = line[j]
+    if q != "" {
+      if ch == "\\" { let j = j + 1 }
+      else if ch == q { let q = "" }
+    } else if ch == "\"" || ch == "'" {
+      let q = ch
+    } else if ch == "{" {
+      let depth = depth + 1
+    } else if ch == "}" {
+      if depth == 0 { return j }
+      let depth = depth - 1
+    }
+    let j = j + 1
+  }
+  return j
+}
+
+# `@{ expr }` inside shell text: the braces get @, the expression its modern marks.
+fn take_hole(parts, keep, line, i) {
+  let end = hole_end(line, i)
+  let parts = fill(parts, keep, "@", i, i + 2)
+  let inner = scan(line.slice(i + 2, end), "btr", "", keep).marks
+  let k = 0
+  while k < inner.length {
+    let parts = push(parts, keep, inner[k])
+    let k = k + 1
+  }
+  if end < line.length {
+    let parts = push(parts, keep, "@")
+    return { parts: parts, i: end + 1 }
+  }
+  return { parts: parts, i: end }
+}
+
+fn sh_var(parts, keep, line, i) {
+  if i + 1 < line.length && line[i + 1] == "{" {
+    let j = i + 2
+    let depth = 0
+    while j < line.length && !(line[j] == "}" && depth == 0) {
+      if line[j] == "{" { let depth = depth + 1 }
+      if line[j] == "}" { let depth = depth - 1 }
+      let j = j + 1
+    }
+    if j < line.length { let j = j + 1 }
+    return { parts: sh_fill(parts, keep, "v", i, j), i: j }
+  }
+  let got = take_var([], true, line, i)
+  let k = 0
+  while k < got.parts.length {
+    let parts = sh_push(parts, keep, got.parts[k])
+    let k = k + 1
+  }
+  return { parts: parts, i: got.i }
+}
+
+fn sh_opens(word) {
+  return word == "if" || word == "case" || word == "for" || word == "while" || word == "until" || word == "select"
+}
+
+fn sh_closes(word) {
+  return word == "fi" || word == "esac" || word == "done"
+}
+
+# True when the statement goes on after the line: it ends in `\`, `|`, `&&` or `||`.
+fn sh_more(line, last) {
+  if last < 0 { return false }
+  let ch = line[last]
+  if ch == "\\" || ch == "|" { return true }
+  return ch == "&" && last > 0 && line[last - 1] == "&"
+}
+
+# Scans shell text from i until its region closes or the line ends. The region is open when it
+# starts, and the state says how: kind $ ends with the statement, ) and } at their closer.
+fn scan_sh(parts, keep, line, i, state) {
+  let st = sh_parse(state)
+  let kind = st.kind
+  let depth = st.depth
+  let flow = st.flow
+  let q = st.q
+  let cmd = true
+  let last = 0 - 1
+  while i < line.length {
+    let ch = line[i]
+    if q == "" && ch != " " && ch != "\t" && !(ch == "#" && sh_word_start(line, i)) { let last = i }
+    if q != "" {
+      if q == "'" {
+        if ch == "'" { let q = "" }
+        let parts = sh_push(parts, keep, "s")
+        let i = i + 1
+      } else if q == "`" {
+        if ch == "`" { let q = "" }
+        let parts = sh_push(parts, keep, "s")
+        let i = i + 1
+      } else if ch == "\\" && i + 1 < line.length {
+        let parts = sh_fill(parts, keep, "s", i, i + 2)
+        let i = i + 2
+      } else if ch == "\"" {
+        let q = ""
+        let parts = sh_push(parts, keep, "s")
+        let i = i + 1
+      } else if ch == "@" && i + 1 < line.length && line[i + 1] == "{" {
+        let got = take_hole(parts, keep, line, i)
+        let parts = got.parts
+        let i = got.i
+      } else if ch == "$" && i + 1 < line.length && line[i + 1] != "(" && line[i + 1] != " " {
+        let got = sh_var(parts, keep, line, i)
+        let parts = got.parts
+        let i = got.i
+      } else {
+        let parts = sh_push(parts, keep, "s")
+        let i = i + 1
+      }
+    } else if ch == "\\" {
+      let parts = sh_fill(parts, keep, ".", i, i + 2)
+      let i = i + 2
+      if i > line.length { let i = line.length }
+    } else if ch == "'" || ch == "\"" || ch == "`" {
+      let q = ch
+      let parts = sh_push(parts, keep, "s")
+      let i = i + 1
+      let cmd = false
+    } else if ch == "#" && sh_word_start(line, i) {
+      let parts = sh_fill(parts, keep, "c", i, line.length)
+      let i = line.length
+    } else if ch == "@" && i + 1 < line.length && line[i + 1] == "{" {
+      let got = take_hole(parts, keep, line, i)
+      let parts = got.parts
+      let i = got.i
+      let cmd = false
+    } else if ch == "$" && i + 1 < line.length && line[i + 1] == "(" {
+      let parts = sh_push(parts, keep, ".")
+      let i = i + 1
+    } else if ch == "$" {
+      let got = sh_var(parts, keep, line, i)
+      let parts = got.parts
+      let i = got.i
+      let cmd = false
+    } else if ch == "(" {
+      if kind == ")" { let depth = depth + 1 }
+      let parts = sh_push(parts, keep, ".")
+      let i = i + 1
+      let cmd = true
+    } else if ch == ")" {
+      if kind == ")" && depth == 0 {
+        let parts = push(parts, keep, "%")
+        return { parts: parts, i: i + 1, state: "" }
+      }
+      if kind == ")" { let depth = depth - 1 }
+      let parts = sh_push(parts, keep, ".")
+      let i = i + 1
+    } else if ch == "{" {
+      if kind == "}" || cmd { let depth = depth + 1 }
+      let parts = sh_push(parts, keep, ".")
+      let i = i + 1
+    } else if ch == "}" {
+      if depth == 0 && kind == "}" {
+        let parts = push(parts, keep, "%")
+        return { parts: parts, i: i + 1, state: "" }
+      }
+      if depth == 0 && kind == "$" { return { parts: parts, i: i, state: "" } }
+      if depth > 0 { let depth = depth - 1 }
+      let parts = sh_push(parts, keep, ".")
+      let i = i + 1
+    } else if ch == ";" || ch == "|" || ch == "&" {
+      let parts = sh_push(parts, keep, ".")
+      let i = i + 1
+      let cmd = true
+    } else if ch == " " || ch == "\t" || ch == "<" || ch == ">" {
+      let parts = sh_push(parts, keep, ".")
+      let i = i + 1
+    } else {
+      let start = i
+      while i < line.length && sh_word_char(line[i]) { let i = i + 1 }
+      if i == start { let i = i + 1 }
+      let word = line.slice(start, i)
+      let eq = word.index("=")
+      if cmd && eq > 0 && is_ident(word[0]) && !is_digit(word[0]) {
+        let parts = sh_fill(parts, keep, "v", start, start + eq)
+        let parts = sh_fill(parts, keep, ".", start + eq, i)
+      } else if (cmd || word == "in" || word == "do" || word == "then") && is_kw("sh", word) {
+        let parts = sh_fill(parts, keep, "k", start, i)
+        if sh_opens(word) { let flow = flow + 1 }
+        if sh_closes(word) && flow > 0 { let flow = flow - 1 }
+        let cmd = word != "in" && !sh_closes(word)
+      } else if cmd {
+        let parts = sh_fill(parts, keep, "f", start, i)
+        let cmd = false
+      } else if all_digits(word) {
+        let parts = sh_fill(parts, keep, "n", start, i)
+      } else {
+        let parts = sh_fill(parts, keep, ".", start, i)
+      }
+    }
+  }
+  if kind == "$" && q == "" && depth == 0 && flow == 0 && !sh_more(line, last) { return { parts: parts, i: i, state: "" } }
+  return { parts: parts, i: i, state: sh_state(kind, depth, flow, q) }
+}
+
+# The column of the `{` when `sh {` starts at i, or -1.
+fn sh_block_at(line, i) {
+  if i + 2 > line.length || line.slice(i, i + 2) != "sh" { return 0 - 1 }
+  if i > 0 && is_ident(line[i - 1]) { return 0 - 1 }
+  let j = skip_space(line, i + 2)
+  if j < line.length && line[j] == "{" { return j }
+  return 0 - 1
+}
+
 fn take_deco(parts, keep, line, i) {
   let parts = push(parts, keep, "m")
   let i = i + 1
@@ -473,6 +755,27 @@ fn scan(line, which, state, keep) {
         let parts = push(parts, keep, "c")
         let i = i + 1
       }
+    } else if state.length > 0 && state[0] == "Z" {
+      let got = scan_sh(parts, keep, line, i, state)
+      let parts = got.parts
+      let i = got.i
+      let state = got.state
+    } else if which == "btr" && state == "" && ch == "$" {
+      let at = i + 1
+      if at < line.length && line[at] == "(" {
+        let at = at + 1
+        let state = sh_state(")", 0, 0, "")
+      } else if skip_space(line, at) < line.length {
+        let state = sh_state("$", 0, 0, "")
+      }
+      let parts = fill(parts, keep, "$", i, at)
+      let i = at
+    } else if which == "btr" && state == "" && ch == "s" && sh_block_at(line, i) >= 0 {
+      let brace = sh_block_at(line, i)
+      let parts = fill(parts, keep, "k", i, i + 2)
+      let parts = fill(parts, keep, "$", i + 2, brace + 1)
+      let i = brace + 1
+      let state = sh_state("}", 0, 0, "")
     } else if state.length > 0 && state[0] == "m" {
       let got = eat_long(parts, keep, line, i, state, "c")
       let parts = got.parts

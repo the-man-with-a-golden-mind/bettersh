@@ -21,6 +21,8 @@ typedef struct Interp {
     int failed;
     int status;
     int returning;
+    /* A break (1) or continue (2) on its way out to the innermost loop. */
+    int jumping;
     int stop;
     const char *src;
     size_t src_len;

@@ -689,6 +689,12 @@ int module_load(ModCache *cache, Jobs *jobs, Arena *arena, const char *from_file
         if (use_interp) {
             IEnv *pin = NULL;
             Value *map = NULL;
+            Chunk *chunk = NULL;
+            if (compile_program(arena, &diag, key, root, &chunk) != 0) {
+                diag_print(&diag, stderr);
+                goto fail;
+            }
+            chunk_free(chunk);
             if (interp_module(arena, key, src, len, root, argc, argv, envp, cache, jobs, &map, &pin) !=
                 0) {
                 goto fail;

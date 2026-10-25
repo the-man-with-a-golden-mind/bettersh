@@ -1,0 +1,4 @@
+#!/usr/bin/env bettersh
+fn f() {
+  break
+}

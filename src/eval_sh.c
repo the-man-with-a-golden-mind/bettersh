@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -361,6 +362,11 @@ int launch(EvalCtx *ctx, int argc, char **argv, int chk) {
            file without execute permission. Dash reports that and continues. */
         if (strchr(argv[0], '/') && access(argv[0], F_OK) == 0) {
             shell_err(ctx, 0, "%s: Permission denied", argv[0]);
+            struct stat st;
+            if (ctx->interactive && stat(argv[0], &st) == 0 && S_ISREG(st.st_mode)) {
+                fprintf(stderr, "hint: the file is not executable; run chmod +x %s, or bettersh %s\n", argv[0],
+                        argv[0]);
+            }
             return 126;
         }
         shell_err(ctx, 0, "%s: not found", argv[0]);

@@ -137,7 +137,7 @@ static Value *interp_call(Interp *ip, const MNode *at, Value *fn, Value **args, 
         ifail(ip, at, "wrong number of arguments");
         return NULL;
     }
-    if (ip->depth >= 64) {
+    if (ip->depth >= VM_FRAMES) {
         ifail(ip, at, "recursion depth exceeded");
         return NULL;
     }
@@ -487,6 +487,9 @@ Value *eval_expr(Interp *ip, const MNode *node) {
         return value_str(str_new(node->text ? node->text : "", node->text ? strlen(node->text) : 0));
     case M_STR: {
         Value *acc = NULL;
+        if (node->nkids == 1 && node->kids[0]->kind != M_TEXT) {
+            acc = value_str(str_new("", 0));
+        }
         for (uint32_t i = 0; i < node->nkids; i++) {
             Value *part = eval_expr(ip, node->kids[i]);
             if (!part) {

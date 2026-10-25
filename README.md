@@ -1,8 +1,8 @@
 # bettersh
 
-bettersh combines a POSIX-style shell with a small programming language. Shell scripts run through the strict shell engine. Modern `.btr` programs add values, functions, collections, modules, and structured control flow while retaining direct access to shell commands and pipelines.
+bettersh combines a POSIX-style shell with a small programming language. Shell scripts run through the strict shell engine. Modern `.btr` programs add values, functions, collections, modules, and structured control flow, and run shell commands and pipelines where they are marked with `$`.
 
-Version 0.1.0 is an alpha release. It is useful for experimentation and for running the programs in this repository, but its shell compatibility has not been certified against the Open Group test suite. The project is distributed under the [MIT license](LICENSE).
+Version 0.2.3 is an alpha release. It is useful for experimentation and for running the programs in this repository, but its shell compatibility has not been certified against the Open Group test suite. The project is distributed under the [MIT license](LICENSE).
 
 ## Build and run
 
@@ -18,11 +18,11 @@ make test
 bettersh chooses a language from the file name and shebang:
 
 - A `.btr` file is a modern program.
-- A `.sh` file is a strict shell script unless it has a `bettersh` shebang.
+- A `.sh` file is a strict shell script, whatever its shebang says.
 - Other file names use modern mode for a `bettersh` or `env bettersh` shebang and strict mode otherwise.
 - `bettersh -c 'command'` always uses strict mode.
 
-This modern program mixes language expressions with an ordinary shell command:
+In a modern program, shell commands are marked. `$ command` runs one command line, `$(command)` is its output as a string, and `sh { ... }` holds a block of plain sh:
 
 ```btr
 let names = ["Ada", "Grace", "Linus"]
@@ -32,8 +32,11 @@ fn greeting(name) {
 }
 
 for name in names {
-  echo @{ greeting(name) }
+  $ echo @{ greeting(name) }
 }
+
+let today = $(date +%A)
+println("it is " + today)
 ```
 
 Run it with `bettersh file.btr`. The [language manual](doc/language.md) covers expressions, functions, imports, the standard library, strict mode, and interactive use. The `examples/` directory contains smaller complete programs.

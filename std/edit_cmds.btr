@@ -5,6 +5,7 @@
 
 import std/edit_text as tx
 import std/edit_doc as doc
+import std/edit_syntax
 
 # The indent unit for one level: a tab, or tab-size spaces.
 fn unit(d) {
@@ -987,7 +988,7 @@ fn close_of(d, r, c) {
     while col < text.length {
       let m = "."
       if col < marks.length { let m = marks[col] }
-      if m != "s" && m != "c" {
+      if !edit_syntax.literal(m) {
         let ch = text[col]
         if ch == open { let depth = depth + 1 }
         if ch == want {
@@ -1018,7 +1019,7 @@ fn open_of(d, r, c) {
     while col >= 0 {
       let m = "."
       if col < marks.length { let m = marks[col] }
-      if m != "s" && m != "c" {
+      if !edit_syntax.literal(m) {
         let ch = text[col]
         if ch == close { let depth = depth + 1 }
         if ch == want {
@@ -1048,7 +1049,7 @@ fn enclosing(d, r, c) {
     while col >= 0 {
       let m = "."
       if col < marks.length { let m = marks[col] }
-      if m != "s" && m != "c" {
+      if !edit_syntax.literal(m) {
         let ch = text[col]
         if tx.opener_of(ch) != "" { let depth = depth + 1 }
         if tx.closer_of(ch) != "" {

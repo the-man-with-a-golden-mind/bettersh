@@ -11,6 +11,8 @@ import std/edit_text
 import std/edit_doc as doc
 import std/edit_run
 import std/edit_lsp
+import std/edit_syntax
+import std/edit_tree
 
 # Painted rows and cell styles, for the palette whose id is pal. Another palette starts over.
 let cache = { rows: {}, n: 0, codes: [], pal: 0, next: 1, shapes: {}, shaped: 0 }
@@ -107,6 +109,40 @@ fn join_sgr(a, b) {
   return "@{ a };@{ b }"
 }
 
+# An RGB stand-in for a basic color name, or null.
+fn named_rgb(name) {
+  if name == "black" { return { r: 0, g: 0, b: 0 } }
+  if name == "red" { return { r: 205, g: 49, b: 49 } }
+  if name == "green" { return { r: 13, g: 188, b: 121 } }
+  if name == "yellow" { return { r: 229, g: 229, b: 16 } }
+  if name == "blue" { return { r: 36, g: 114, b: 200 } }
+  if name == "magenta" { return { r: 188, g: 63, b: 188 } }
+  if name == "cyan" { return { r: 17, g: 168, b: 205 } }
+  if name == "white" { return { r: 229, g: 229, b: 229 } }
+  return null
+}
+
+# The background of shell text in a .btr file: the page with a little of the theme's
+# shell color in it, or of its function color.
+fn shell_tint(colors, page) {
+  if colors.has("shell") && colors.shell != "" {
+    let own = named_rgb(colors.shell)
+    if own != null { return mix(page, own, 14) }
+  }
+  let hue = rgb_of(colors.function, "38;2;")
+  if hue == null { let hue = rgb_of(colors.keyword, "38;2;") }
+  if hue == null { return lift(page, 8) }
+  return mix(page, hue, 9)
+}
+
+# Without RGB colors shell text is italic, or has the background of the color the theme names.
+fn shell_attr(colors) {
+  if !colors.has("shell") || colors.shell == "" { return "3" }
+  let code = theme.sgr(colors.shell)
+  if code.length == 2 && code[0] == "3" { return "4@{ code[1] }" }
+  return code
+}
+
 # Derived colors for the screen. A theme with an RGB status panel gets filled backgrounds.
 # Other themes use reverse video for bars and selections.
 fn palette(t) {
@@ -123,7 +159,7 @@ fn palette(t) {
     return {
       id: id, rich: false, roles: roles, page: "", line: "", sel: "7", find: "4;7", gutter: fg_of(colors.gutter),
       gutter_on: "1", guide: "2", bar: "7", bar_dim: "7", tab_on: "1", tab_off: "7", popup: "7", popup_on: "1",
-      accent: "1", dim: "2", diag: fg_of(colors.diag), warn: "1", caret: "7", thumb: "7"
+      accent: "1", dim: "2", diag: fg_of(colors.diag), warn: "1", caret: "7", thumb: "7", shell: shell_attr(colors), shell_line: "", side_bg: ""
     }
   }
   if accent == null { let accent = text }
@@ -136,6 +172,7 @@ fn palette(t) {
   let dimc = rgb_of(colors.gutter, "38;2;")
   if dimc == null { let dimc = mix(page, text, 45) }
   let guide = mix(page, text, 16)
+  let tint = shell_tint(colors, page)
   let bar_fg = rgb_of(colors.status, "38;2;")
   if bar_fg == null { let bar_fg = text }
   return {
@@ -160,7 +197,10 @@ fn palette(t) {
     diag: fg_of(colors.diag),
     warn: fg(warm),
     caret: "7",
-    thumb: bg(mix(page, text, 22))
+    thumb: bg(mix(page, text, 22)),
+    shell: bg(tint),
+    shell_line: bg(mix(tint, line, 50)),
+    side_bg: bg(panel)
   }
 }
 
@@ -507,6 +547,11 @@ fn clamp_top(e, top) {
 }
 
 fn role_index(m) {
+  if edit_syntax.in_shell(m) { return role_base(edit_syntax.role_of(m)) + bit_shell() }
+  return role_base(m)
+}
+
+fn role_base(m) {
   if m == "c" { return 1 }
   if m == "s" { return 2 }
   if m == "k" { return 3 }
@@ -539,6 +584,8 @@ fn bit_ctrl() { return 2048 }
 
 fn bit_line() { return 4096 }
 
+fn bit_shell() { return 8192 }
+
 fn has_bit(code, bit) {
   return (code / bit) % 2 == 1
 }
@@ -552,6 +599,14 @@ fn style_for(pal, code) {
   let b = pal.page
   if has_bit(code, bit_line()) && pal.rich { let b = pal.line }
   let a = ""
+  if has_bit(code, bit_shell()) {
+    if pal.rich {
+      let b = pal.shell
+      if has_bit(code, bit_line()) { let b = pal.shell_line }
+    } else {
+      let a = pal.shell
+    }
+  }
   if has_bit(code, bit_guide()) { let f = pal.guide }
   if has_bit(code, bit_ctrl()) { let f = pal.dim }
   if has_bit(code, bit_diag()) {
@@ -899,7 +954,7 @@ fn match_bracket(d, r, c) {
       while i < text.length {
         let m = "."
         if i < marks.length { let m = marks[i] }
-        if m != "s" && m != "c" {
+        if !edit_syntax.literal(m) {
           let x = text[i]
           if x == ch { let depth = depth + 1 }
           if x == want {
@@ -916,7 +971,7 @@ fn match_bracket(d, r, c) {
       while i >= 0 {
         let m = "."
         if i < marks.length { let m = marks[i] }
-        if m != "s" && m != "c" {
+        if !edit_syntax.literal(m) {
           let x = text[i]
           if x == ch { let depth = depth + 1 }
           if x == want {
@@ -1291,10 +1346,48 @@ fn deck_rows(e, lay) {
   return out
 }
 
+# The marks at the right of a side bar row: ●N for diagnostics in open files, and the git
+# letter. A folder shows what is under it, with • for git changes.
+fn side_badge(e, pal, item, found, picked, style) {
+  let full = edit_tree.full(item.path)
+  let n = edit_tree.issues_of(found, full, item.dir)
+  let git = ""
+  if e.side.has("git") { let git = edit_tree.state_of(e.side.git, full, item.dir) }
+  let pieces = []
+  let w = 0
+  if n > 0 {
+    let text = "●@{ n }"
+    if n > 99 { let text = "●" }
+    let st = style
+    if !picked { let st = join_sgr(pal.diag, pal.side_bg) }
+    let pieces = pieces.push(piece(st, text))
+    let w = w + ui.width(text)
+  }
+  if git != "" {
+    let st = style
+    if !picked {
+      let c = pal.warn
+      if git == "?" || git == "A" { let c = pal.roles[2] }
+      if git == "D" || git == "U" { let c = pal.diag }
+      if git == "•" { let c = pal.dim }
+      let st = join_sgr(c, pal.side_bg)
+    }
+    let pieces = pieces.push(piece(style, " "))
+    let pieces = pieces.push(piece(st, git))
+    let w = w + 1 + ui.width(git)
+  }
+  if w > 0 {
+    let pieces = pieces.push(piece(style, " "))
+    let w = w + 1
+  }
+  return { pieces: pieces, w: w }
+}
+
 fn side_rows(e, lay) {
   let pal = e.pal
   let out = []
   let side = e.side
+  let found = edit_tree.issues(e.docs)
   let i = 0
   let base = pal.bar_dim
   while i < lay.view {
@@ -1309,10 +1402,18 @@ fn side_rows(e, lay) {
       }
       let label = "@{ "  ".repeat(item.depth) }@{ mark }@{ item.name }"
       let style = base
-      if k == side.pick && e.focus == "side" { let style = pal.popup_on }
+      let picked = k == side.pick && e.focus == "side"
+      if picked { let style = pal.popup_on }
       else if item.path == e.docs[e.at].path { let style = pal.bar }
-      let row = [piece(style, " @{ cut_cols(label, 0, lay.side_w - 2) }")]
-      let row = fit(row, lay.side_w, style)
+      let badge = side_badge(e, pal, item, found, picked, style)
+      let room = lay.side_w - badge.w
+      let row = [piece(style, " @{ cut_cols(label, 0, room - 2) }")]
+      let row = fit(row, room, style)
+      let j = 0
+      while j < badge.pieces.length {
+        let row = row.push(badge.pieces[j])
+        let j = j + 1
+      }
     } else {
       let row = [pad(base, lay.side_w)]
     }

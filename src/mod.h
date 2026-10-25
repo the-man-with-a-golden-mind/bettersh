@@ -39,7 +39,11 @@ typedef enum MKind {
     M_ARM,
     M_RANGE,
     M_PARAM,
-    M_IMPORT
+    M_IMPORT,
+    /* name = expr. The name must already exist here or in an enclosing function. */
+    M_ASSIGN,
+    M_BREAK,
+    M_CONTINUE
 } MKind;
 
 enum {

@@ -3,6 +3,7 @@
 #include "arena.h"
 
 #include <stdio.h>
+#include <string.h>
 
 static int store_local(Compiler *c, int slot) {
     if (slot < 0) {
@@ -36,6 +37,46 @@ static int jump_back(Compiler *c, uint32_t head) {
     }
     c_emit(c, OP_JUMP);
     c_emit_u16(c, (uint16_t)head);
+    return c->failed ? -1 : 0;
+}
+
+/* A failed compile stops there, so error returns leave c->loop as it is. */
+static void loop_open(Compiler *c, CLoop *loop) {
+    memset(loop, 0, sizeof *loop);
+    loop->outer = c->loop;
+    c->loop = loop;
+}
+
+/* Where continue goes, once the step is about to be emitted. */
+static void loop_step(Compiler *c, CLoop *loop) {
+    for (int i = 0; i < loop->nconts; i++) {
+        c_patch(c, loop->conts[i]);
+    }
+    loop->nconts = 0;
+}
+
+static void loop_close(Compiler *c, CLoop *loop) {
+    for (int i = 0; i < loop->nbreaks; i++) {
+        c_patch(c, loop->breaks[i]);
+    }
+    c->loop = loop->outer;
+}
+
+int compile_jump(Compiler *c, const MNode *node) {
+    CLoop *loop = c->loop;
+    int is_break = node->kind == M_BREAK;
+    if (!loop) {
+        return c_fail(c, node, is_break ? "break outside a loop" : "continue outside a loop");
+    }
+    c->line = node->line > 0 ? node->line : 1;
+    if (!is_break && loop->head_known) {
+        return jump_back(c, loop->head);
+    }
+    int *n = is_break ? &loop->nbreaks : &loop->nconts;
+    if (*n >= 256) {
+        return c_fail(c, node, "too many jumps in one loop");
+    }
+    (is_break ? loop->breaks : loop->conts)[(*n)++] = c_jump(c, OP_JUMP);
     return c->failed ? -1 : 0;
 }
 
@@ -102,6 +143,10 @@ int compile_while(Compiler *c, const MNode *node) {
     }
     c->line = node->line > 0 ? node->line : 1;
     uint32_t end_at = c_jump(c, OP_JUMP_IF_FALSE);
+    CLoop loop;
+    loop_open(c, &loop);
+    loop.head_known = 1;
+    loop.head = head;
     if (compile_stmt(c, node->kids[1]) != 0) {
         return -1;
     }
@@ -110,6 +155,7 @@ int compile_while(Compiler *c, const MNode *node) {
         return -1;
     }
     c_patch(c, end_at);
+    loop_close(c, &loop);
     return c->failed ? -1 : 0;
 }
 
@@ -143,9 +189,12 @@ static int compile_range_for(Compiler *c, const MNode *node, const MNode *range)
     if (load_local(c, cur) != 0 || store_local(c, item) != 0) {
         return -1;
     }
+    CLoop loop;
+    loop_open(c, &loop);
     if (compile_stmt(c, node->kids[1]) != 0) {
         return -1;
     }
+    loop_step(c, &loop);
     c->line = node->line > 0 ? node->line : 1;
     if (load_local(c, cur) != 0) {
         return -1;
@@ -157,6 +206,7 @@ static int compile_range_for(Compiler *c, const MNode *node, const MNode *range)
         return -1;
     }
     c_patch(c, end_at);
+    loop_close(c, &loop);
     return c->failed ? -1 : 0;
 }
 
@@ -196,9 +246,12 @@ static int compile_array_for(Compiler *c, const MNode *node) {
     if (store_local(c, item) != 0) {
         return -1;
     }
+    CLoop loop;
+    loop_open(c, &loop);
     if (compile_stmt(c, node->kids[1]) != 0) {
         return -1;
     }
+    loop_step(c, &loop);
     c->line = node->line > 0 ? node->line : 1;
     if (load_local(c, idx) != 0) {
         return -1;
@@ -210,6 +263,7 @@ static int compile_array_for(Compiler *c, const MNode *node) {
         return -1;
     }
     c_patch(c, end_at);
+    loop_close(c, &loop);
     return c->failed ? -1 : 0;
 }
 

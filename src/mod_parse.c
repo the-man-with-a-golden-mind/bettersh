@@ -289,16 +289,69 @@ static MNode *parse_sh_block(Parser *p) {
     return m_shell_span(p, body, close, close + 1);
 }
 
-/* Before 0.2 a line that was not modern code ran as shell. With
-   BETTERSH_LEGACY_SHELL set it still does, and each place is reported, so a
-   converter can put $ in front of it. */
-static MNode *parse_legacy(Parser *p) {
-    if (!getenv("BETTERSH_LEGACY_SHELL")) {
-        m_fail(p, "not a bettersh statement; put $ in front of a shell command");
+static int ident_is(const Parser *p, const char *word) {
+    return p->sc.kind == TK_IDENT && p->sc.text && strcmp(p->sc.text, word) == 0;
+}
+
+/* `name = expr`, `name += expr` or `name -= expr`: the next thing after the name. */
+static int assign_ahead(const Parser *p) {
+    size_t i = p->sc.i;
+    while (i < p->len && (p->src[i] == ' ' || p->src[i] == '\t')) {
+        i++;
+    }
+    if (i < p->len && (p->src[i] == '+' || p->src[i] == '-')) {
+        i++;
+    }
+    return i < p->len && p->src[i] == '=' && (i + 1 >= p->len || p->src[i + 1] != '=');
+}
+
+static MNode *parse_assign(Parser *p) {
+    MNode *node = mnode(p, M_ASSIGN);
+    node->text = arena_strdup(p->arena, p->sc.text ? p->sc.text : "");
+    m_advance(p);
+    int op = 0;
+    if (p->sc.kind == TK_PLUS || p->sc.kind == TK_MINUS) {
+        op = p->sc.kind == TK_PLUS ? BX_ADD : BX_SUB;
+        m_advance(p);
+    }
+    if (m_want(p, TK_EQ, "expected =") != 0) {
         return NULL;
     }
-    fprintf(stderr, "LEGACY %s %zu\n", p->filename, p->sc.tok_off);
-    return parse_shell_at(p, p->sc.tok_off);
+    m_skip_nl(p);
+    MNode *expr = parse_expr(p);
+    if (!expr) {
+        return NULL;
+    }
+    if (op) {
+        MNode *bin = mnode(p, M_BINARY);
+        MNode *name = mnode(p, M_NAME);
+        bin->op = op;
+        bin->line = name->line = node->line;
+        bin->col = name->col = node->col;
+        name->text = node->text;
+        mnode_kid(p, bin, name);
+        mnode_kid(p, bin, expr);
+        expr = bin;
+    }
+    mnode_kid(p, node, expr);
+    if (p->sc.kind == TK_SEMI) {
+        m_advance(p);
+    }
+    return node;
+}
+
+/* break and continue take nothing after them. */
+static MNode *parse_jump(Parser *p) {
+    MNode *node = mnode(p, ident_is(p, "break") ? M_BREAK : M_CONTINUE);
+    m_advance(p);
+    if (p->sc.kind != TK_NL && p->sc.kind != TK_SEMI && p->sc.kind != TK_RBRACE && p->sc.kind != TK_EOF) {
+        m_fail(p, "expected the end of the line");
+        return NULL;
+    }
+    if (p->sc.kind == TK_SEMI) {
+        m_advance(p);
+    }
+    return node;
 }
 
 static MNode *parse_let(Parser *p) {
@@ -609,10 +662,6 @@ static MNode *parse_case(Parser *p) {
     return node;
 }
 
-static int ident_is(const Parser *p, const char *word) {
-    return p->sc.kind == TK_IDENT && p->sc.text && strcmp(p->sc.text, word) == 0;
-}
-
 static char *take_str_path(Parser *p) {
     MNode *node = p->sc.node;
     size_t n = 0;
@@ -816,8 +865,9 @@ MNode *parse_stmt(Parser *p) {
         return parse_sh_block(p);
     }
     if (p->sc.kind == TK_IF || p->sc.kind == TK_WHILE || p->sc.kind == TK_FOR) {
-        if (getenv("BETTERSH_LEGACY_SHELL") && !control_is_modern(p->src, p->len, p->sc.tok_off)) {
-            return parse_legacy(p);
+        if (!control_is_modern(p->src, p->len, p->sc.tok_off)) {
+            m_fail(p, "this is shell syntax; put it in sh { }");
+            return NULL;
         }
         if (p->sc.kind == TK_IF) {
             return parse_if(p);
@@ -827,10 +877,16 @@ MNode *parse_stmt(Parser *p) {
         }
         return parse_for(p);
     }
+    if (p->sc.kind == TK_IDENT && (ident_is(p, "break") || ident_is(p, "continue"))) {
+        return parse_jump(p);
+    }
+    if (p->sc.kind == TK_IDENT && assign_ahead(p)) {
+        return parse_assign(p);
+    }
     if (p->sc.kind == TK_IDENT && next_char_is(p, is_call_char)) {
         return parse_expr_stmt(p);
     }
-    if (p->sc.kind == TK_IDENT && !getenv("BETTERSH_LEGACY_SHELL")) {
+    if (p->sc.kind == TK_IDENT) {
         /* `name word` is never an expression. It is a shell command written without $. */
         if (next_char_is(p, is_word_start)) {
             m_fail(p, "this is a shell command; put $ in front of it");
@@ -843,7 +899,8 @@ MNode *parse_stmt(Parser *p) {
         p->sc.kind == TK_LBRACK) {
         return parse_expr_stmt(p);
     }
-    return parse_legacy(p);
+    m_fail(p, "not a bettersh statement; put $ in front of a shell command");
+    return NULL;
 }
 
 int mod_parse(Arena *arena, Diag *diag, const char *filename, const char *src, size_t len, MNode **out) {
@@ -1030,6 +1087,15 @@ static void dump_node(const MNode *node, FILE *out, int level) {
             fprintf(out, " as %s", node->texts[0] ? node->texts[0] : "");
         }
         fputc('\n', out);
+        break;
+    case M_ASSIGN:
+        fprintf(out, "assign %s\n", node->text ? node->text : "");
+        break;
+    case M_BREAK:
+        fputs("break\n", out);
+        break;
+    case M_CONTINUE:
+        fputs("continue\n", out);
         break;
     default:
         fputs("node\n", out);

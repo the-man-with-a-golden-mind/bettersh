@@ -7,7 +7,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#define VM_FRAMES 64
+/* The deepest call chain either engine runs. */
+#define VM_FRAMES 1000
 
 typedef struct Frame {
     Chunk *chunk;
@@ -22,7 +23,10 @@ typedef struct VM {
     Value **stack;
     int sp;
     int cap;
-    Frame frames[VM_FRAMES];
+    /* VM_FRAMES of them for a run. A helper VM has only first. */
+    Frame *frames;
+    int max_frames;
+    Frame first;
     int nframes;
     EvalCtx shell;
     int shell_on;

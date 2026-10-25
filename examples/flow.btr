@@ -12,5 +12,12 @@ fn bucket(n) {
 let n = 0
 while n < 12 {
   println("@{ n } @{ bucket(n) }")
-  let n = n + 1
+  n += 1
+}
+
+# break leaves a loop, continue skips to its next turn.
+for i in 1..20 {
+  if i % 3 != 0 { continue }
+  if i > 10 { break }
+  println("fizz @{ i }")
 }

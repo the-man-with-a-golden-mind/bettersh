@@ -199,6 +199,7 @@ int chunk_width(const uint8_t *code, uint32_t code_len, uint32_t ip) {
     case OP_EXEC:
     case OP_EXEC_PIPE:
     case OP_LOAD_UP:
+    case OP_STORE_UP:
     case OP_IMPORT:
         width = 3;
         break;
@@ -388,6 +389,8 @@ const char *op_name(int op) {
         return "IMPORT";
     case OP_CAPTURE:
         return "CAPTURE";
+    case OP_STORE_UP:
+        return "STORE_UP";
     default:
         return "???";
     }

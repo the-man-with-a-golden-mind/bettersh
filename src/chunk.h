@@ -52,7 +52,9 @@ typedef enum OpCode {
     OP_JUMP_GE_ARGC,
     OP_IMPORT,
     /* $( ) in modern code: like EXEC_SPLICE, but pushes the command's output. */
-    OP_CAPTURE
+    OP_CAPTURE,
+    /* name = value for a name that belongs to an enclosing function. */
+    OP_STORE_UP
 } OpCode;
 
 /* A function captures a parent local (local = 1) or one of the parent

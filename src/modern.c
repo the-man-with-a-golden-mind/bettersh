@@ -30,7 +30,15 @@ static int modern_body(const char *filename, const char *src, size_t len, int ar
         arena_free(&arena);
         return 0;
     }
+    /* Both engines compile first, so a script has the same compile errors in each. */
+    Chunk *chunk = NULL;
+    if (compile_program(&arena, &diag, file, root, &chunk) != 0) {
+        diag_print(&diag, stderr);
+        arena_free(&arena);
+        return 2;
+    }
     if (interp && !dump_bc) {
+        chunk_free(chunk);
         ModCache *mods = modcache_new(exe);
         Jobs *jobs = jobs_new();
         int status = interp_run(&arena, file, src, len, root, argc, argv, envp, mods, jobs);
@@ -38,12 +46,6 @@ static int modern_body(const char *filename, const char *src, size_t len, int ar
         jobs_free(jobs);
         arena_free(&arena);
         return status;
-    }
-    Chunk *chunk = NULL;
-    if (compile_program(&arena, &diag, file, root, &chunk) != 0) {
-        diag_print(&diag, stderr);
-        arena_free(&arena);
-        return 2;
     }
     const char *why = NULL;
     if (verify_chunk(chunk, &why) != 0) {

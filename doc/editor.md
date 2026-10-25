@@ -15,7 +15,7 @@ The editor puts the terminal in raw mode on the alternate screen and restores bo
 
 ## The screen
 
-The top row is a menu bar: File, Edit, Selection, Find, View, Goto, and Tools. F10 opens it, and a click opens one menu. Under it is one tab for each open file. A tab shows `●` when the file has unsaved changes and `×` otherwise; a click on `×`, or a middle click, closes the tab. Two files with the same name also show their folder.
+The top row is a menu bar: File, Edit, Selection, Find, View, Goto, and Tools. F10 opens it, and a click opens one menu. Under it is one tab for each open file. A tab shows `â` when the file has unsaved changes and `Ã` otherwise; a click on `Ã`, or a middle click, closes the tab. Two files with the same name also show their folder.
 
 The text area has line numbers, indent guides, a highlighted current line, and a scroll bar on the right. The bracket next to the caret and its match are underlined. When the selection is one word, other copies of it are underlined too. Secondary carets are drawn as blocks; the terminal cursor is the primary caret.
 
@@ -71,7 +71,7 @@ Typing a bracket or a quote also types its closer when the next character is a b
 
 Alt-Z wraps long lines of the current file at the edge of the text area, breaking after a blank where it can. Up and Down then move by screen line, and a resize rewraps. `set word_wrap true` wraps every file.
 
-Ctrl-Shift-[ folds the indented block around the caret, or the selected lines. The first line stays on screen with `⋯` after it and `▸` in the gutter, and the rest is hidden. Motions skip hidden lines, moving a folded line moves what it hides, and a caret that lands inside a fold, from a search or a jump, opens it. Editing the folded line keeps the fold; editing inside it opens it. A click on `▸` unfolds.
+Ctrl-Shift-[ folds the indented block around the caret, or the selected lines. The first line stays on screen with `â¯` after it and `â¸` in the gutter, and the rest is hidden. Motions skip hidden lines, moving a folded line moves what it hides, and a caret that lands inside a fold, from a search or a jump, opens it. Editing the folded line keeps the fold; editing inside it opens it. A click on `â¸` unfolds.
 
 View, then Toggle Minimap, or `set minimap true`, shows an outline of the file on the right, with the lines on screen lit. A click or drag there scrolls.
 
@@ -113,9 +113,31 @@ Ctrl-B runs the current file in the panel under the text: a `.sh` file with `sh`
 
 Ctrl-K Ctrl-B shows the side bar with the folder given on the command line, opened with Ctrl-O, or the working directory. Ctrl-0 moves the keys there. Up and Down choose, Enter opens a folder or a file, Right opens a folder, and Left closes it. A click opens what it hits.
 
+The side bar also manages files. With the keys there, or from its menu (a right click, or `m`):
+
+| Key | Action |
+| --- | --- |
+| `n` | New file in the picked folder, or beside the picked file. A name such as `lib/util.btr` also creates the folders. |
+| `N` | New folder, with any folders on the way. |
+| `r`, F2 | Rename or move. The prompt holds the path; a path to an existing folder moves the item into it. Open tabs follow. |
+| `D` | Duplicate, as `name copy.ext` unless you type another path. |
+| `d`, Delete | Delete, after asking. It goes to the Trash with the system's `trash` or `gio trash`, and is deleted otherwise; `BETTERSH_TRASH=off` always deletes. Clean tabs of deleted files close. |
+| `c`, `x`, `v` | Copy or cut the picked item, then paste it into the picked folder. A copy that would clash gets a `copy` name. |
+| `y` | Copy the full path to the clipboard. |
+| `u`, Backspace | Go to the parent folder. |
+| `.` | Make the picked folder the root. |
+| `g` | Go to any folder, with path completion; `~` is the home folder. |
+| `R`, F5 | Read the folder again. |
+
+The command palette has the same commands under `Side Bar:`, and `Side Bar: Reveal Current File` opens the folders down to the file in the current tab.
+
+The right edge of a row shows problems. `●3` means an open file has three diagnostics from its language server; a folder adds up what is under it. In a git work tree each file shows its state: `M` changed, `A` added, `D` deleted, `R` renamed, `U` conflicted, `?` untracked; a folder with changes under it shows `•`. The state is read when the side bar opens, after each file operation, and after each save.
+
 ## Completion
 
 While you type, a list of completions opens under the caret. It holds words from the file, and in a `.btr` file also the built-in functions, the standard library, and the file's own `fn`, `let`, and `import` names. Up and Down choose, Enter or Tab inserts, and Escape closes. Typing `(` after a function name shows its signature in the status bar. Ctrl-Space opens the list on demand and also asks the language server, when one is configured.
+
+In shell text inside a `.btr` file (after `$`, inside `$( )`, and inside `sh { }`), the list holds the file's shell functions, the shell's keywords and builtins, and the commands on `PATH` instead. Ctrl-K Ctrl-I there describes a builtin, a shell function, or where a command lives, and F12 goes to a shell function defined in the file.
 
 ## Configuration
 
@@ -130,7 +152,7 @@ server rs rust-analyzer
 root /path/to/workspace
 ```
 
-`theme name NAME` selects `plain`, `dark`, `light`, `nord`, `gruvbox`, `dracula`, `catppuccin`, `solarized`, `monokai`, or `tokyonight`, and `theme ROLE COLOR` changes one role. A theme with a colored status panel fills the whole screen with its colors; `dark` and `plain` use the terminal's own colors. A file that sets only servers or settings uses the plain theme.
+`theme name NAME` selects `plain`, `dark`, `light`, `nord`, `gruvbox`, `dracula`, `catppuccin`, `solarized`, `monokai`, or `tokyonight`, and `theme ROLE COLOR` changes one role. A theme with a colored status panel fills the whole screen with its colors; `dark` and `plain` use the terminal's own colors. Shell text in a `.btr` file is drawn on a tinted background, with `$`, `$(`, `)`, and the braces of `sh { }` in the macro color and an inserted `@{ value }` in the file's own colors. `theme shell COLOR` picks the tint; without it the tint comes from the function color. `dark` and `plain` show shell text in italics, or with the named color as its background. A file that sets only servers or settings uses the plain theme.
 
 `set NAME VALUE` changes a setting. Booleans take `true` or `false`.
 
@@ -218,13 +240,23 @@ server cpp clangd
 
 `go install golang.org/x/tools/gopls@latest` installs gopls. clangd comes with LLVM, and it reads the project's `compile_commands.json` for compiler flags.
 
+### Shell text in .btr files
+
+The server line for `sh` also serves the shell text of a `.btr` file:
+
+```text
+server sh bash-language-server start
+```
+
+`npm install -g bash-language-server` installs it; it runs ShellCheck when that is installed. The server sees a `sh` file named after the `.btr` file with `.sh` added. It holds every `$`, `$( )`, and `sh { }` in its place, every other column as a space, and each `@{ value }` as a variable of the same width, so line and column numbers match. Its diagnostics are shown with an `sh:` prefix, except ones on an inserted value. Hover, completion, and F12 ask it when the caret is in shell text, and the server for `btr`, if there is one, otherwise.
+
 ### The workspace
 
 A server works on a workspace: the folder of the project. Without a `root` line, the editor walks up from the file to the nearest folder that holds `Cargo.toml`, `package.json`, `tsconfig.json`, `jsconfig.json`, `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `go.mod`, `compile_commands.json`, or `.git`, and uses the file's own folder when there is none. `root PATH` sets one workspace for every file instead.
 
 ### What the editor does with it
 
-The editor sends the whole document when it changed, before each request and between frames. Diagnostics are underlined, the line gets a `●` in the gutter, and the message shows in the status bar when the caret is on that line. Ctrl-K Ctrl-I shows hover text, F12 goes to a definition (opening the file when it is elsewhere), and Ctrl-Space adds the server's completions to the list. Without a server, F12 in a `.btr` file goes to a `fn` in the same file, and in other files to a matching symbol.
+The editor sends the whole document when it changed, before each request and between frames. Diagnostics are underlined, the line gets a `â` in the gutter, and the message shows in the status bar when the caret is on that line. Ctrl-K Ctrl-I shows hover text, F12 goes to a definition (opening the file when it is elsewhere), and Ctrl-Space adds the server's completions to the list. Without a server, F12 in a `.btr` file goes to a `fn` in the same file, and in other files to a matching symbol.
 
 A server that is slow to start keeps starting in the background, and the status bar says so. A server that refuses to start shows its own reason there, such as a missing TypeScript install. Each open file starts its own copy of the server, so a large workspace opened in many tabs uses that much more memory.
 

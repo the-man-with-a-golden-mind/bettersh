@@ -111,6 +111,8 @@ Value *ienv_get(IEnv *env, const char *name);
 int ienv_has(const IEnv *env, const char *name);
 /* Binds in this environment only. A second bind of the same name replaces it. */
 void ienv_bind(IEnv *env, const char *name, Value *value);
+/* Rebinds the name in the nearest environment that has it. 0 when none does. */
+int ienv_assign(IEnv *env, const char *name, Value *value);
 int ienv_len(const IEnv *env);
 const char *ienv_name_at(const IEnv *env, int index);
 Value *ienv_value_at(const IEnv *env, int index);

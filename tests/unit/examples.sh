@@ -91,7 +91,51 @@ expect counter.btr <<'EOF'
 1
 14
 EOF
+expect hello.btr <<'EOF'
+hello bettersh
+hello
+EOF
+expect flow.btr <<'EOF'
+0 none
+1 few
+2 few
+3 few
+4 few
+5 few
+6 few
+7 few
+8 few
+9 few
+10 many
+11 many
+fizz 3
+fizz 6
+fizz 9
+EOF
+expect values.btr <<'EOF'
+2,4,6,8
+ada is a dev
+ada has 4 numbers
+20
+EOF
+expect std.btr <<'EOF'
+BETTERSH!
+llehs
+6
+1024
+5
+EOF
+expect shell.btr <<'EOF'
+hello world
+HI
+a.txt
+b.txt
+upper: WORLD
+sh says one
+sh says two
+EOF
 posix gcd.sh
+posix posix.sh
 posix trim.sh
 posix table.sh
 exit "$fail"

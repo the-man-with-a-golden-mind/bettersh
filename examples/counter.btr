@@ -1,12 +1,10 @@
 #!/usr/bin/env bettersh
 
 fn counter(start) {
-  # push and pop change this array. The function closes over that cell.
-  let box = [start]
-  fn() {
-    let n = box[0] + 1
-    box.pop()
-    box.push(n)
+  let n = start
+  # The inner function changes n in counter's call. Each counter has its own n.
+  return fn() {
+    n += 1
     return n
   }
 }

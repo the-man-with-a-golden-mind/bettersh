@@ -2,6 +2,9 @@
 
 # Connects a document to the language server named in the editor configuration.
 # The whole document is sent when it changed since the last request or frame.
+# A .btr file can have a second server for its shell text: the server line for sh. It sees
+# the sh view from edit_shell, and its diagnostics join the file's own with an "sh:" prefix.
+# Hover, completion, and Goto Definition ask it when the caret is in shell text.
 
 import std/lsp
 import std/path
@@ -9,6 +12,7 @@ import std/fs
 import std/env
 import std/theme
 import std/edit_doc as doc
+import std/edit_shell
 
 let loaded = { note: "" }
 
@@ -52,25 +56,128 @@ fn body(d) {
   return text
 }
 
+fn up(session) {
+  return session != null && session.ready && !session.dead
+}
+
+fn shell_up(d) {
+  return d.has("shl") && up(d.shl)
+}
+
+fn pending(session) {
+  return session != null && !session.ready && !session.dead && !session.shut && session.fail == ""
+}
+
 fn live(d) {
-  return d.lsp != null && d.lsp.ready && !d.lsp.dead
+  return up(d.lsp) || shell_up(d)
 }
 
 # A server that has not answered initialize yet. Pumping it lets the answer arrive.
 fn starting(d) {
-  return d.lsp != null && !d.lsp.ready && !d.lsp.dead && !d.lsp.shut && d.lsp.fail == ""
+  return pending(d.lsp) || (d.has("shl") && pending(d.shl))
 }
 
-# Why the server would not start, once: its answer to initialize, or "".
+# Why a server would not start, once: its answer to initialize, or "".
 fn failure(d) {
-  if d.lsp == null || d.lsp.ready || d.lsp.fail == "" || d.has("lsp_told") { return "" }
-  let junk = map_set(d, "lsp_told", true)
-  return "language server failed: @{ d.lsp.fail }"
+  if d.lsp != null && !d.lsp.ready && d.lsp.fail != "" && !d.has("lsp_told") {
+    let junk = map_set(d, "lsp_told", true)
+    return "language server failed: @{ d.lsp.fail }"
+  }
+  if d.has("shl") && d.shl != null && !d.shl.ready && d.shl.fail != "" && !d.has("shl_told") {
+    let junk = map_set(d, "shl_told", true)
+    return "shell language server failed: @{ d.shl.fail }"
+  }
+  return ""
+}
+
+# The sh view of the document, kept until the next edit.
+fn shell_view(d) {
+  if d.has("shv") && d.shv != null && d.shv.version == d.version { return d.shv }
+  let marks = []
+  let r = 0
+  while r < d.lines.length {
+    let marks = marks.push(doc.marks(d, r))
+    let r = r + 1
+  }
+  let got = edit_shell.view(d.lines, marks)
+  let got = map_set(got, "version", d.version)
+  let junk = map_set(d, "shv", got)
+  return got
+}
+
+fn shell_text(d) {
+  let text = shell_view(d).lines.join("\n")
+  return "@{ text }\n"
+}
+
+# The shell server's diagnostics in the document's own columns. One that falls on an inserted
+# value is dropped: the server only saw a stand-in there.
+# A column of the sh view from UTF-16 units. Past the end of a trimmed line, a unit is a space.
+fn view_col(vline, units) {
+  let len = lsp.to_utf16(vline, vline.length)
+  if units > len { return vline.length + units - len }
+  return lsp.from_utf16(vline, units)
+}
+
+fn shell_diags(d) {
+  if !d.has("shl") || d.shl == null || !d.shl.has("diags") { return [] }
+  let v = shell_view(d)
+  let out = []
+  let list = d.shl.diags
+  let i = 0
+  while i < list.length {
+    let g = list[i]
+    let row = g.line
+    if row >= 0 && row < d.lines.length && row < v.lines.length {
+      let vline = v.lines[row]
+      let a = view_col(vline, g.start)
+      let b = view_col(vline, g.end)
+      if !edit_shell.over_hole(v.holes, row, a, b) {
+        let real = d.lines[row]
+        let out = out.push({ line: row, start: lsp.to_utf16(real, a), end: lsp.to_utf16(real, b), message: "sh: @{ g.message }" })
+      }
+    }
+    let i = i + 1
+  }
+  return out
+}
+
+fn merge_diags(d) {
+  let mine = []
+  if d.lsp != null && d.lsp.has("diags") { let mine = d.lsp.diags }
+  if !d.has("shl") || d.shl == null || !d.shl.has("diags") {
+    let junk = map_set(d, "diags", mine)
+    return null
+  }
+  let ver = 0
+  if d.has("shv") && d.shv != null { let ver = d.shv.version }
+  if d.has("diag_from") && d.diag_from[0] == mine && d.diag_from[1] == d.shl.diags && d.diag_from[2] == ver { return null }
+  let junk = map_set(d, "diag_from", [mine, d.shl.diags, ver])
+  let out = []
+  if d.lsp != null && d.lsp.has("diags") {
+    let i = 0
+    while i < d.lsp.diags.length {
+      let out = out.push(d.lsp.diags[i])
+      let i = i + 1
+    }
+  }
+  let more = shell_diags(d)
+  let i = 0
+  while i < more.length {
+    let out = out.push(more[i])
+    let i = i + 1
+  }
+  let junk = map_set(d, "diags", out)
 }
 
 fn put_session(d, session) {
   let junk = map_set(d, "lsp", session)
-  if session != null && session.has("diags") { let junk = map_set(d, "diags", session.diags) }
+  merge_diags(d)
+}
+
+fn put_shell(d, session) {
+  let junk = map_set(d, "shl", session)
+  merge_diags(d)
 }
 
 # The workspace for a file without a root line: the nearest folder above it that holds a
@@ -95,15 +202,17 @@ fn project_root(p) {
   return start
 }
 
-# Starts the server for this file type. Returns a status message, or "".
-fn attach(d, cfg) {
-  if d.path == null { return "" }
-  let cmd = server_cmd(cfg, path.ext(d.path))
-  if cmd == null { return "" }
+fn root_for(d, cfg) {
   let root = ""
   if cfg.has("root") { let root = cfg.root }
   if root == "" { let root = project_root(d.path) }
-  let session = lsp.begin(cmd, d.path, body(d), root)
+  return root
+}
+
+fn attach_main(d, cfg) {
+  let cmd = server_cmd(cfg, path.ext(d.path))
+  if cmd == null { return "" }
+  let session = lsp.begin(cmd, d.path, body(d), root_for(d, cfg))
   if session == null { return "" }
   put_session(d, session)
   let junk = map_set(d, "lsp_ver", d.version)
@@ -114,33 +223,82 @@ fn attach(d, cfg) {
   return ""
 }
 
+# The shell text of a .btr file goes to the server for sh, as a file beside it named NAME.btr.sh.
+fn attach_shell(d, cfg) {
+  if d.lang != "btr" { return "" }
+  let cmd = server_cmd(cfg, "sh")
+  if cmd == null { return "" }
+  let session = lsp.begin(cmd, "@{ d.path }.sh", shell_text(d), root_for(d, cfg))
+  if session == null { return "" }
+  put_shell(d, session)
+  let junk = map_set(d, "shl_ver", d.version)
+  if session.dead { return "shell language server stopped" }
+  let why = failure(d)
+  if why != "" { return why }
+  if !session.ready { return "shell language server starting" }
+  return ""
+}
+
+# Starts the servers for this file type. Returns a status message, or "".
+fn attach(d, cfg) {
+  if d.path == null { return "" }
+  let note = attach_main(d, cfg)
+  let more = attach_shell(d, cfg)
+  if note == "" { return more }
+  return note
+}
+
 # Sends the document when it changed.
 fn sync(d) {
-  if !live(d) || d.lsp_ver == d.version { return null }
-  put_session(d, lsp.sync(d.lsp, body(d)))
-  let junk = map_set(d, "lsp_ver", d.version)
+  if up(d.lsp) && d.lsp_ver != d.version {
+    put_session(d, lsp.sync(d.lsp, body(d)))
+    let junk = map_set(d, "lsp_ver", d.version)
+  }
+  if shell_up(d) && d.shl_ver != d.version {
+    put_shell(d, lsp.sync(d.shl, shell_text(d)))
+    let junk = map_set(d, "shl_ver", d.version)
+  }
   return null
 }
 
-# Reads what the server sent without waiting. True when the diagnostics changed.
+# Reads what the servers sent without waiting. True when the diagnostics changed.
 fn pump(d) {
-  if starting(d) {
-    put_session(d, lsp.pump(d.lsp, 0, 1))
-    if live(d) { let junk = map_set(d, "lsp_ver", 0) }
-    return live(d)
-  }
-  if !live(d) { return false }
-  sync(d)
   let before = d.diags
-  put_session(d, lsp.pump(d.lsp, 0, 1))
-  return d.diags != before
+  let woke = false
+  if pending(d.lsp) {
+    put_session(d, lsp.pump(d.lsp, 0, 1))
+    if up(d.lsp) {
+      let junk = map_set(d, "lsp_ver", 0)
+      let woke = true
+    }
+  }
+  if d.has("shl") && pending(d.shl) {
+    put_shell(d, lsp.pump(d.shl, 0, 1))
+    if up(d.shl) {
+      let junk = map_set(d, "shl_ver", 0)
+      let woke = true
+    }
+  }
+  if !live(d) { return woke }
+  sync(d)
+  if up(d.lsp) { put_session(d, lsp.pump(d.lsp, 0, 1)) }
+  if shell_up(d) { put_shell(d, lsp.pump(d.shl, 0, 1)) }
+  return woke || d.diags != before
 }
 
 fn saved(d) {
   if !live(d) { return null }
   sync(d)
-  put_session(d, lsp.saved(d.lsp))
+  if up(d.lsp) { put_session(d, lsp.saved(d.lsp)) }
+  if shell_up(d) { put_shell(d, lsp.saved(d.shl)) }
   return null
+}
+
+# True when the primary caret is in shell text and the shell server can answer.
+fn ask_shell(d) {
+  if !shell_up(d) { return false }
+  let s = doc.primary(d)
+  return edit_shell.at(doc.marks(d, s.hr), s.hc)
 }
 
 # Hover text without Markdown code fences, which some servers send even when asked for plain text.
@@ -159,6 +317,11 @@ fn hover(d) {
   if !live(d) { return "" }
   sync(d)
   let s = doc.primary(d)
+  if ask_shell(d) {
+    put_shell(d, lsp.hover(d.shl, shell_view(d).lines[s.hr], s.hr, s.hc))
+    return plain_hover(d.shl.hover)
+  }
+  if !up(d.lsp) { return "" }
   put_session(d, lsp.hover(d.lsp, d.lines[s.hr], s.hr, s.hc))
   return plain_hover(d.lsp.hover)
 }
@@ -168,6 +331,17 @@ fn define(d) {
   if !live(d) { return null }
   sync(d)
   let s = doc.primary(d)
+  if ask_shell(d) {
+    put_shell(d, lsp.define(d.shl, shell_view(d).lines[s.hr], s.hr, s.hc))
+    let session = d.shl
+    if !session.jump_ok { return null }
+    if session.jump_uri != session.uri { return { path: lsp.uri_path(session.jump_uri), row: session.jump_line, units: session.jump_col } }
+    let row = session.jump_line
+    if row < 0 || row >= d.lines.length { return null }
+    let col = view_col(shell_view(d).lines[row], session.jump_col)
+    return { path: d.path, row: row, units: lsp.to_utf16(d.lines[row], col) }
+  }
+  if !up(d.lsp) { return null }
   put_session(d, lsp.define(d.lsp, d.lines[s.hr], s.hr, s.hc))
   let session = d.lsp
   if !session.jump_ok { return null }
@@ -187,9 +361,15 @@ fn complete(d) {
   if !live(d) { return [] }
   sync(d)
   let s = doc.primary(d)
-  put_session(d, lsp.complete(d.lsp, d.lines[s.hr], s.hr, s.hc))
+  let items = []
+  if ask_shell(d) {
+    put_shell(d, lsp.complete(d.shl, shell_view(d).lines[s.hr], s.hr, s.hc))
+    let items = d.shl.items
+  } else if up(d.lsp) {
+    put_session(d, lsp.complete(d.lsp, d.lines[s.hr], s.hr, s.hc))
+    let items = d.lsp.items
+  }
   let out = []
-  let items = d.lsp.items
   let i = 0
   while i < items.length && out.length < 50 {
     let name = item_name(items[i])
@@ -213,9 +393,14 @@ fn message_at(d, row) {
 }
 
 fn stop(d) {
-  if d.lsp == null { return null }
-  lsp.stop(d.lsp)
-  let junk = map_set(d, "lsp", null)
+  if d.lsp != null {
+    lsp.stop(d.lsp)
+    let junk = map_set(d, "lsp", null)
+  }
+  if d.has("shl") && d.shl != null {
+    lsp.stop(d.shl)
+    let junk = map_set(d, "shl", null)
+  }
   return null
 }
 

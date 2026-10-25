@@ -377,6 +377,16 @@ void ienv_bind(IEnv *env, const char *name, Value *value) {
     value_note_edge(value);
 }
 
+int ienv_assign(IEnv *env, const char *name, Value *value) {
+    for (; env; env = env->parent) {
+        if (ienv_has(env, name)) {
+            ienv_bind(env, name, value);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int ienv_len(const IEnv *env) {
     return env ? env->len : 0;
 }

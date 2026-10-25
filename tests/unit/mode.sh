@@ -3,9 +3,10 @@ bin=${1:?}
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
 fail=0
+# A file without .btr or .sh follows its shebang. A .sh file is always sh.
 modern() {
-    printf '%s\n' "$2" >"$d/t.sh"
-    "$bin" "$d/t.sh" >"$d/o" 2>"$d/e"
+    printf '%s\n' "$2" >"$d/t"
+    "$bin" "$d/t" >"$d/o" 2>"$d/e"
     rc=$?
     printf 'hi\n' >"$d/want"
     if [ "$rc" -ne 0 ] || ! cmp -s "$d/want" "$d/o" || [ -s "$d/e" ]; then
@@ -41,6 +42,8 @@ echo hi'
 strict envbash '#!/usr/bin/env bash
 echo hi'
 strict noshe 'echo hi'
+strict shname '#!/usr/bin/env bettersh
+echo hi'
 strict envdashs '#!/usr/bin/env -S bettersh
 echo hi'
 printf 'echo vm-sh\n' >"$d/t.sh"

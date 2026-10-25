@@ -12,10 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Private image. Magic BTRC, version 1. Not a source extension and not a
+/* Private image. Magic BTRC, version 2. Not a source extension and not a
    stable instruction set. The verifier runs before any loaded image executes. */
 
-enum { BCODE_VERSION = 1, BCODE_MAX = 8 * 1024 * 1024 };
+enum { BCODE_VERSION = 2, BCODE_MAX = 8 * 1024 * 1024 };
 
 typedef struct Buf {
     unsigned char *p;

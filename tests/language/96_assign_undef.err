@@ -1,0 +1,1 @@
+tests/language/96_assign_undef.btr:3:3: undefined name; declare it with let first

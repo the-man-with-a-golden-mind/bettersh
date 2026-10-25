@@ -82,7 +82,7 @@ fn known_role(name) {
   if name == "gutter" || name == "status" || name == "hint" || name == "comment" { return true }
   if name == "string" || name == "keyword" || name == "number" || name == "diag" || name == "text" { return true }
   if name == "function" || name == "type" || name == "constant" || name == "macro" || name == "variable" { return true }
-  return false
+  return name == "shell"
 }
 
 fn known_color(name) {

@@ -26,6 +26,8 @@ void vm_init(Interp *ip, const MNode *node, VM *vm) {
     memset(vm, 0, sizeof *vm);
     vm->filename = ip->filename ? ip->filename : "bettersh";
     vm->line = node && node->line > 0 ? node->line : 1;
+    vm->frames = &vm->first;
+    vm->max_frames = 1;
     vm->nframes = 1;
     vm->cap = 32;
     vm->stack = xmalloc((size_t)vm->cap * sizeof(Value *));
@@ -134,7 +136,7 @@ Value *do_builtin(Interp *ip, const MNode *node, int id, Value **args, int argc)
 }
 
 int stopped(const Interp *ip) {
-    return ip->failed || ip->returning || ip->stop;
+    return ip->failed || ip->returning || ip->stop || ip->jumping;
 }
 
 static void finish_shell(Interp *ip) {
@@ -185,6 +187,13 @@ static int bind_new_null(Interp *ip, const char *name) {
     return 0;
 }
 
+/* After a loop body: 1 when the loop should stop. Clears break and continue. */
+static int loop_done(Interp *ip) {
+    int jump = ip->jumping;
+    ip->jumping = 0;
+    return jump == 1 || stopped(ip);
+}
+
 static int eval_range_for(Interp *ip, const MNode *node, const MNode *range) {
     if (!range || range->nkids < 2) {
         return ifail(ip, node, "expected range end");
@@ -219,7 +228,7 @@ static int eval_range_for(Interp *ip, const MNode *node, const MNode *range) {
             value_unref(lim);
             return -1;
         }
-        if (stopped(ip)) {
+        if (loop_done(ip)) {
             break;
         }
         value_ref(cur);
@@ -269,6 +278,9 @@ static int eval_array_for(Interp *ip, const MNode *node) {
         if (eval_stmt(ip, node->kids[1]) != 0) {
             value_unref(arr);
             return -1;
+        }
+        if (loop_done(ip)) {
+            break;
         }
     }
     value_unref(arr);
@@ -520,6 +532,9 @@ int eval_stmt(Interp *ip, const MNode *node) {
             if (eval_stmt(ip, node->kids[1]) != 0) {
                 return -1;
             }
+            if (loop_done(ip)) {
+                break;
+            }
         }
         return ip->failed ? -1 : 0;
     }
@@ -533,6 +548,24 @@ int eval_stmt(Interp *ip, const MNode *node) {
         return eval_array_for(ip, node);
     case M_CASE:
         return eval_case(ip, node);
+    case M_ASSIGN: {
+        if (node->nkids < 1) {
+            return ifail(ip, node, "bad statement");
+        }
+        Value *value = eval_expr(ip, node->kids[0]);
+        if (!value) {
+            return -1;
+        }
+        int found = ienv_assign(ip->env, node->text, value);
+        value_unref(value);
+        return found ? 0 : ifail(ip, node, "undefined name; declare it with let first");
+    }
+    case M_BREAK:
+        ip->jumping = 1;
+        return 0;
+    case M_CONTINUE:
+        ip->jumping = 2;
+        return 0;
     case M_RETURN: {
         if (!ip->in_fn) {
             return ifail(ip, node, "return outside function");
@@ -727,6 +760,7 @@ static void repl_prepare(VM *vm) {
     repl_ip.failed = 0;
     repl_ip.status = 0;
     repl_ip.returning = 0;
+    repl_ip.jumping = 0;
     repl_ip.stop = 0;
     value_unref(repl_ip.ret);
     repl_ip.ret = NULL;

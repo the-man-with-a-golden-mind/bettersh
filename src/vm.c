@@ -75,6 +75,28 @@ static int slot_captured(const Chunk *chunk, int slot) {
     return (chunk->captured[slot >> 3] & (uint8_t)(1u << (slot & 7))) != 0;
 }
 
+/* Takes the reference to value. */
+static void cell_store(Cell *cell, Value *value) {
+    Value *old = cell->value;
+    if (cell->root) {
+        if (old && old->roots > 0) {
+            old->roots--;
+        }
+        value->roots++;
+    }
+    value_unref(old);
+    cell->value = value;
+    value_note_edge(value);
+}
+
+/* A captured local lives in its cell: an inner function may have assigned it. */
+static Value *vm_local(VM *vm, Frame *fr, int slot) {
+    if (fr->cells && fr->cells[slot]) {
+        return fr->cells[slot]->value;
+    }
+    return fr->base + slot < vm->sp ? vm->stack[fr->base + slot] : NULL;
+}
+
 static void open_cells(VM *vm, Frame *fr) {
     int n = fr->nlocals;
     int any = 0;
@@ -147,7 +169,7 @@ int vm_call(VM *vm, int argc) {
         vm_fail(vm, "wrong number of arguments");
         return -1;
     }
-    if (vm->nframes >= VM_FRAMES) {
+    if (vm->nframes >= vm->max_frames) {
         vm_fail(vm, "recursion depth exceeded");
         return -1;
     }
@@ -232,6 +254,11 @@ int vm_addsub(VM *vm, int is_add) {
         value_unref(right);
         return -1;
     }
+    if (is_add && (left->kind == VAL_STR || right->kind == VAL_STR)) {
+        vm_push(vm, left);
+        vm_push(vm, right);
+        return vm_cat(vm);
+    }
     if (left->kind == VAL_INT && right->kind == VAL_INT) {
         int64_t n = is_add ? iadd(left->u.i, right->u.i) : isub(left->u.i, right->u.i);
         value_unref(left);
@@ -264,7 +291,7 @@ static void dispatch(VM *vm, Frame *fr, Chunk *chunk, uint32_t ip, int width, ui
             vm_fail(vm, "bad local");
             return;
         }
-        Value *value = vm->stack[fr->base + (int)slot];
+        Value *value = vm_local(vm, fr, slot);
         value_ref(value);
         vm_push(vm, value);
         return;
@@ -284,6 +311,22 @@ static void dispatch(VM *vm, Frame *fr, Chunk *chunk, uint32_t ip, int width, ui
         Value *value = self->u.fn->ups[idx]->value;
         value_ref(value);
         vm_push(vm, value);
+        return;
+    }
+    case OP_STORE_UP: {
+        uint16_t idx = chunk_u16(chunk->code, ip + 1);
+        Value *value = vm_pop(vm);
+        if (!value) {
+            return;
+        }
+        Value *self = fr->base > 0 ? vm->stack[fr->base - 1] : NULL;
+        if (!self || self->kind != VAL_FN || !self->u.fn || idx >= self->u.fn->nups ||
+            !self->u.fn->ups[idx]) {
+            value_unref(value);
+            vm_fail(vm, "bad capture");
+            return;
+        }
+        cell_store(self->u.fn->ups[idx], value);
         return;
     }
     case OP_JUMP_GE_ARGC: {
@@ -349,18 +392,8 @@ static void dispatch(VM *vm, Frame *fr, Chunk *chunk, uint32_t ip, int width, ui
         value_unref(vm->stack[fr->base + (int)slot]);
         vm->stack[fr->base + (int)slot] = value;
         if (fr->cells && fr->cells[slot]) {
-            Cell *cell = fr->cells[slot];
-            Value *old = cell->value;
-            if (cell->root) {
-                if (old && old->roots > 0) {
-                    old->roots--;
-                }
-                value->roots++;
-            }
-            value_unref(old);
             value_ref(value);
-            cell->value = value;
-            value_note_edge(value);
+            cell_store(fr->cells[slot], value);
         }
         return;
     }
@@ -527,6 +560,8 @@ int vm_run(Arena *arena, const char *filename, const char *src, size_t src_len, 
     vm.shstart = shstart;
     vm.cap = 64;
     vm.stack = xmalloc((size_t)vm.cap * sizeof(Value *));
+    vm.frames = xmalloc(VM_FRAMES * sizeof(Frame));
+    vm.max_frames = VM_FRAMES;
     int nlocals = chunk ? (int)chunk->max_locals : 0;
     vm.frames[0].chunk = chunk;
     vm.frames[0].ip = 0;
@@ -560,6 +595,7 @@ int vm_run(Arena *arena, const char *filename, const char *src, size_t src_len, 
         }
     }
     free(vm.stack);
+    free(vm.frames);
     if (vm.failed) {
         return 2;
     }
@@ -585,6 +621,8 @@ int vm_run_module(Arena *arena, const char *filename, const char *src, size_t sr
     vm.jobs = jobs;
     vm.cap = 64;
     vm.stack = xmalloc((size_t)vm.cap * sizeof(Value *));
+    vm.frames = xmalloc(VM_FRAMES * sizeof(Frame));
+    vm.max_frames = VM_FRAMES;
     vm.frames[0].chunk = chunk;
     vm.frames[0].ip = 0;
     vm.frames[0].base = 0;
@@ -612,7 +650,7 @@ int vm_run_module(Arena *arena, const char *filename, const char *src, size_t sr
             if (!name[0] || name[0] == '.') {
                 continue;
             }
-            slot = (fr->base + i < vm.sp) ? vm.stack[fr->base + i] : NULL;
+            slot = vm_local(&vm, fr, i);
             if (!slot) {
                 slot = value_null();
             } else {
@@ -637,6 +675,7 @@ int vm_run_module(Arena *arena, const char *filename, const char *src, size_t sr
         eval_end(&vm.shell);
     }
     free(vm.stack);
+    free(vm.frames);
     if (vm.failed) {
         value_unref(*exported);
         *exported = NULL;

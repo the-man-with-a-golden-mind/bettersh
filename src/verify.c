@@ -37,7 +37,7 @@ static int check_operands(const Chunk *chunk, const char **msg) {
             if (target > chunk->code_len) {
                 return fail(msg, "bad jump");
             }
-        } else if (op == OP_LOAD_UP) {
+        } else if (op == OP_LOAD_UP || op == OP_STORE_UP) {
             uint16_t idx = chunk_u16(chunk->code, ip + 1);
             if (idx >= chunk->ups_len) {
                 return fail(msg, "bad capture");
@@ -178,6 +178,7 @@ static int verify_flow(const Chunk *chunk, const uint8_t *mark, const char **msg
             effect = 0;
             break;
         case OP_STORE_LOCAL:
+        case OP_STORE_UP:
         case OP_POP:
         case OP_ADD:
         case OP_SUB:

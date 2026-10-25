@@ -1,0 +1,264 @@
+#!/usr/bin/env bettersh
+
+# File operations for the side bar: new files and folders, rename, duplicate, copy and move,
+# delete to the Trash when the system has one, and the git state of the files in a folder.
+# Each operation returns "" when it worked, or why it did not.
+
+import std/fs
+import std/path
+import std/strings
+import std/edit_files
+
+fn q(p) {
+  return edit_files.sh_quote(p)
+}
+
+# Runs cmd through sh. True when it exits 0.
+fn ok(cmd) {
+  return capture("if @{ cmd } >/dev/null 2>&1; then printf y; fi") == "y"
+}
+
+# A name for a new entry: no slashes at either end, no empty parts, and no . or .. parts.
+fn bad_name(name) {
+  if name == null || name.trim() == "" { return "no name" }
+  let parts = name.split("/")
+  let i = 0
+  while i < parts.length {
+    let p = parts[i]
+    if p == "." || p == ".." { return "a name cannot use . or .." }
+    if p == "" && i > 0 && i < parts.length - 1 { return "a name cannot have an empty part" }
+    let i = i + 1
+  }
+  return ""
+}
+
+# The folder a new entry goes in: the item itself when it is a folder, or its folder.
+fn target_dir(item, root) {
+  if item == null { return root }
+  if item.dir { return item.path }
+  let up = path.dir(item.path)
+  if up == "" { return root }
+  return up
+}
+
+fn place(dir, name) {
+  if dir == "." || dir == "" { return name }
+  return path.join(dir, name)
+}
+
+# Creates every missing folder on the way to p.
+fn mkdirs(p) {
+  if p == "" || p == "." || p == "/" || fs.exists(p) { return "" }
+  let up = path.dir(p)
+  if up != p && up != "" {
+    let why = mkdirs(up)
+    if why != "" { return why }
+  }
+  if fs.kind(p) == "dir" { return "" }
+  fs.mkdir(p)
+  if fs.kind(p) != "dir" { return "cannot create @{ p }" }
+  return ""
+}
+
+# A new empty file. A name with slashes creates the folders in it.
+fn new_file(dir, name) {
+  let why = bad_name(name)
+  if why != "" { return why }
+  let p = place(dir, name)
+  if fs.exists(p) { return "@{ p } already exists" }
+  let why = mkdirs(path.dir(p))
+  if why != "" { return why }
+  if !fs.save(p, "") { return "cannot create @{ p }" }
+  return ""
+}
+
+fn new_folder(dir, name) {
+  let why = bad_name(name)
+  if why != "" { return why }
+  let p = place(dir, name)
+  if fs.exists(p) { return "@{ p } already exists" }
+  return mkdirs(p)
+}
+
+# True when p is inside the folder dir, or is dir.
+fn within(p, dir) {
+  if p == dir { return true }
+  if dir == "/" { return strings.starts(p, "/") }
+  return strings.starts(p, "@{ dir }/")
+}
+
+# Moves or renames src to dst. dst must not exist.
+fn move(src, dst) {
+  if src == dst { return "" }
+  if !fs.exists(src) { return "@{ src } is gone" }
+  if fs.exists(dst) { return "@{ dst } already exists" }
+  if within(dst, src) { return "cannot move a folder into itself" }
+  let why = mkdirs(path.dir(dst))
+  if why != "" { return why }
+  if !ok("mv -- @{ q(src) } @{ q(dst) }") { return "cannot move @{ src }" }
+  return ""
+}
+
+# Copies src, a file or a whole folder, to dst. dst must not exist.
+fn copy(src, dst) {
+  if !fs.exists(src) { return "@{ src } is gone" }
+  if fs.exists(dst) { return "@{ dst } already exists" }
+  if within(dst, src) { return "cannot copy a folder into itself" }
+  let why = mkdirs(path.dir(dst))
+  if why != "" { return why }
+  if !ok("cp -R -- @{ q(src) } @{ q(dst) }") { return "cannot copy @{ src }" }
+  return ""
+}
+
+# The first free name for a copy of p in dir: name copy.ext, then name copy 2.ext.
+fn free_copy(dir, p) {
+  let base = path.base(p)
+  let stem = base
+  let ext = ""
+  let dot = 0 - 1
+  let i = base.length - 1
+  while i > 0 && dot < 0 {
+    if base[i] == "." { let dot = i }
+    let i = i - 1
+  }
+  if dot > 0 && fs.kind(p) != "dir" {
+    let stem = base.slice(0, dot)
+    let ext = base.slice(dot, base.length)
+  }
+  let first = place(dir, base)
+  if !fs.exists(first) { return first }
+  let n = 1
+  while n < 1000 {
+    let tag = " copy"
+    if n > 1 { let tag = " copy @{ n }" }
+    let cand = place(dir, "@{ stem }@{ tag }@{ ext }")
+    if !fs.exists(cand) { return cand }
+    let n = n + 1
+  }
+  return place(dir, "@{ stem } copy @{ n }@{ ext }")
+}
+
+# How remove deletes: "trash" or "gio" when the system has a Trash command, else "rm".
+# BETTERSH_TRASH=off always deletes.
+fn trash_tool() {
+  if getenv("BETTERSH_TRASH") == "off" { return "rm" }
+  if ok("command -v trash") { return "trash" }
+  if ok("command -v gio") { return "gio" }
+  return "rm"
+}
+
+# Removes p, a file or a folder with everything in it. guard is a folder that must stay.
+# Returns { err, how }: how is "trash" when it went to the Trash.
+fn remove(p, guard) {
+  if p == null || p == "" || p == "/" || p == "." || p == ".." { return { err: "will not delete @{ p }", how: "" } }
+  if guard != null && guard != "" && within(guard, p) { return { err: "will not delete the side bar's folder", how: "" } }
+  if !fs.exists(p) && fs.kind(p) == null { return { err: "@{ p } is gone", how: "" } }
+  let tool = trash_tool()
+  let safe = p
+  if p[0] != "/" { let safe = "./@{ p }" }
+  if tool == "trash" && ok("trash @{ q(safe) }") { return { err: "", how: "trash" } }
+  if tool == "gio" && ok("gio trash -- @{ q(p) }") { return { err: "", how: "trash" } }
+  if !ok("rm -rf -- @{ q(p) }") || fs.exists(p) { return { err: "cannot delete @{ p }", how: "" } }
+  return { err: "", how: "rm" }
+}
+
+# How many files and folders p holds, itself included, counting up to limit.
+fn count(p, limit) {
+  if fs.kind(p) != "dir" { return 1 }
+  let n = 1
+  let names = fs.list(p)
+  if names == null { return n }
+  let i = 0
+  while i < names.length && n < limit {
+    let n = n + count(path.join(p, names[i]), limit - n)
+    let i = i + 1
+  }
+  return n
+}
+
+# The git state of the files under root: { full path: letter }. M changed, A added, D deleted,
+# R renamed, U conflicted, ? untracked. Outside a work tree the map is empty.
+fn git_state(root) {
+  let top = capture("git -C @{ q(root) } rev-parse --show-toplevel 2>/dev/null || true").trim()
+  if top == "" { return {} }
+  # Status paths start at the top of the work tree. The prefix is root's place in it, which
+  # keeps the keys in root's own spelling even when a symlink leads there.
+  let prefix = capture("git -C @{ q(root) } rev-parse --show-prefix 2>/dev/null || true").trim()
+  let text = capture("git -C @{ q(top) } status --porcelain -uall 2>/dev/null || true")
+  let out = {}
+  let lines = text.split("\n")
+  let i = 0
+  while i < lines.length {
+    let line = lines[i]
+    let i = i + 1
+    if line.length > 3 {
+      let x = line[0]
+      let y = line[1]
+      let name = line.slice(3, line.length)
+      let arrow = name.index(" -> ")
+      if arrow >= 0 { let name = name.slice(arrow + 4, name.length) }
+      if name.length > 1 && name[0] == "\"" { let name = name.slice(1, name.length - 1) }
+      let code = y
+      if code == " " { let code = x }
+      if x == "?" { let code = "?" }
+      if x == "U" || y == "U" { let code = "U" }
+      if code != " " && strings.starts(name, prefix) {
+        let out = map_set(out, path.join(root, name.slice(prefix.length, name.length)), code)
+      }
+    }
+  }
+  return out
+}
+
+# The letter for p in a state map. A folder gets • when anything under it has one.
+fn state_of(state, p, is_dir) {
+  if !is_dir {
+    if state.has(p) { return state[p] }
+    return ""
+  }
+  let keys = state.keys()
+  let i = 0
+  while i < keys.length {
+    if strings.starts(keys[i], "@{ p }/") { return "•" }
+    let i = i + 1
+  }
+  return ""
+}
+
+# p from the working directory, the way the editor names open files.
+fn full(p) {
+  if p == null || p == "" { return p }
+  if p[0] == "/" { return p }
+  let here = getenv("PWD")
+  if here == null || here == "" { return p }
+  if p == "." { return here }
+  return path.join(here, p)
+}
+
+# How many diagnostics each open file has: { full path: count }.
+fn issues(docs) {
+  let out = {}
+  let i = 0
+  while i < docs.length {
+    let d = docs[i]
+    if d.path != null && d.diags.length > 0 { let out = map_set(out, full(d.path), d.diags.length) }
+    let i = i + 1
+  }
+  return out
+}
+
+# The diagnostic count for a file, or for everything under a folder.
+fn issues_of(found, p, is_dir) {
+  if !is_dir {
+    if found.has(p) { return found[p] }
+    return 0
+  }
+  let n = 0
+  let keys = found.keys()
+  let i = 0
+  while i < keys.length {
+    if strings.starts(keys[i], "@{ p }/") { let n = n + found[keys[i]] }
+    let i = i + 1
+  }
+  return n
+}

@@ -138,7 +138,12 @@ int compile_expr(Compiler *c, const MNode *node) {
         emit_str(c, node->text ? node->text : "", node->text ? strlen(node->text) : 0);
         return c->failed ? -1 : 0;
     case M_STR: {
+        /* "@{ x }" is always a string, so it starts from "" like any other. */
         int pushed = 0;
+        if (node->nkids == 1 && node->kids[0]->kind != M_TEXT) {
+            emit_str(c, "", 0);
+            pushed = 1;
+        }
         for (uint32_t i = 0; i < node->nkids; i++) {
             if (compile_expr(c, node->kids[i]) != 0) {
                 return -1;

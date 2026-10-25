@@ -20,6 +20,8 @@ import std/edit_cmds as cmds
 import std/edit_syntax
 import std/edit_complete
 import std/edit_lsp
+import std/edit_shell
+import std/edit_tree
 import std/edit_files
 import std/edit_run
 import std/edit_view as view
@@ -165,7 +167,7 @@ fn make_app(cols, rows, cfg) {
     focus: "text", live: false, quit: false, quitting: false,
     clip: { pieces: [""], lines: false, text: "" }, clip_tool: null,
     find: { query: "", fold: true, whole: false },
-    side: { open: false, root: ".", items: [], pick: 0, top: 0, opened: {} },
+    side: { open: false, root: ".", items: [], pick: 0, top: 0, opened: {}, git: {}, clip: null },
     files: [], files_at: 0 - 100000, closed: [], jumps: [],
     drag: null, click: { t: 0 - 100000, x: 0 - 1, y: 0 - 1, n: 0 },
     screen: [], menus: []
@@ -376,6 +378,7 @@ fn write_doc(e, d, after) {
   doc.mark_saved(d)
   let junk = map_set(d, "disk", text)
   edit_lsp.saved(d)
+  if e.side.open { let junk = map_set(e.side, "git", edit_tree.git_state(full_path(e.side.root))) }
   say(e, "Saved @{ d.path }")
   if after != null { after(e) }
   return true
@@ -888,6 +891,20 @@ fn commands() {
     { id: "prev_tab", title: "Goto: Previous Tab" },
     { id: "toggle_sidebar", title: "View: Toggle Side Bar" },
     { id: "focus_sidebar", title: "View: Focus Side Bar" },
+    { id: "side_new_file", title: "Side Bar: New File" },
+    { id: "side_new_folder", title: "Side Bar: New Folder" },
+    { id: "side_rename", title: "Side Bar: Rename or Move" },
+    { id: "side_duplicate", title: "Side Bar: Duplicate" },
+    { id: "side_delete", title: "Side Bar: Delete" },
+    { id: "side_copy", title: "Side Bar: Copy" },
+    { id: "side_cut", title: "Side Bar: Cut" },
+    { id: "side_paste", title: "Side Bar: Paste" },
+    { id: "side_copy_path", title: "Side Bar: Copy Path" },
+    { id: "side_reveal", title: "Side Bar: Reveal Current File" },
+    { id: "side_parent", title: "Side Bar: Go to Parent Folder" },
+    { id: "side_set_root", title: "Side Bar: Make Folder the Root" },
+    { id: "side_go", title: "Side Bar: Go to Folder" },
+    { id: "side_refresh", title: "Side Bar: Refresh" },
     { id: "toggle_panel", title: "View: Toggle Panel" },
     { id: "toggle_line_numbers", title: "View: Toggle Line Numbers" },
     { id: "toggle_guides", title: "View: Toggle Indent Guides" },
@@ -1137,6 +1154,17 @@ fn comp_close(e) {
 }
 
 # Shows completions for the identifier before the primary caret. force also asks the server.
+# The syntax marks of every row.
+fn all_marks(d) {
+  let out = []
+  let r = 0
+  while r < d.lines.length {
+    let out = out.push(doc.marks(d, r))
+    let r = r + 1
+  }
+  return out
+}
+
 fn comp_update(e, force) {
   let d = cur(e)
   let s = doc.primary(d)
@@ -1145,7 +1173,11 @@ fn comp_update(e, force) {
     return null
   }
   let text = d.lines[s.hr]
-  let got = edit_complete.offer(d.lines, s.hr, s.hc, doc.marks(d, s.hr), d.lang)
+  let marks = doc.marks(d, s.hr)
+  let shell = d.lang == "btr" && edit_shell.at(marks, s.hc)
+  let got = { items: [], hint: "" }
+  if shell && !edit_complete.in_literal(marks, s.hc) { let got = { items: edit_shell.offer(d.lines, s.hr, s.hc, all_marks(d)), hint: "" } }
+  else if !shell { let got = edit_complete.offer(d.lines, s.hr, s.hc, marks, d.lang) }
   if got.hint != "" { say(e, got.hint) }
   let items = got.items
   if force && edit_lsp.live(d) {
@@ -1161,6 +1193,7 @@ fn comp_update(e, force) {
   let typed = text.slice(r.a, s.hc)
   let asked = typed
   if d.lang == "btr" { let asked = edit_complete.prefix_at(text, s.hc) }
+  if shell { let asked = edit_shell.prefix_at(text, s.hc) }
   if items.length == 0 || (!force && asked.length == 0) {
     comp_close(e)
     if force && items.length == 0 { say(e, "No completions") }
@@ -1248,7 +1281,10 @@ fn goto_definition(e) {
     }
   }
   let at = null
-  if d.lang == "btr" { let at = edit_complete.jump_at(d.lines, s.hr, s.hc) }
+  if d.lang == "btr" {
+    if edit_shell.at(doc.marks(d, s.hr), s.hc) { let at = edit_shell.jump(d.lines, s.hr, s.hc, all_marks(d)) }
+    else { let at = edit_complete.jump_at(d.lines, s.hr, s.hc) }
+  }
   if at == null {
     let word = cmds.word_sel(d, s)
     let name = doc.sel_text(d, word)
@@ -1329,7 +1365,11 @@ fn show_hover(e) {
   let s = doc.primary(d)
   let text = ""
   if edit_lsp.live(d) { let text = edit_lsp.hover(d) }
-  if text == "" && d.lang == "btr" { let text = edit_complete.hover_text(d.lines, s.hr, s.hc, doc.marks(d, s.hr)) }
+  if text == "" && d.lang == "btr" {
+    let marks = doc.marks(d, s.hr)
+    if edit_shell.at(marks, s.hc) { let text = edit_shell.hover(d.lines, s.hr, s.hc, all_marks(d)) }
+    else { let text = edit_complete.hover_text(d.lines, s.hr, s.hc, marks) }
+  }
   if text == "" {
     say(e, "Nothing to show here")
     return null
@@ -1406,7 +1446,7 @@ fn side_toggle(e) {
   let side = e.side
   let junk = map_set(side, "open", !side.open)
   if side.open {
-    side_build(e)
+    side_refresh(e)
   } else if e.focus == "side" {
     let junk = map_set(e, "focus", "text")
   }
@@ -1421,6 +1461,10 @@ fn toggle_setting(e, name) {
 # Runs a command by id. Unknown ids do nothing.
 fn run_cmd(e, id) {
   let d = cur(e)
+  if strings.starts(id, "side_") && id != "side_bar" {
+    side_cmd(e, id)
+    return null
+  }
   if id == "new_file" { new_file(e) }
   else if id == "open_file" {
     ask_path(e, "Open", "", fn(ee, text) {
@@ -1740,6 +1784,11 @@ fn side_key(e, key) {
   if pick >= n { let pick = n - 1 }
   if pick < 0 { let pick = 0 }
   let junk = map_set(side, "pick", pick)
+  let id = side_key_cmd(key)
+  if id != "" {
+    side_cmd(e, id)
+    return null
+  }
   if n > 0 {
     let item = side.items[pick]
     if key == "enter" || key == " " { side_activate(e, pick) }
@@ -1755,6 +1804,330 @@ fn side_key(e, key) {
   }
   if side.pick < side.top { let junk = map_set(side, "top", side.pick) }
   if side.pick >= side.top + lay.view { let junk = map_set(side, "top", side.pick - lay.view + 1) }
+}
+
+# Keys in the focused side bar that run a side bar command.
+fn side_key_cmd(key) {
+  if key == "n" { return "side_new_file" }
+  if key == "N" { return "side_new_folder" }
+  if key == "r" || key == "f2" { return "side_rename" }
+  if key == "D" { return "side_duplicate" }
+  if key == "delete" || key == "d" { return "side_delete" }
+  if key == "c" || key == "ctrl-c" { return "side_copy" }
+  if key == "x" || key == "ctrl-x" { return "side_cut" }
+  if key == "v" || key == "p" || key == "ctrl-v" { return "side_paste" }
+  if key == "y" { return "side_copy_path" }
+  if key == "u" || key == "backspace" { return "side_parent" }
+  if key == "." { return "side_set_root" }
+  if key == "g" { return "side_go" }
+  if key == "R" || key == "f5" { return "side_refresh" }
+  if key == "m" || key == "?" || key == "shift-f10" { return "side_menu" }
+  return ""
+}
+
+fn side_item(e) {
+  let side = e.side
+  if side.pick < 0 || side.pick >= side.items.length { return null }
+  return side.items[side.pick]
+}
+
+# Rebuilds the tree and reads the git state of its folder again.
+fn side_refresh(e) {
+  let junk = map_set(e.side, "git", edit_tree.git_state(full_path(e.side.root)))
+  side_build(e)
+}
+
+# Opens the folders down to p and picks it.
+fn side_show(e, p) {
+  let side = e.side
+  let up = path.dir(p)
+  let guard = 0
+  while up != "" && up != "." && up != side.root && up != "/" && guard < 64 {
+    let junk = map_set(side.opened, up, true)
+    let up = path.dir(up)
+    let guard = guard + 1
+  }
+  side_refresh(e)
+  let i = 0
+  while i < side.items.length {
+    if side.items[i].path == p || full_path(side.items[i].path) == full_path(p) { let junk = map_set(side, "pick", i) }
+    let i = i + 1
+  }
+  let lay = view.layout(e)
+  if side.pick < side.top { let junk = map_set(side, "top", side.pick) }
+  if side.pick >= side.top + lay.view { let junk = map_set(side, "top", side.pick - lay.view + 1) }
+}
+
+fn side_root_to(e, dir) {
+  let side = e.side
+  let junk = map_set(side, "root", dir)
+  let junk = map_set(side, "pick", 0)
+  let junk = map_set(side, "top", 0)
+  let junk = map_set(e, "files", [])
+  if !side.open { let junk = map_set(side, "open", true) }
+  side_refresh(e)
+  say(e, "Folder: @{ full_path(dir) }")
+}
+
+# The path an item in the side bar would get when written as text: under the root it stays
+# relative, as the tree shows it.
+fn side_rel(e, p) {
+  let root = e.side.root
+  if root == "." || root == "" { return p }
+  if edit_tree.within(p, root) && p != root { return p.slice(root.length + 1, p.length) }
+  return p
+}
+
+# Open tabs follow a file or folder that moved from src to dst.
+fn side_moved(e, src, dst) {
+  let fa = full_path(src)
+  let i = 0
+  while i < e.docs.length {
+    let d = e.docs[i]
+    if d.path != null && edit_tree.within(full_path(d.path), fa) {
+      let rest = full_path(d.path).slice(fa.length, full_path(d.path).length)
+      let np = "@{ full_path(dst) }@{ rest }"
+      edit_lsp.stop(d)
+      let junk = map_set(d, "path", np)
+      let junk = map_set(d, "name", doc.base_name(np))
+      let lang = edit_syntax.lang(np)
+      if lang != d.lang {
+        let junk = map_set(d, "lang", lang)
+        doc.syn_reset(d)
+      }
+      attach_lsp(e, d)
+    }
+    let i = i + 1
+  }
+  rename_tabs(e)
+}
+
+# Closes the clean tabs of files that are gone. A tab with unsaved changes stays open.
+fn side_gone(e, p) {
+  let fa = full_path(p)
+  let i = e.docs.length - 1
+  while i >= 0 {
+    let d = e.docs[i]
+    if d.path != null && edit_tree.within(full_path(d.path), fa) {
+      if doc.dirty(d) { let junk = map_set(d, "gone", true) }
+      else if e.docs.length > 1 { drop_tab(e, i) }
+      else {
+        drop_tab(e, i)
+        let junk = map_set(e, "quit", false)
+      }
+    }
+    let i = i - 1
+  }
+}
+
+fn side_report(e, why, done) {
+  if why != "" { warn(e, why) }
+  else { say(e, done) }
+}
+
+fn side_menu(e) {
+  let ids = ["side_new_file", "side_new_folder", "side_rename", "side_duplicate", "side_delete", "side_copy", "side_cut", "side_paste", "side_copy_path", "side_set_root", "side_parent", "side_go", "side_refresh"]
+  let keys = ["n", "N", "r", "D", "d", "c", "x", "v", "y", ".", "u", "g", "R"]
+  let items = []
+  let width = 14
+  let k = 0
+  while k < ids.length {
+    let name = title_of(ids[k])
+    let at = name.index(": ")
+    if at >= 0 { let name = name.slice(at + 2, name.length) }
+    let items = items.push({ name: name, key: keys[k], id: ids[k] })
+    let w = ui.width(name) + ui.width(keys[k]) + 6
+    if w > width { let width = w }
+    let k = k + 1
+  }
+  let lay = view.layout(e)
+  let r = lay.top + e.side.pick - e.side.top + 1
+  if r < lay.top { let r = lay.top }
+  let c = 2
+  let junk = map_set(e, "overlay", { kind: "menu", id: 0 - 1, items: items, pick: 0, r: r, c: c, width: width, at_r: r, at_c: c })
+}
+
+# The side bar's file commands. They work on the picked item, or on the root without one.
+fn side_cmd(e, id) {
+  let side = e.side
+  if !side.open && id != "side_reveal" && id != "side_go" {
+    let junk = map_set(side, "open", true)
+    side_refresh(e)
+  }
+  let item = side_item(e)
+  let dir = edit_tree.target_dir(item, side.root)
+  if id == "side_menu" { side_menu(e) }
+  else if id == "side_refresh" {
+    side_refresh(e)
+    say(e, "Refreshed @{ full_path(side.root) }")
+  }
+  else if id == "side_new_file" {
+    ask_text(e, "New file in @{ side_rel(e, dir) }/", "", "text", fn(ee, name) {
+      let why = edit_tree.new_file(dir, name)
+      if why != "" {
+        warn(ee, why)
+        return null
+      }
+      let p = edit_tree.place(dir, name)
+      side_show(ee, p)
+      open_path(ee, p)
+      let junk = map_set(ee, "focus", "text")
+    })
+  }
+  else if id == "side_new_folder" {
+    ask_text(e, "New folder in @{ side_rel(e, dir) }/", "", "text", fn(ee, name) {
+      let why = edit_tree.new_folder(dir, name)
+      if why != "" {
+        warn(ee, why)
+        return null
+      }
+      let p = edit_tree.place(dir, name)
+      let junk = map_set(ee.side.opened, p, true)
+      side_show(ee, p)
+      say(ee, "Created @{ p }")
+    })
+  }
+  else if item == null && id != "side_parent" && id != "side_go" && id != "side_reveal" { say(e, "Nothing picked in the side bar") }
+  else if id == "side_rename" {
+    ask_path(e, "Rename to", item.path, fn(ee, text) {
+      let dst = text.trim()
+      if dst == "" || dst == item.path { return null }
+      if fs.kind(dst) == "dir" { let dst = path.join(dst, item.name) }
+      let why = edit_tree.move(item.path, dst)
+      if why == "" {
+        if ee.side.opened.has(item.path) {
+          let junk = ee.side.opened.remove(item.path)
+          let junk = map_set(ee.side.opened, dst, true)
+        }
+        side_moved(ee, item.path, dst)
+        side_show(ee, dst)
+      }
+      side_report(ee, why, "Moved to @{ dst }")
+    })
+  }
+  else if id == "side_duplicate" {
+    ask_path(e, "Duplicate as", edit_tree.free_copy(path.dir(item.path), item.path), fn(ee, text) {
+      let dst = text.trim()
+      if dst == "" { return null }
+      let why = edit_tree.copy(item.path, dst)
+      if why == "" { side_show(ee, dst) }
+      side_report(ee, why, "Copied to @{ dst }")
+    })
+  }
+  else if id == "side_delete" {
+    let what = "the file"
+    if item.dir {
+      let n = edit_tree.count(item.path, 1000)
+      let what = "the folder and everything in it"
+      if n > 1 && n < 1000 { let what = "the folder and the @{ n - 1 } items in it" }
+      if n >= 1000 { let what = "the folder and more than 1000 items in it" }
+    }
+    ask(e, "Delete @{ what }: @{ item.path }?", ["Delete", "Cancel"], fn(ee, choice) {
+      if choice != 0 { return null }
+      let got = edit_tree.remove(item.path, ee.side.root)
+      if got.err != "" {
+        warn(ee, got.err)
+        return null
+      }
+      side_gone(ee, item.path)
+      if ee.side.opened.has(item.path) { let junk = ee.side.opened.remove(item.path) }
+      side_refresh(ee)
+      if got.how == "trash" { say(ee, "Moved @{ item.path } to the Trash") }
+      else { say(ee, "Deleted @{ item.path }") }
+    })
+  }
+  else if id == "side_copy" || id == "side_cut" {
+    let junk = map_set(side, "clip", { path: item.path, cut: id == "side_cut" })
+    if id == "side_cut" { say(e, "Cut @{ item.path }: paste it in a folder with v") }
+    else { say(e, "Copied @{ item.path }: paste it in a folder with v") }
+  }
+  else if id == "side_paste" {
+    let clip = side.clip
+    if clip == null {
+      say(e, "Nothing to paste: copy or cut an item first")
+      return null
+    }
+    if !fs.exists(clip.path) && fs.kind(clip.path) == null {
+      let junk = map_set(side, "clip", null)
+      warn(e, "@{ clip.path } is gone")
+      return null
+    }
+    let why = ""
+    let dst = ""
+    if clip.cut {
+      let dst = edit_tree.place(dir, path.base(clip.path))
+      let why = edit_tree.move(clip.path, dst)
+      if why == "" {
+        side_moved(e, clip.path, dst)
+        let junk = map_set(side, "clip", null)
+      }
+    } else {
+      let dst = edit_tree.free_copy(dir, clip.path)
+      let why = edit_tree.copy(clip.path, dst)
+    }
+    if why == "" { side_show(e, dst) }
+    side_report(e, why, "Pasted @{ dst }")
+  }
+  else if id == "side_copy_path" {
+    let full = full_path(item.path)
+    set_clip(e, { pieces: [full], lines: false })
+    say(e, "Copied @{ full }")
+  }
+  else if id == "side_set_root" {
+    if item.dir { side_root_to(e, full_path(item.path)) }
+    else { side_root_to(e, full_path(dir)) }
+  }
+  if id == "side_parent" {
+    let here = full_path(side.root)
+    let up = path.dir(here)
+    if up == "" { let up = "/" }
+    if up != here {
+      side_root_to(e, up)
+      side_show(e, here)
+    }
+  }
+  else if id == "side_go" {
+    ask_path(e, "Go to folder", "@{ full_path(side.root) }/", fn(ee, text) {
+      let p = text.trim()
+      if p == "~" || strings.starts(p, "~/") {
+        let home = env.get("HOME")
+        if home != null { let p = "@{ home }@{ p.slice(1, p.length) }" }
+      }
+      if fs.kind(p) != "dir" {
+        warn(ee, "not a folder: @{ p }")
+        return null
+      }
+      let p = full_path(p)
+      while p.length > 1 && p[p.length - 1] == "/" { let p = p.slice(0, p.length - 1) }
+      side_root_to(ee, p)
+      let junk = map_set(ee, "focus", "side")
+    })
+  }
+  else if id == "side_reveal" {
+    let d = cur(e)
+    if d.path == null {
+      say(e, "The file has no path yet")
+      return null
+    }
+    if !side.open {
+      let junk = map_set(side, "open", true)
+    }
+    let p = d.path
+    let root = full_path(side.root)
+    if !edit_tree.within(full_path(p), root) { side_root_to(e, path.dir(full_path(p))) }
+    if side.root == "." { let p = side_rel_to_pwd(p) }
+    else { let p = full_path(p) }
+    side_show(e, p)
+    let junk = map_set(e, "focus", "side")
+  }
+}
+
+# A path as the side bar shows it when its root is the working directory.
+fn side_rel_to_pwd(p) {
+  let here = full_path(".")
+  let fp = full_path(p)
+  if edit_tree.within(fp, here) && fp != here { return fp.slice(here.length + 1, fp.length) }
+  return p
 }
 
 # Replaces the identifier before every caret with the chosen completion.
@@ -2116,7 +2489,8 @@ fn text_key(e, key, ev) {
     else if e.comp != null { comp_close(e) }
     else if key == "(" && d.lang == "btr" {
       let s = doc.primary(d)
-      let hint = edit_complete.call_hint(d.lines, s.hr, s.hc, doc.marks(d, s.hr))
+      let hint = ""
+      if !edit_shell.at(doc.marks(d, s.hr), s.hc) { let hint = edit_complete.call_hint(d.lines, s.hr, s.hc, doc.marks(d, s.hr)) }
       if hint != "" { say(e, hint) }
     }
     return null
@@ -2487,6 +2861,11 @@ fn mouse(e, ev) {
   if lay.side_w > 0 && x < lay.side_w && y >= lay.top && y < lay.top + lay.view {
     let k = e.side.top + y - lay.top
     let junk = map_set(e, "focus", "side")
+    if ev.button == 2 {
+      if k >= 0 && k < e.side.items.length { let junk = map_set(e.side, "pick", k) }
+      side_menu(e)
+      return null
+    }
     side_activate(e, k)
     return null
   }
