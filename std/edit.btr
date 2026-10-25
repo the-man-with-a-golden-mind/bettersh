@@ -2588,7 +2588,7 @@ fn resize(e) {
 fn any_lsp(e) {
   let i = 0
   while i < e.docs.length {
-    if edit_lsp.live(e.docs[i]) { return true }
+    if edit_lsp.live(e.docs[i]) || edit_lsp.starting(e.docs[i]) { return true }
     let i = i + 1
   }
   return false
@@ -2608,6 +2608,11 @@ fn read_chunk(e) {
 fn pump(e) {
   let changed = edit_run.pump()
   if edit_lsp.pump(cur(e)) { let changed = true }
+  let why = edit_lsp.failure(cur(e))
+  if why != "" {
+    warn(e, why)
+    let changed = true
+  }
   return changed
 }
 

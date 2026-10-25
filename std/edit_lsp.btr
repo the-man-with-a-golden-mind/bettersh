@@ -56,9 +56,43 @@ fn live(d) {
   return d.lsp != null && d.lsp.ready && !d.lsp.dead
 }
 
+# A server that has not answered initialize yet. Pumping it lets the answer arrive.
+fn starting(d) {
+  return d.lsp != null && !d.lsp.ready && !d.lsp.dead && !d.lsp.shut && d.lsp.fail == ""
+}
+
+# Why the server would not start, once: its answer to initialize, or "".
+fn failure(d) {
+  if d.lsp == null || d.lsp.ready || d.lsp.fail == "" || d.has("lsp_told") { return "" }
+  let junk = map_set(d, "lsp_told", true)
+  return "language server failed: @{ d.lsp.fail }"
+}
+
 fn put_session(d, session) {
   let junk = map_set(d, "lsp", session)
   if session != null && session.has("diags") { let junk = map_set(d, "diags", session.diags) }
+}
+
+# The workspace for a file without a root line: the nearest folder above it that holds a
+# project file such as Cargo.toml or package.json, or else the file's own folder.
+fn project_root(p) {
+  let start = path.dir(lsp.absolute(p, ""))
+  let markers = ["Cargo.toml", "package.json", "tsconfig.json", "jsconfig.json", "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "go.mod", "compile_commands.json", ".git"]
+  let dir = start
+  let steps = 0
+  while dir != "" && steps < 40 {
+    let i = 0
+    while i < markers.length {
+      if fs.exists(path.join(dir, markers[i])) { return dir }
+      let i = i + 1
+    }
+    if dir == "/" { return start }
+    let up = path.dir(dir)
+    if up == dir { return start }
+    let dir = up
+    let steps = steps + 1
+  }
+  return start
 }
 
 # Starts the server for this file type. Returns a status message, or "".
@@ -68,12 +102,15 @@ fn attach(d, cfg) {
   if cmd == null { return "" }
   let root = ""
   if cfg.has("root") { let root = cfg.root }
+  if root == "" { let root = project_root(d.path) }
   let session = lsp.begin(cmd, d.path, body(d), root)
   if session == null { return "" }
   put_session(d, session)
   let junk = map_set(d, "lsp_ver", d.version)
   if session.dead { return "language server stopped" }
-  if !session.ready { return "language server did not answer" }
+  let why = failure(d)
+  if why != "" { return why }
+  if !session.ready { return "language server starting" }
   return ""
 }
 
@@ -87,6 +124,11 @@ fn sync(d) {
 
 # Reads what the server sent without waiting. True when the diagnostics changed.
 fn pump(d) {
+  if starting(d) {
+    put_session(d, lsp.pump(d.lsp, 0, 1))
+    if live(d) { let junk = map_set(d, "lsp_ver", 0) }
+    return live(d)
+  }
   if !live(d) { return false }
   sync(d)
   let before = d.diags
@@ -101,12 +143,24 @@ fn saved(d) {
   return null
 }
 
+# Hover text without Markdown code fences, which some servers send even when asked for plain text.
+fn plain_hover(text) {
+  let t = text.trim()
+  if t.slice(0, 3) == "```" {
+    let space = t.index(" ")
+    if space > 0 { let t = t.slice(space + 1, t.length) }
+    else { let t = t.slice(3, t.length) }
+  }
+  let t = t.replace("```", "")
+  return t.trim()
+}
+
 fn hover(d) {
   if !live(d) { return "" }
   sync(d)
   let s = doc.primary(d)
   put_session(d, lsp.hover(d.lsp, d.lines[s.hr], s.hr, s.hc))
-  return d.lsp.hover
+  return plain_hover(d.lsp.hover)
 }
 
 # { path, row, col } for the definition under the primary caret, or null.

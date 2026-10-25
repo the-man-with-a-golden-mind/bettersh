@@ -6,12 +6,21 @@ import std/strings
 
 # Speaks Language Server Protocol on a pipe. The editor attaches any server command.
 
+# The LSP language id for a file extension. Servers such as typescript-language-server
+# pick their parser from it, so TSX and JSX need their own ids.
 fn language(ext) {
   if ext == null { return "" }
   if ext == "btr" { return "bettersh" }
-  if ext == "py" { return "python" }
+  if ext == "py" || ext == "pyi" { return "python" }
   if ext == "rs" { return "rust" }
-  if ext == "js" { return "javascript" }
+  if ext == "js" || ext == "mjs" || ext == "cjs" { return "javascript" }
+  if ext == "jsx" { return "javascriptreact" }
+  if ext == "ts" || ext == "mts" || ext == "cts" { return "typescript" }
+  if ext == "tsx" { return "typescriptreact" }
+  if ext == "sh" || ext == "bash" { return "shellscript" }
+  if ext == "h" { return "c" }
+  if ext == "cc" || ext == "cpp" || ext == "cxx" || ext == "hpp" { return "cpp" }
+  if ext == "md" { return "markdown" }
   return ext
 }
 
@@ -549,7 +558,8 @@ fn begin(cmd, file, text, root) {
   let session = map_set(session, "wait", id)
   let session = map_set(session, "got", false)
   let session = send_json(session, rpc(id, "initialize", init_params(session)))
-  let session = wait_for(session, 100)
+  # A slow server answers later. The editor keeps pumping until it does.
+  let session = wait_for(session, 30)
   if session.ready { return pump(session, 30, 20) }
   return session
 }

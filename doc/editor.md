@@ -160,9 +160,75 @@ Syntax highlighting is chosen by extension for BetterSh, shell, Python, JavaScri
 
 ## Language servers
 
-`server EXT COMMAND` runs COMMAND as the language server for files with that extension, and `root PATH` sets the workspace. The editor talks to it through `std/lsp`. It sends the whole document when it changed, before each request and between frames.
+A language server gives the editor diagnostics, hover text, Goto Definition, and completions for a language. Install the server, then add a `server` line to `~/.bettersh/editor.conf`:
 
-The server's diagnostics are underlined, the line gets a `●` in the gutter, and the message shows in the status bar when the caret is on that line. Ctrl-K Ctrl-I shows hover text, F12 goes to a definition (opening the file when it is elsewhere), and Ctrl-Space adds the server's completions. Without a server, F12 in a `.btr` file goes to a `fn` in the same file, and in other files to a matching symbol.
+```text
+server EXT COMMAND
+```
+
+EXT is a file extension without the dot. COMMAND runs through `/bin/sh`, so it can have arguments and use `PATH`, and it must speak LSP on standard input and output; many servers need `--stdio` for that. Each extension needs its own line, so `.ts` and `.tsx` are two lines. When two lines name the same extension, the last one wins. The editor starts the server when a file of that type opens and stops it when the tab closes.
+
+### Rust
+
+```sh
+rustup component add rust-analyzer
+```
+
+```text
+server rs rust-analyzer
+```
+
+Open a file inside a Cargo project. rust-analyzer indexes the crate first, so diagnostics can take a few seconds to appear.
+
+### TypeScript and JavaScript
+
+```sh
+npm install -g typescript typescript-language-server
+```
+
+```text
+server ts typescript-language-server --stdio
+server tsx typescript-language-server --stdio
+server js typescript-language-server --stdio
+server jsx typescript-language-server --stdio
+```
+
+The server needs TypeScript 5 or older, which includes `tsserver`. It uses the project's own `node_modules/typescript` when there is one, and the global install otherwise. A `tsconfig.json` or `jsconfig.json` in the project sets the compiler options.
+
+### Python
+
+```sh
+npm install -g pyright
+```
+
+```text
+server py pyright-langserver --stdio
+```
+
+`pip install python-lsp-server` installs another server; its line is `server py pylsp`. Pyright reads `pyrightconfig.json` or `pyproject.toml` for its settings and uses the virtual environment they name.
+
+### Go and C
+
+```text
+server go gopls
+server c clangd
+server h clangd
+server cpp clangd
+```
+
+`go install golang.org/x/tools/gopls@latest` installs gopls. clangd comes with LLVM, and it reads the project's `compile_commands.json` for compiler flags.
+
+### The workspace
+
+A server works on a workspace: the folder of the project. Without a `root` line, the editor walks up from the file to the nearest folder that holds `Cargo.toml`, `package.json`, `tsconfig.json`, `jsconfig.json`, `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `go.mod`, `compile_commands.json`, or `.git`, and uses the file's own folder when there is none. `root PATH` sets one workspace for every file instead.
+
+### What the editor does with it
+
+The editor sends the whole document when it changed, before each request and between frames. Diagnostics are underlined, the line gets a `●` in the gutter, and the message shows in the status bar when the caret is on that line. Ctrl-K Ctrl-I shows hover text, F12 goes to a definition (opening the file when it is elsewhere), and Ctrl-Space adds the server's completions to the list. Without a server, F12 in a `.btr` file goes to a `fn` in the same file, and in other files to a matching symbol.
+
+A server that is slow to start keeps starting in the background, and the status bar says so. A server that refuses to start shows its own reason there, such as a missing TypeScript install. Each open file starts its own copy of the server, so a large workspace opened in many tabs uses that much more memory.
+
+When nothing seems to happen, run the COMMAND by hand in a shell: it should start and wait for input. To see what the server logs, redirect its error output in the config, for example `server rs rust-analyzer 2>/tmp/rust-analyzer.log`.
 
 ## Scripting and tests
 
