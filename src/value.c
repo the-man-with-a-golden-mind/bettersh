@@ -1029,6 +1029,14 @@ static int cycle_cached_clean(Value *value) {
     cycle_reach(&set, &n, &cap, value);
     count_inbound(set, n);
     clean = value->inbound == 0;
+    /* The walk does not follow a closure's parent environments, so a group
+       that holds an interpreter closure can reach value without this walk
+       seeing it. No proof is kept for such a group. */
+    for (uint32_t i = 0; clean && i < n; i++) {
+        if (set[i]->kind == VAL_FN && set[i]->u.fn && set[i]->u.fn->ienv) {
+            clean = 0;
+        }
+    }
     free(set);
     if (clean) {
         value->cycle_seen = cycle_epoch;

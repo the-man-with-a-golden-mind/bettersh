@@ -21,6 +21,8 @@
 #include <termios.h>
 #include <unistd.h>
 
+/* Deadlines are long because a sanitizer build of the tree walker loads the
+   editor slowly. They only run out when something hangs. */
 static int lflag_ok(int slave) {
     struct termios t;
     if (slave < 0 || tcgetattr(slave, &t) != 0) {
@@ -89,7 +91,7 @@ static int edit_keys(char **cmd, const char *dest, const char *also) {
         return 1;
     }
     before_ok = lflag_ok(pty.slave);
-    deadline = mono_now() + 8;
+    deadline = mono_now() + 30;
     while (mono_now() < deadline && !saw) {
         int rd = 0;
         int wr = 0;
@@ -115,7 +117,7 @@ static int edit_keys(char **cmd, const char *dest, const char *also) {
     }
     kill(pty.pid, SIGWINCH);
     sleep_for(0.2);
-    deadline = mono_now() + 12;
+    deadline = mono_now() + 40;
     while (mono_now() < deadline) {
         int rd = 0;
         int wr = 0;
@@ -266,7 +268,7 @@ static int edit_more(const char *mode, int ncmd, char **cmd, const char *dest) {
         fail("editor pty");
         return 1;
     }
-    deadline = mono_now() + 12;
+    deadline = mono_now() + 40;
     while (mono_now() < deadline) {
         int rd = 0;
         int wr = 0;
@@ -389,7 +391,7 @@ static int tui_run(int ncmd, char **cmd, const char *dest) {
         return 1;
     }
     before_ok = lflag_ok(pty.slave);
-    deadline = mono_now() + 12;
+    deadline = mono_now() + 40;
     while (mono_now() < deadline) {
         int rd = 0;
         int wr = 0;

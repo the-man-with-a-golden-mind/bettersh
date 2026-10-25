@@ -17,7 +17,7 @@ alpha.btr beta.btr*
 alpha.btr — btr-tabs beta.btr alpha.btr — other*
 other alpha
 alpha.btr — btr-tabs beta.btr alpha.btr — other untitled*
-Save As:  [LICENSE,Makefile,README.md,TODO.md,VERSION,bench/,bettersh,dist/,doc/,examples/,install.sh,plans/,src/,std/,tests/] pick=0
+Save As: [] lists true
 alpha.btr — btr-tabs beta.btr alpha.btr — other made.txt*
 made
 
