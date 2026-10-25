@@ -45,7 +45,7 @@ static int host_side(const Chunk *chunk) {
             return 1;
         }
         op = chunk->code[ip];
-        if (op == OP_EXEC || op == OP_EXEC_PIPE || op == OP_EXEC_SPLICE || op == OP_IMPORT) {
+        if (op == OP_EXEC || op == OP_EXEC_PIPE || op == OP_EXEC_SPLICE || op == OP_CAPTURE || op == OP_IMPORT) {
             return 1;
         }
         if (op == OP_BUILTIN && ip + 1 < chunk->code_len && chunk->code[ip + 1] >= BI_CAPTURE) {

@@ -431,6 +431,9 @@ static void dispatch(VM *vm, Frame *fr, Chunk *chunk, uint32_t ip, int width, ui
     case OP_EXEC_SPLICE:
         vm_exec(vm, chunk_u16(chunk->code, ip + 1), 1, chunk_u16(chunk->code, ip + 3));
         return;
+    case OP_CAPTURE:
+        vm_capture(vm, chunk_u16(chunk->code, ip + 1), chunk_u16(chunk->code, ip + 3));
+        return;
     case OP_IMPORT: {
         uint16_t idx = chunk_u16(chunk->code, ip + 1);
         Value *spec;

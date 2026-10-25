@@ -1,5 +1,5 @@
 #!/usr/bin/env bettersh
 
 let name = "world"
-echo "hello @{ name }"
-echo hi | tr a-z A-Z
+$ echo "hello @{ name }"
+$ echo hi | tr a-z A-Z

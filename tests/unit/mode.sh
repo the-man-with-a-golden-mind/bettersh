@@ -25,15 +25,15 @@ strict() {
     fi
 }
 modern env '#!/usr/bin/env bettersh
-echo hi'
+$ echo hi'
 modern blanks '#!   /usr/bin/env   bettersh
-echo hi'
+$ echo hi'
 modern abs '#!/usr/bin/bettersh
-echo hi'
+$ echo hi'
 modern rel '#!bettersh
-echo hi'
+$ echo hi'
 modern args '#!/usr/bin/env bettersh -x
-echo hi'
+$ echo hi'
 strict sh '#!/bin/sh
 echo hi'
 strict bash '#!/bin/bash

@@ -272,6 +272,11 @@ int compile_expr(Compiler *c, const MNode *node) {
         return c->failed ? -1 : 0;
     case M_FN:
         return compile_fn_value(c, node);
+    case M_SH:
+        if (node->capture) {
+            return compile_shell(c, node);
+        }
+        return c_fail(c, node, "not an expression");
     default:
         return c_fail(c, node, "not an expression");
     }

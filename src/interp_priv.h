@@ -45,5 +45,7 @@ void release_args(Value **args, int n);
 Value *eval_expr(Interp *ip, const MNode *node);
 int eval_stmt(Interp *ip, const MNode *node);
 Value *make_fn(Interp *ip, const MNode *node);
+/* The output of a $( ) span, or null after an error. */
+Value *eval_capture(Interp *ip, const MNode *node);
 
 #endif

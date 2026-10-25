@@ -616,6 +616,12 @@ Value *eval_expr(Interp *ip, const MNode *node) {
     }
     case M_FN:
         return make_fn(ip, node);
+    case M_SH:
+        if (node->capture) {
+            return eval_capture(ip, node);
+        }
+        ifail(ip, node, "not an expression");
+        return NULL;
     default:
         ifail(ip, node, "not an expression");
         return NULL;

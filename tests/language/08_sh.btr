@@ -1,2 +1,2 @@
 #!/usr/bin/env bettersh
-if true; then echo hi; fi
+$ if true; then echo hi; fi

@@ -361,7 +361,8 @@ static int eval_case(Interp *ip, const MNode *node) {
 
 static int eval_import(Interp *ip, const MNode *node);
 
-static int eval_shell(Interp *ip, const MNode *node) {
+/* Runs a shell span. With out set, the output is captured into *out instead. */
+static int run_shell(Interp *ip, const MNode *node, Value **out) {
     uint32_t n = node->nholes;
     Value **vals = NULL;
     HoleDesc *holes = NULL;
@@ -398,7 +399,11 @@ static int eval_shell(Interp *ip, const MNode *node) {
         vm.shell = ip->shell;
         vm.shell_on = 1;
     }
-    vm_exec_span(&vm, node->off, node->len, holes, vals, (uint16_t)n);
+    if (out) {
+        *out = vm_capture_span(&vm, node->off, node->len, holes, vals, (uint16_t)n);
+    } else {
+        vm_exec_span(&vm, node->off, node->len, holes, vals, (uint16_t)n);
+    }
     free(vm.stack);
     vm.stack = NULL;
     if (vm.shell_on) {
@@ -422,6 +427,23 @@ static int eval_shell(Interp *ip, const MNode *node) {
         ip->stop = 1;
     }
     return 0;
+}
+
+static int eval_shell(Interp *ip, const MNode *node) {
+    return run_shell(ip, node, NULL);
+}
+
+Value *eval_capture(Interp *ip, const MNode *node) {
+    Value *out = NULL;
+    if (run_shell(ip, node, &out) != 0) {
+        value_unref(out);
+        return NULL;
+    }
+    if (!out) {
+        ifail(ip, node, "command failed");
+        return NULL;
+    }
+    return out;
 }
 
 int eval_stmt(Interp *ip, const MNode *node) {

@@ -75,6 +75,8 @@ typedef struct MNode {
     uint32_t off;
     uint32_t len;
     int is_pipe;
+    /* An M_SH from $( ): its value is the command's output. */
+    int capture;
     uint32_t *hstart;
     uint32_t *hend;
     uint8_t *hdq;

@@ -33,6 +33,7 @@ int compile_expr(Compiler *c, const MNode *node);
 int compile_stmt(Compiler *c, const MNode *node);
 /* Pushes a function value. Does not bind a name. */
 int compile_fn_value(Compiler *c, const MNode *node);
+int compile_shell(Compiler *c, const MNode *node);
 int compile_find_local(const Compiler *c, const char *name);
 int compile_add_local(Compiler *c, const char *name);
 /* Local, or a capture of an enclosing local. Fails with "undefined name". */

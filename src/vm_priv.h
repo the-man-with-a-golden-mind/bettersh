@@ -87,5 +87,10 @@ void vm_exec(VM *vm, uint16_t word, int splice, uint16_t nholes);
    already in source order. The caller keeps those values. */
 void vm_exec_span(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes, Value **vals,
                   uint16_t nholes);
+/* $( ) in modern code: pops the holes of word and pushes the command's output. */
+void vm_capture(VM *vm, uint16_t word, uint16_t nholes);
+/* Like vm_exec_span, but returns the output as a string. Null after an error. */
+Value *vm_capture_span(VM *vm, uint32_t off, uint32_t len, const HoleDesc *holes, Value **vals,
+                       uint16_t nholes);
 
 #endif

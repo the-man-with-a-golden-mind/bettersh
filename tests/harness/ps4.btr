@@ -10,4 +10,4 @@ if dash != ours {
     let dash = "@{ dash.slice(0, at) }unset PS4\n@{ dash.slice(at + needle.length, dash.length) }"
   }
 }
-if dash != ours { exit 1 }
+if dash != ours { $ exit 1 }

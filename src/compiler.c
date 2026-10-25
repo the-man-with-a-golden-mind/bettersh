@@ -319,7 +319,7 @@ int compile_fn_value(Compiler *c, const MNode *node) {
     return c->failed ? -1 : 0;
 }
 
-static int compile_shell(Compiler *c, const MNode *node) {
+int compile_shell(Compiler *c, const MNode *node) {
     c->line = node->line > 0 ? node->line : 1;
     if (node->nholes > 65535) {
         return c_fail(c, node, "too many interpolations");
@@ -348,7 +348,11 @@ static int compile_shell(Compiler *c, const MNode *node) {
         return c_fail(c, node, "too many commands");
     }
     c->line = node->line > 0 ? node->line : 1;
-    if (node->nholes) {
+    if (node->capture) {
+        c_emit(c, OP_CAPTURE);
+        c_emit_u16(c, (uint16_t)idx);
+        c_emit_u16(c, (uint16_t)node->nholes);
+    } else if (node->nholes) {
         c_emit(c, OP_EXEC_SPLICE);
         c_emit_u16(c, (uint16_t)idx);
         c_emit_u16(c, (uint16_t)node->nholes);

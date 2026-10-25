@@ -19,6 +19,14 @@ static int is_call_char(int c) {
     return c == '(' || c == '.' || c == '[';
 }
 
+static int is_brace(int c) {
+    return c == '{';
+}
+
+static int is_word_start(int c) {
+    return m_name_char(c) || c == '"' || c == '\'' || c == '/' || c == '~' || c == '@';
+}
+
 static int control_is_modern(const char *s, size_t n, size_t i) {
     while (i < n && m_name_char((unsigned char)s[i])) {
         i++;
@@ -223,27 +231,74 @@ static int attach_holes(Parser *p, MNode *sh) {
     return p->sc.failed ? -1 : 0;
 }
 
-static MNode *parse_shell(Parser *p) {
-    size_t from = p->sc.tok_off;
+MNode *m_shell_span(Parser *p, size_t from, size_t end, size_t after) {
+    MNode *sh = mnode(p, M_SH);
+    sh->off = (uint32_t)from;
+    sh->len = (uint32_t)(end - from);
+    if (attach_holes(p, sh) != 0) {
+        return NULL;
+    }
+    sync_at(p, after);
+    scan_next(&p->sc);
+    return p->sc.failed ? NULL : sh;
+}
+
+/* One shell statement starting at from. */
+static MNode *parse_shell_at(Parser *p, size_t from) {
     int is_pipe = 0;
     size_t end = shell_stmt_end(p->src, p->len, from, &is_pipe);
     if (end == from) {
         if (from >= p->len) {
-            m_fail(p, "unexpected end");
+            m_fail(p, "expected a command after $");
             return NULL;
         }
         end = from + 1;
     }
-    MNode *sh = mnode(p, M_SH);
-    sh->off = (uint32_t)from;
-    sh->len = (uint32_t)(end - from);
-    sh->is_pipe = is_pipe;
-    if (attach_holes(p, sh) != 0) {
+    MNode *sh = m_shell_span(p, from, end, end);
+    if (sh) {
+        sh->is_pipe = is_pipe;
+    }
+    return sh;
+}
+
+/* `$ line`: the rest of the statement is one shell command, pipeline, or compound command. */
+static MNode *parse_dollar(Parser *p) {
+    size_t from = p->sc.tok_off + 1;
+    while (from < p->len && (p->src[from] == ' ' || p->src[from] == '\t')) {
+        from++;
+    }
+    if (from >= p->len || p->src[from] == '\n' || p->src[from] == ';') {
+        m_fail(p, "expected a command after $");
         return NULL;
     }
-    sync_at(p, end);
-    scan_next(&p->sc);
-    return p->sc.failed ? NULL : sh;
+    return parse_shell_at(p, from);
+}
+
+/* `sh { ... }`: shell text through the matching brace. */
+static MNode *parse_sh_block(Parser *p) {
+    size_t i = p->sc.i;
+    while (i < p->len && (p->src[i] == ' ' || p->src[i] == '\t')) {
+        i++;
+    }
+    size_t body = i + 1;
+    size_t close = shell_close(p->src, p->len, body, '{', '}');
+    if (close >= p->len) {
+        m_fail(p, "expected } to end the sh block");
+        return NULL;
+    }
+    return m_shell_span(p, body, close, close + 1);
+}
+
+/* Before 0.2 a line that was not modern code ran as shell. With
+   BETTERSH_LEGACY_SHELL set it still does, and each place is reported, so a
+   converter can put $ in front of it. */
+static MNode *parse_legacy(Parser *p) {
+    if (!getenv("BETTERSH_LEGACY_SHELL")) {
+        m_fail(p, "not a bettersh statement; put $ in front of a shell command");
+        return NULL;
+    }
+    fprintf(stderr, "LEGACY %s %zu\n", p->filename, p->sc.tok_off);
+    return parse_shell_at(p, p->sc.tok_off);
 }
 
 static MNode *parse_let(Parser *p) {
@@ -751,9 +806,18 @@ MNode *parse_stmt(Parser *p) {
     if (p->sc.kind == TK_CASE) {
         return parse_case(p);
     }
+    if (p->sc.kind == TK_DOLLAR) {
+        if (p->sc.tok_off + 1 < p->len && p->src[p->sc.tok_off + 1] == '(') {
+            return parse_expr_stmt(p);
+        }
+        return parse_dollar(p);
+    }
+    if (p->sc.kind == TK_IDENT && p->sc.text && strcmp(p->sc.text, "sh") == 0 && next_char_is(p, is_brace)) {
+        return parse_sh_block(p);
+    }
     if (p->sc.kind == TK_IF || p->sc.kind == TK_WHILE || p->sc.kind == TK_FOR) {
-        if (!control_is_modern(p->src, p->len, p->sc.tok_off)) {
-            return parse_shell(p);
+        if (getenv("BETTERSH_LEGACY_SHELL") && !control_is_modern(p->src, p->len, p->sc.tok_off)) {
+            return parse_legacy(p);
         }
         if (p->sc.kind == TK_IF) {
             return parse_if(p);
@@ -766,11 +830,20 @@ MNode *parse_stmt(Parser *p) {
     if (p->sc.kind == TK_IDENT && next_char_is(p, is_call_char)) {
         return parse_expr_stmt(p);
     }
-    if (p->sc.kind == TK_INT || p->sc.kind == TK_FLOAT || p->sc.kind == TK_STR || p->sc.kind == TK_NOT ||
-        p->sc.kind == TK_MINUS || p->sc.kind == TK_PLUS || p->sc.kind == TK_LPAREN || p->sc.kind == TK_FN) {
+    if (p->sc.kind == TK_IDENT && !getenv("BETTERSH_LEGACY_SHELL")) {
+        /* `name word` is never an expression. It is a shell command written without $. */
+        if (next_char_is(p, is_word_start)) {
+            m_fail(p, "this is a shell command; put $ in front of it");
+            return NULL;
+        }
         return parse_expr_stmt(p);
     }
-    return parse_shell(p);
+    if (p->sc.kind == TK_INT || p->sc.kind == TK_FLOAT || p->sc.kind == TK_STR || p->sc.kind == TK_NOT ||
+        p->sc.kind == TK_MINUS || p->sc.kind == TK_PLUS || p->sc.kind == TK_LPAREN || p->sc.kind == TK_FN ||
+        p->sc.kind == TK_LBRACK) {
+        return parse_expr_stmt(p);
+    }
+    return parse_legacy(p);
 }
 
 int mod_parse(Arena *arena, Diag *diag, const char *filename, const char *src, size_t len, MNode **out) {
@@ -871,7 +944,7 @@ static void dump_node(const MNode *node, FILE *out, int level) {
         fprintf(out, "fn %s\n", node->text ? node->text : "");
         break;
     case M_SH:
-        fprintf(out, "shell pipe=%d\n", node->is_pipe);
+        fprintf(out, "shell pipe=%d capture=%d\n", node->is_pipe, node->capture);
         break;
     case M_NAME:
         fprintf(out, "name %s\n", node->text ? node->text : "");

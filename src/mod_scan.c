@@ -412,6 +412,9 @@ void scan_next(Scan *sc) {
     case '!':
         sc->kind = TK_NOT;
         return;
+    case '$':
+        sc->kind = TK_DOLLAR;
+        return;
     case '<':
         sc->kind = TK_LT;
         return;
@@ -953,4 +956,91 @@ size_t shell_stmt_end(const char *src, size_t len, size_t from, int *is_pipe) {
     }
     sh_end_word(&sh);
     return sh.i;
+}
+
+size_t shell_close(const char *src, size_t len, size_t from, char open, char close) {
+    size_t i = from;
+    int depth = 0;
+    int sq = 0, dq = 0, bt = 0, esc = 0, word = 0;
+    while (i < len) {
+        char c = src[i];
+        if (esc) {
+            esc = 0;
+            word = 1;
+            i++;
+            continue;
+        }
+        if (sq) {
+            if (c == '\'') {
+                sq = 0;
+            }
+            i++;
+            continue;
+        }
+        if (bt) {
+            if (c == '`') {
+                bt = 0;
+            }
+            i++;
+            continue;
+        }
+        if (c == '\\') {
+            esc = 1;
+            i++;
+            continue;
+        }
+        if (dq) {
+            if (c == '"') {
+                dq = 0;
+            } else if (c == '$' && i + 1 < len && src[i + 1] == '(') {
+                size_t end = shell_close(src, len, i + 2, '(', ')');
+                i = end < len ? end + 1 : len;
+                continue;
+            }
+            i++;
+            continue;
+        }
+        if (c == '\'') {
+            sq = 1;
+            word = 1;
+            i++;
+            continue;
+        }
+        if (c == '"') {
+            dq = 1;
+            word = 1;
+            i++;
+            continue;
+        }
+        if (c == '`') {
+            bt = 1;
+            word = 1;
+            i++;
+            continue;
+        }
+        if ((c == '$' || c == '@') && i + 1 < len && src[i + 1] == '{') {
+            size_t end = shell_close(src, len, i + 2, '{', '}');
+            i = end < len ? end + 1 : len;
+            word = 1;
+            continue;
+        }
+        if (c == '#' && !word) {
+            while (i < len && src[i] != '\n') {
+                i++;
+            }
+            continue;
+        }
+        if (c == open) {
+            depth++;
+        } else if (c == close) {
+            if (depth == 0) {
+                return i;
+            }
+            depth--;
+        }
+        word = !(c == ' ' || c == '\t' || c == '\n' || c == ';' || c == '|' || c == '&' || c == '(' ||
+                 c == ')' || c == '{' || c == '}');
+        i++;
+    }
+    return len;
 }

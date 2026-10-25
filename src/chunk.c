@@ -215,6 +215,7 @@ int chunk_width(const uint8_t *code, uint32_t code_len, uint32_t ip) {
         width = 4;
         break;
     case OP_EXEC_SPLICE:
+    case OP_CAPTURE:
         width = 5;
         break;
     case OP_TRUE:
@@ -385,6 +386,8 @@ const char *op_name(int op) {
         return "JUMP_GE_ARGC";
     case OP_IMPORT:
         return "IMPORT";
+    case OP_CAPTURE:
+        return "CAPTURE";
     default:
         return "???";
     }

@@ -67,7 +67,7 @@ static int check_operands(const Chunk *chunk, const char **msg) {
             if (idx >= chunk->words_len) {
                 return fail(msg, "bad command");
             }
-        } else if (op == OP_EXEC_SPLICE) {
+        } else if (op == OP_EXEC_SPLICE || op == OP_CAPTURE) {
             uint16_t idx = chunk_u16(chunk->code, ip + 1);
             uint16_t nh = chunk_u16(chunk->code, ip + 3);
             if (idx >= chunk->words_len || chunk->words[idx].nholes != nh) {
@@ -239,6 +239,9 @@ static int verify_flow(const Chunk *chunk, const uint8_t *mark, const char **msg
             break;
         case OP_EXEC_SPLICE:
             effect = -(int)chunk_u16(chunk->code, ip + 3);
+            break;
+        case OP_CAPTURE:
+            effect = 1 - (int)chunk_u16(chunk->code, ip + 3);
             break;
         default:
             rc = fail(msg, "bad opcode");
