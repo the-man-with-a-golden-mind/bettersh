@@ -23,6 +23,7 @@ static int argc_ok(int id, int argc) {
     case METH_SORT:
     case METH_REVERSE:
     case METH_VISIBLE:
+    case METH_CLONE:
         return argc == 0;
     case METH_REPEAT:
         return argc == 1;
@@ -37,7 +38,11 @@ static int argc_ok(int id, int argc) {
     case METH_REMOVE:
     case METH_MAP:
     case METH_FILTER:
+    case METH_DELETE:
         return argc == 1;
+    case METH_SET:
+    case METH_INSERT:
+        return argc == 2;
     case METH_REPLACE:
         return argc == 2;
     case METH_REDUCE:
@@ -353,6 +358,20 @@ static int sort_array(VM *vm, Array *array) {
     return 0;
 }
 
+/* Int indexes only. insert may use len. Anything else is a bad operand. */
+static int want_index(VM *vm, const Value *value, uint32_t len, int end_ok, uint32_t *out) {
+    if (!value || value->kind != VAL_INT || value->u.i < 0) {
+        vm_fail(vm, "bad operand");
+        return -1;
+    }
+    if ((uint64_t)value->u.i > (uint64_t)len || (!end_ok && (uint64_t)value->u.i >= (uint64_t)len)) {
+        vm_fail(vm, "bad operand");
+        return -1;
+    }
+    *out = (uint32_t)value->u.i;
+    return 0;
+}
+
 static int method_array(VM *vm, Value *recv, Value **args, int argc, int id) {
     Array *array = recv->u.arr;
     if (id == METH_LENGTH) {
@@ -369,6 +388,31 @@ static int method_array(VM *vm, Value *recv, Value **args, int argc, int id) {
     if (id == METH_POP) {
         Value *item = array_pop(array);
         vm_push(vm, item ? item : value_null());
+        return 0;
+    }
+    if (id == METH_CLONE) {
+        vm_push(vm, value_array(array_clone(array)));
+        return 0;
+    }
+    if (id == METH_SET || id == METH_INSERT || id == METH_DELETE) {
+        uint32_t index = 0;
+        int end_ok = id == METH_INSERT;
+        if (want_index(vm, args[0], array->len, end_ok, &index) != 0) {
+            return -1;
+        }
+        if (id == METH_DELETE) {
+            value_unref(array_delete(array, index));
+        } else if (id == METH_SET) {
+            value_unref(array_set(array, index, args[1]));
+            args[1] = NULL;
+        } else if (array_insert(array, index, args[1]) != 0) {
+            vm_fail(vm, "bad operand");
+            return -1;
+        } else {
+            args[1] = NULL;
+        }
+        value_ref(recv);
+        vm_push(vm, recv);
         return 0;
     }
     if (id == METH_SORT) {
@@ -900,7 +944,8 @@ int vm_method(VM *vm, int id, int argc) {
     } else if (recv->kind == VAL_ARRAY &&
                (id == METH_LENGTH || id == METH_PUSH || id == METH_POP || id == METH_MAP ||
                 id == METH_FILTER || id == METH_REDUCE || id == METH_SORT || id == METH_JOIN ||
-                id == METH_INDEX || id == METH_CONTAINS)) {
+                id == METH_INDEX || id == METH_CONTAINS || id == METH_SET || id == METH_INSERT ||
+                id == METH_DELETE || id == METH_CLONE)) {
         rc = method_array(vm, recv, args, argc, id);
     } else if (recv->kind == VAL_MAP &&
                (id == METH_KEYS || id == METH_VALUES || id == METH_HAS || id == METH_REMOVE)) {

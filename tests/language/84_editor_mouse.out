@@ -1,0 +1,30 @@
+click: 1:4 top=0
+double click: 1:1-1:5 top=0
+triple click: 1:1-2:1 top=0
+past line end: 2:12 top=0
+shift click: 2:12-3:2 top=0
+alt click: 2:12-3:2 *5:2 top=0
+drag: 1:2-3:7 top=0
+gutter drag: 2:1-4:1 top=0
+wheel down: 2:1-4:1 top=3
+wheel up: 2:1-4:1 top=0
+scroll bar: 2:1-4:1 top=35
+status row: 2:1-4:1 top=35
+ a.txt ×  b.txt ×                                 
+a.txt
+b.txt
+ a.txt ×                                          
+false
+menu
+true
+true
+Undo
+true
+pick me
+
+menu
+Select All
+1:1-1:8
+pick me
+1:2-1:4 2:2-2:3 *3:2-3:4
+aXdef|aX|aXdefgh

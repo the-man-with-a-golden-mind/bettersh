@@ -97,6 +97,29 @@ static void open_cells(VM *vm, Frame *fr) {
     }
 }
 
+/* The program's top frame lives until the run ends, so what its captured
+   locals hold is live. root marks those cells, and their values count them. */
+static void root_cells(Frame *fr, int on) {
+    if (!fr->cells) {
+        return;
+    }
+    for (int i = 0; i < fr->nlocals; i++) {
+        Cell *cell = fr->cells[i];
+        if (!cell || (cell->root != 0) == (on != 0)) {
+            continue;
+        }
+        cell->root = on;
+        if (!cell->value) {
+            continue;
+        }
+        if (on) {
+            cell->value->roots++;
+        } else if (cell->value->roots > 0) {
+            cell->value->roots--;
+        }
+    }
+}
+
 static void close_cells(Frame *fr) {
     if (!fr->cells) {
         return;
@@ -326,9 +349,18 @@ static void dispatch(VM *vm, Frame *fr, Chunk *chunk, uint32_t ip, int width, ui
         value_unref(vm->stack[fr->base + (int)slot]);
         vm->stack[fr->base + (int)slot] = value;
         if (fr->cells && fr->cells[slot]) {
-            value_unref(fr->cells[slot]->value);
+            Cell *cell = fr->cells[slot];
+            Value *old = cell->value;
+            if (cell->root) {
+                if (old && old->roots > 0) {
+                    old->roots--;
+                }
+                value->roots++;
+            }
+            value_unref(old);
             value_ref(value);
-            fr->cells[slot]->value = value;
+            cell->value = value;
+            value_note_edge(value);
         }
         return;
     }
@@ -504,7 +536,9 @@ int vm_run(Arena *arena, const char *filename, const char *src, size_t src_len, 
         vm_push(&vm, value_null());
     }
     open_cells(&vm, &vm.frames[0]);
+    root_cells(&vm.frames[0], 1);
     vm_loop(&vm, 1);
+    root_cells(&vm.frames[0], 0);
     for (int i = 0; i < vm.nframes; i++) {
         close_cells(&vm.frames[i]);
     }
@@ -562,6 +596,8 @@ int vm_run_module(Arena *arena, const char *filename, const char *src, size_t sr
     vm_loop(&vm, 1);
     if (!vm.failed) {
         map = map_new();
+        /* The module cache keeps this map for the run, so what it holds is live. */
+        map->rooted = 1;
         fr = &vm.frames[0];
         for (i = 0; i < fr->nlocals; i++) {
             const char *name = "";

@@ -336,7 +336,8 @@ static int host_arity(int id) {
         return 2;
     }
     if (id == BI_READLN || id == BI_READALL || id == BI_TERM_READ || id == BI_TERM_POLL ||
-        id == BI_TERM_COLS || id == BI_TERM_ROWS || id == BI_TERM_TTY) {
+        id == BI_TERM_TAKE || id == BI_TERM_IDLE || id == BI_TERM_COLS || id == BI_TERM_ROWS ||
+        id == BI_TERM_TTY || id == BI_CLOCK_MS) {
         return 0;
     }
     return 1;
@@ -843,6 +844,15 @@ static void happy_term(Jobs *jobs) {
     chunk = chunk_new();
     emit_bi(chunk, BI_TERM_POLL, 0);
     expect_status(jobs, BI_TERM_POLL, chunk, 2, "poll not raw");
+    chunk = chunk_new();
+    emit_bi(chunk, BI_TERM_TAKE, 0);
+    expect_status(jobs, BI_TERM_TAKE, chunk, 2, "take not raw");
+    chunk = chunk_new();
+    emit_bi(chunk, BI_TERM_IDLE, 0);
+    expect_status(jobs, BI_TERM_IDLE, chunk, 2, "idle not raw");
+    chunk = chunk_new();
+    emit_bi(chunk, BI_CLOCK_MS, 0);
+    expect_status(jobs, BI_CLOCK_MS, chunk, 0, "clock");
     master = posix_openpt(O_RDWR | O_NOCTTY);
     if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0) {
         fprintf(stderr, "FAIL host pty\n");
@@ -942,10 +952,24 @@ static void happy_term(Jobs *jobs) {
     chunk = chunk_new();
     emit_bi(chunk, BI_TERM_POLL, 0);
     expect_text(jobs, BI_TERM_POLL, chunk, "null\n", 5, -1, "poll empty");
+    chunk = chunk_new();
+    emit_bi(chunk, BI_TERM_IDLE, 0);
+    expect_text(jobs, BI_TERM_IDLE, chunk, "false\n", 6, -1, "idle empty");
     if (write(master, "Q", 1) == 1) {
         chunk = chunk_new();
         emit_bi(chunk, BI_TERM_POLL, 0);
         expect_text(jobs, BI_TERM_POLL, chunk, "Q\n", 2, -1, "poll byte");
+    } else {
+        fprintf(stderr, "FAIL host pty write\n");
+        fails++;
+    }
+    chunk = chunk_new();
+    emit_bi(chunk, BI_TERM_TAKE, 0);
+    expect_text(jobs, BI_TERM_TAKE, chunk, "null\n", 5, -1, "take empty");
+    if (write(master, "AB", 2) == 2) {
+        chunk = chunk_new();
+        emit_bi(chunk, BI_TERM_TAKE, 0);
+        expect_text(jobs, BI_TERM_TAKE, chunk, "AB\n", 3, -1, "take bytes");
     } else {
         fprintf(stderr, "FAIL host pty write\n");
         fails++;
@@ -964,6 +988,12 @@ static void happy_term(Jobs *jobs) {
         waitpid(drain, &st, 0);
     }
 }
+static void happy_eval(Jobs *jobs) {
+    Chunk *chunk = chunk_new();
+    emit_cstr(chunk, "println(1)");
+    emit_bi(chunk, BI_BTR_EVAL, 1);
+    expect_text(jobs, BI_BTR_EVAL, chunk, "1\n{status: 0, err: }\n", 21, -1, "eval");
+}
 static void test_host(void) {
     Jobs *jobs = jobs_new();
     int id;
@@ -973,6 +1003,7 @@ static void test_host(void) {
     happy_text(jobs);
     happy_term(jobs);
     happy_pipe(jobs);
+    happy_eval(jobs);
     jobs_free(jobs);
     term_shutdown();
     for (id = BI_CAPTURE; id < BI_COUNT; id++) {

@@ -19,9 +19,95 @@ static int collect_env_graph(IEnv *root);
 int value_collecting;
 static IEnv *trial_env;
 static unsigned trial_hide;
+/* Bumped when a stored child might already point at some parent.
+   Containers have no parent list, so one epoch covers every cached proof. */
+static uint64_t cycle_epoch = 1;
+
+/* 1 when value is a function, or holds an array, map, or function.
+   A map or array of only scalars cannot point back at a parent. */
+static int holds_container(const Value *value) {
+    Value **kids = NULL;
+    uint32_t n = 0;
+    uint32_t i;
+    if (!value) {
+        return 0;
+    }
+    if (value->kind == VAL_FN) {
+        return 1;
+    }
+    if (value->kind == VAL_ARRAY && value->u.arr) {
+        kids = value->u.arr->items;
+        n = value->u.arr->len;
+    } else if (value->kind == VAL_MAP && value->u.map) {
+        kids = value->u.map->vals;
+        n = value->u.map->len;
+    } else {
+        return 0;
+    }
+    for (i = 0; i < n; i++) {
+        Value *kid = kids[i];
+        if (kid && (kid->kind == VAL_ARRAY || kid->kind == VAL_MAP || kid->kind == VAL_FN)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void value_note_edge(Value *value) {
+    if (!holds_container(value)) {
+        return;
+    }
+    cycle_epoch++;
+    if (cycle_epoch == 0) {
+        cycle_epoch = 1;
+    }
+}
+
+void value_root_map(Map *map, int on) {
+    uint32_t i;
+    if (!map || (map->rooted != 0) == (on != 0)) {
+        return;
+    }
+    map->rooted = on ? 1 : 0;
+    for (i = 0; i < map->len; i++) {
+        Value *value = map->vals[i];
+        if (!value) {
+            continue;
+        }
+        if (on) {
+            value->roots++;
+        } else if (value->roots > 0) {
+            value->roots--;
+        }
+    }
+}
+
+/* Each cycle walk stamps the values in its group, so membership is one
+   compare. pass_stamp marks cells and environments already visited, and
+   slot_stamp is the pass whose slot and function counts are current. */
+static uint32_t walk_stamp;
+static uint32_t pass_stamp;
+static uint32_t slot_stamp;
+
+static uint32_t next_walk(void) {
+    walk_stamp++;
+    if (walk_stamp == 0) {
+        walk_stamp = 1;
+    }
+    return walk_stamp;
+}
+
+static uint32_t next_pass(void) {
+    pass_stamp++;
+    if (pass_stamp == 0) {
+        pass_stamp = 1;
+    }
+    return pass_stamp;
+}
 
 static Value *value_new(ValKind kind) {
     Value *value = xmalloc(sizeof(*value));
+    memset(value, 0, sizeof(*value));
     value->refs = 1;
     value->kind = kind;
     return value;
@@ -81,6 +167,7 @@ Value *value_fn(Chunk *chunk, uint16_t nparams, uint16_t nlocals) {
 
 Cell *cell_new(Value *value) {
     Cell *cell = xmalloc(sizeof(*cell));
+    memset(cell, 0, sizeof(*cell));
     cell->refs = 1;
     if (!value) {
         value = value_null();
@@ -108,6 +195,9 @@ void cell_unref(Cell *cell) {
            Two functions that hold each other's cells are not a self-slot.
            release_cycle sees that group once the frame ref is gone. */
         held = cell->value;
+        if (held && held->roots > 0) {
+            return;
+        }
         if (held && held->refs > 0 && held->refs <= self_refs(held)) {
             value_unref(held);
         } else if (held && held->refs > 0) {
@@ -270,6 +360,7 @@ void ienv_bind(IEnv *env, const char *name, Value *value) {
             value_ref(value);
             value_unref(env->vals[i]);
             env->vals[i] = value;
+            value_note_edge(value);
             return;
         }
     }
@@ -283,6 +374,7 @@ void ienv_bind(IEnv *env, const char *name, Value *value) {
     env->names[env->len] = want;
     env->vals[env->len] = value;
     env->len++;
+    value_note_edge(value);
 }
 
 int ienv_len(const IEnv *env) {
@@ -369,13 +461,9 @@ static unsigned self_refs(const Value *value) {
 }
 
 static int cycle_has(Value **set, uint32_t n, const Value *value) {
-    uint32_t i;
-    for (i = 0; i < n; i++) {
-        if (set[i] == value) {
-            return 1;
-        }
-    }
-    return 0;
+    (void)set;
+    (void)n;
+    return value && value->walk == walk_stamp;
 }
 
 static void cycle_add(Value ***set, uint32_t *n, uint32_t *cap, Value *value) {
@@ -384,6 +472,7 @@ static void cycle_add(Value ***set, uint32_t *n, uint32_t *cap, Value *value) {
         *set = xrealloc(*set, (size_t)next * sizeof(Value *));
         *cap = next;
     }
+    value->walk = walk_stamp;
     (*set)[(*n)++] = value;
 }
 
@@ -391,17 +480,20 @@ static int cycle_node(const Value *value) {
     return value && (value->kind == VAL_ARRAY || value->kind == VAL_MAP || value->kind == VAL_FN);
 }
 
+/* A rooted child is live, so the walk stops there. Its pointers into the
+   group count as outside owners. */
 static void cycle_edge(Value ***set, uint32_t *n, uint32_t *cap, Value *child) {
-    if (cycle_node(child) && !cycle_has(*set, *n, child)) {
+    if (cycle_node(child) && child->roots == 0 && !cycle_has(*set, *n, child)) {
         cycle_add(set, n, cap, child);
     }
 }
 
-/* Arrays, maps, and functions reachable from start. A function edge is
-   one upvalue cell, or one slot of that function's own environment.
-   Parent environments are not walked. */
+/* Arrays, maps, and functions reachable from start, stopping at rooted
+   values. A function edge is one upvalue cell, or one slot of that
+   function's own environment. Parent environments are not walked. */
 static void cycle_reach(Value ***set, uint32_t *n, uint32_t *cap, Value *start) {
     uint32_t at = 0;
+    next_walk();
     if (!cycle_node(start)) {
         return;
     }
@@ -441,9 +533,11 @@ static void cycle_reach(Value ***set, uint32_t *n, uint32_t *cap, Value *start) 
     }
 }
 
-static unsigned cell_slots(Value **set, uint32_t n, const Cell *cell) {
-    unsigned count = 0;
+/* Counts, for the group of the current walk, the upvalue slots that point at
+   each cell and the functions that captured each environment. */
+static void count_slots(Value **set, uint32_t n) {
     uint32_t i;
+    slot_stamp = next_pass();
     for (i = 0; i < n; i++) {
         VmFunc *fn;
         uint16_t u;
@@ -452,39 +546,40 @@ static unsigned cell_slots(Value **set, uint32_t n, const Cell *cell) {
         }
         fn = set[i]->u.fn;
         for (u = 0; u < fn->nups; u++) {
-            if (fn->ups && fn->ups[u] == cell) {
-                count++;
+            Cell *cell = fn->ups ? fn->ups[u] : NULL;
+            if (!cell) {
+                continue;
             }
+            if (cell->walk != slot_stamp) {
+                cell->walk = slot_stamp;
+                cell->slots = 0;
+            }
+            cell->slots++;
+        }
+        if (fn->ienv) {
+            if (fn->ienv->walk != slot_stamp) {
+                fn->ienv->walk = slot_stamp;
+                fn->ienv->fns = 0;
+            }
+            fn->ienv->fns++;
         }
     }
-    return count;
 }
 
 /* The frame's ref is gone when the cell's count equals the upvalue slots
-   in this set that point at it. One value ref is then inside the cycle. */
-static int cell_internal(Value **set, uint32_t n, const Cell *cell) {
-    if (!cell || cell->refs == 0) {
+   in this group that point at it. One value ref is then inside the cycle. */
+static int cell_internal(const Cell *cell) {
+    if (!cell || cell->refs == 0 || cell->walk != slot_stamp) {
         return 0;
     }
-    return cell->refs == cell_slots(set, n, cell);
-}
-
-static unsigned env_fns(Value **set, uint32_t n, const IEnv *env) {
-    unsigned count = 0;
-    uint32_t i;
-    for (i = 0; i < n; i++) {
-        if (set[i]->kind == VAL_FN && set[i]->u.fn && set[i]->u.fn->ienv == env) {
-            count++;
-        }
-    }
-    return count;
+    return cell->refs == cell->slots;
 }
 
 /* A child environment holds its parent. The interpreter holds the live
-   environment. Neither ref is a function in this set. */
-static int env_internal(Value **set, uint32_t n, const IEnv *env) {
+   environment. Neither ref is a function in this group. */
+static int env_internal(const IEnv *env) {
     unsigned refs;
-    if (!env || env->refs == 0) {
+    if (!env || env->refs == 0 || env->walk != slot_stamp) {
         return 0;
     }
     refs = env->refs;
@@ -497,48 +592,19 @@ static int env_internal(Value **set, uint32_t n, const IEnv *env) {
     if (refs == 0) {
         return 0;
     }
-    return refs == env_fns(set, n, env);
+    return refs == env->fns;
 }
 
-static int cell_counted(Cell **seen, uint32_t nseen, const Cell *cell) {
+/* Sets inbound on every member of the group: the pointers to it from
+   arrays, maps, internal cells, and internal environments in the group. */
+static void count_inbound(Value **set, uint32_t n) {
     uint32_t i;
-    for (i = 0; i < nseen; i++) {
-        if (seen[i] == cell) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int env_counted(IEnv **seen, uint32_t nseen, const IEnv *env) {
-    uint32_t i;
-    for (i = 0; i < nseen; i++) {
-        if (seen[i] == env) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static uint32_t up_room(Value **set, uint32_t n) {
-    uint32_t room = 1;
-    uint32_t i;
+    uint32_t pass;
     for (i = 0; i < n; i++) {
-        if (set[i]->kind == VAL_FN && set[i]->u.fn) {
-            room += set[i]->u.fn->nups;
-        }
+        set[i]->inbound = 0;
     }
-    return room;
-}
-
-static unsigned cycle_inbound(Value **set, uint32_t n, const Value *target) {
-    unsigned count = 0;
-    uint32_t i;
-    Cell **seen_cells = NULL;
-    IEnv **seen_envs = NULL;
-    uint32_t ncells = 0;
-    uint32_t nenvs = 0;
-    uint32_t room = up_room(set, n);
+    count_slots(set, n);
+    pass = next_pass();
     for (i = 0; i < n; i++) {
         Value *value = set[i];
         uint32_t j;
@@ -550,60 +616,46 @@ static unsigned cycle_inbound(Value **set, uint32_t n, const Value *target) {
         } else if (value->kind == VAL_MAP && value->u.map) {
             kids = value->u.map->vals;
             len = value->u.map->len;
+        } else if (value->kind == VAL_FN && value->u.fn) {
+            VmFunc *fn = value->u.fn;
+            uint16_t u;
+            IEnv *env = fn->ienv;
+            for (u = 0; u < fn->nups; u++) {
+                Cell *cell = fn->ups ? fn->ups[u] : NULL;
+                if (!cell || cell->mark == pass) {
+                    continue;
+                }
+                cell->mark = pass;
+                if (cell_internal(cell) && cycle_has(set, n, cell->value)) {
+                    cell->value->inbound++;
+                }
+            }
+            if (env && env->mark != pass) {
+                int s;
+                env->mark = pass;
+                if (env_internal(env)) {
+                    for (s = 0; s < env->len; s++) {
+                        if (cycle_has(set, n, env->vals[s])) {
+                            env->vals[s]->inbound++;
+                        }
+                    }
+                }
+            }
+            continue;
         }
         for (j = 0; j < len; j++) {
-            if (kids[j] == target) {
-                count++;
+            if (cycle_has(set, n, kids[j])) {
+                kids[j]->inbound++;
             }
         }
     }
-    seen_cells = xmalloc((size_t)room * sizeof(Cell *));
-    seen_envs = xmalloc(((size_t)n + 1) * sizeof(IEnv *));
-    for (i = 0; i < n; i++) {
-        VmFunc *fn;
-        uint16_t u;
-        IEnv *env;
-        int s;
-        if (set[i]->kind != VAL_FN || !set[i]->u.fn) {
-            continue;
-        }
-        fn = set[i]->u.fn;
-        for (u = 0; u < fn->nups; u++) {
-            Cell *cell = fn->ups ? fn->ups[u] : NULL;
-            if (!cell || cell_counted(seen_cells, ncells, cell)) {
-                continue;
-            }
-            seen_cells[ncells++] = cell;
-            if (cell_internal(set, n, cell) && cell->value == target) {
-                count++;
-            }
-        }
-        env = fn->ienv;
-        if (!env || env_counted(seen_envs, nenvs, env)) {
-            continue;
-        }
-        seen_envs[nenvs++] = env;
-        if (!env_internal(set, n, env)) {
-            continue;
-        }
-        for (s = 0; s < env->len; s++) {
-            if (env->vals[s] == target) {
-                count++;
-            }
-        }
-    }
-    free(seen_cells);
-    free(seen_envs);
-    return count;
 }
 
 static void cycle_unlink(Value **set, uint32_t n) {
     uint32_t i;
-    uint32_t room = up_room(set, n);
-    Cell **seen_cells = xmalloc((size_t)room * sizeof(Cell *));
-    IEnv **seen_envs = xmalloc(((size_t)n + 1) * sizeof(IEnv *));
-    uint32_t ncells = 0;
-    uint32_t nenvs = 0;
+    uint32_t pass;
+    count_slots(set, n);
+    pass = next_pass();
     for (i = 0; i < n; i++) {
         Value *value = set[i];
         uint32_t j;
@@ -633,31 +685,28 @@ static void cycle_unlink(Value **set, uint32_t n) {
         fn = set[i]->u.fn;
         for (u = 0; u < fn->nups; u++) {
             Cell *cell = fn->ups ? fn->ups[u] : NULL;
-            if (!cell || cell_counted(seen_cells, ncells, cell)) {
+            if (!cell || cell->mark == pass) {
                 continue;
             }
-            seen_cells[ncells++] = cell;
-            if (cell_internal(set, n, cell) && cycle_node(cell->value) &&
-                cycle_has(set, n, cell->value)) {
+            cell->mark = pass;
+            if (cell_internal(cell) && cycle_node(cell->value) && cycle_has(set, n, cell->value)) {
                 cell->value = NULL;
             }
         }
         env = fn->ienv;
-        if (!env || env_counted(seen_envs, nenvs, env) || !env_internal(set, n, env)) {
-            if (env && !env_counted(seen_envs, nenvs, env)) {
-                seen_envs[nenvs++] = env;
-            }
+        if (!env || env->mark == pass) {
             continue;
         }
-        seen_envs[nenvs++] = env;
+        env->mark = pass;
+        if (!env_internal(env)) {
+            continue;
+        }
         for (s = 0; s < env->len; s++) {
             if (env->vals[s] && cycle_has(set, n, env->vals[s])) {
                 env->vals[s] = NULL;
             }
         }
     }
-    free(seen_cells);
-    free(seen_envs);
 }
 
 /* Values and environments reachable from root, including a child
@@ -932,7 +981,7 @@ static void release_cycle(Value *start) {
     uint32_t n = 0;
     uint32_t cap = 0;
     uint32_t i;
-    if (value_collecting || !cycle_node(start)) {
+    if (value_collecting || !cycle_node(start) || start->roots > 0) {
         return;
     }
     value_collecting = 1;
@@ -943,8 +992,9 @@ static void release_cycle(Value *start) {
         collect_fn_env(start);
         return;
     }
+    count_inbound(set, n);
     for (i = 0; i < n; i++) {
-        if (set[i]->refs != cycle_inbound(set, n, set[i])) {
+        if (set[i]->refs != set[i]->inbound) {
             free(set);
             value_collecting = 0;
             collect_fn_env(start);
@@ -962,12 +1012,44 @@ static void release_cycle(Value *start) {
     value_collecting = 0;
 }
 
+/* 1 when this array or map cannot reach itself, so a live unref only
+   drops a count. The walk runs once per graph epoch. A function is never
+   cached: its unref also collects a closed environment. */
+static int cycle_cached_clean(Value *value) {
+    Value **set = NULL;
+    uint32_t n = 0;
+    uint32_t cap = 0;
+    int clean;
+    if (!value || (value->kind != VAL_ARRAY && value->kind != VAL_MAP)) {
+        return 0;
+    }
+    if (value->cycle_seen == cycle_epoch) {
+        return 1;
+    }
+    cycle_reach(&set, &n, &cap, value);
+    count_inbound(set, n);
+    clean = value->inbound == 0;
+    free(set);
+    if (clean) {
+        value->cycle_seen = cycle_epoch;
+        return 1;
+    }
+    value->cycle_seen = 0;
+    return 0;
+}
+
 void value_unref(Value *value) {
     if (!value || value->refs == 0) {
         return;
     }
     if (value->refs > 1) {
         value->refs--;
+        if (value->roots > 0) {
+            return;
+        }
+        if (!value_collecting && cycle_cached_clean(value)) {
+            return;
+        }
         if (value->refs > self_refs(value)) {
             release_cycle(value);
             return;

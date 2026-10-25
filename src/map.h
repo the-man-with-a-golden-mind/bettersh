@@ -15,6 +15,8 @@ typedef struct Map {
        keys and vals stay in insertion order. */
     uint32_t *slots;
     uint32_t hcap;
+    /* A module export map. Its values count it in their roots. */
+    int rooted;
 } Map;
 
 Map *map_new(void);

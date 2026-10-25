@@ -1,6 +1,7 @@
 #include "vi_complete.h"
 
 #include "arena.h"
+#include "vi_opts.h"
 
 #include <dirent.h>
 #include <stdlib.h>
@@ -11,10 +12,11 @@
 enum { SCAN_MAX = 4000 };
 
 static const char *const builtins[] = {
-    "alias", "bg",    "break",    "cd",      "command", "continue", "echo",    "eval",
-    "exec",  "exit",  "export",   "false",   "fc",      "fg",       "getopts", "hash",
-    "jobs",  "kill",  "local",    "printf",  "pwd",     "read",     "readonly", "return",
-    "set",   "shift", "source",   "test",    "times",   "trap",     "true",    "type",
+    "alias", "bg",    "break",    "cd",      "command", "continue", "echo",    "edit",
+    "eval",  "exec",  "exit",     "export",  "false",   "fc",       "fg",      "getopts",
+    "hash",  "jobs",  "kill",     "local",   "printf",  "pwd",      "read",    "readonly",
+    "return","set",   "shift",    "source",  "test",    "times",    "trap",    "true",
+    "type",
     "ulimit", "umask", "unalias", "unset",   "wait",    NULL};
 
 static char *dup_n(const char *s, size_t n) {
@@ -99,12 +101,15 @@ void vi_matches_clear(ViMatches *matches) {
     }
     for (i = 0; i < matches->n && i < VI_MATCH_MAX; i++) {
         free(matches->name[i]);
+        free(matches->help[i]);
         matches->name[i] = NULL;
+        matches->help[i] = NULL;
     }
     matches->n = 0;
     matches->start = 0;
     matches->end = 0;
     matches->command = 0;
+    matches->trail = 0;
 }
 
 void vi_replace_word(char **buf, size_t *cap, size_t *len, size_t *cur, size_t start, size_t end,
@@ -272,7 +277,16 @@ int vi_matches_at(const char *buf, size_t len, size_t cur, ViMatches *matches) {
         end++;
     }
     if (start == cur) {
-        return 0;
+        int blank = 1;
+        for (i = 0; i < start; i++) {
+            if (buf[i] != ' ' && buf[i] != '\t') {
+                blank = 0;
+                break;
+            }
+        }
+        if (blank) {
+            return 0;
+        }
     }
     for (i = start; i < cur; i++) {
         char c = buf[i];
@@ -291,9 +305,14 @@ int vi_matches_at(const char *buf, size_t len, size_t cur, ViMatches *matches) {
     matches->start = start;
     matches->end = end;
     matches->command = command && !has_slash;
+    matches->trail = 0;
     matches->n = 0;
+    if (vi_opts_at(buf, start, cur, matches->name, matches->help, &matches->n, &matches->trail)) {
+        return matches->n > 0;
+    }
     if (matches->command) {
         add_commands(matches->name, &matches->n, buf + start, cur - start);
+        matches->trail = 1;
     } else {
         add_files(matches->name, &matches->n, buf, start, cur);
     }

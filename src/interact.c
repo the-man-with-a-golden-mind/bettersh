@@ -335,6 +335,28 @@ static void btr_histfile(EvalCtx *ctx) {
     free(path);
 }
 
+/* Interactive btr and bsh read ~/.btrrc. A missing file is skipped. exit in
+   the file ends the shell before the prompt. bettersh -i does not read it. */
+static void source_btrrc(EvalCtx *ctx) {
+    const char *home = NULL;
+    size_t n;
+    const char *tail;
+    char *path;
+    if (!ctx->btr) {
+        return;
+    }
+    if (!env_get(&ctx->env, "HOME", &home) || !home || !home[0]) {
+        return;
+    }
+    n = strlen(home);
+    tail = home[n - 1] == '/' ? ".btrrc" : "/.btrrc";
+    path = xmalloc(n + strlen(tail) + 1);
+    memcpy(path, home, n);
+    memcpy(path + n, tail, strlen(tail) + 1);
+    source_file(ctx, path);
+    free(path);
+}
+
 /* A login shell reads the system profile, then the home profile. A missing
    file is skipped. exit in either file ends the shell before the prompt. */
 static void source_login(EvalCtx *ctx) {
@@ -369,6 +391,9 @@ int interact_run(int argc, char **argv, char **envp, const ShellStart *start) {
     ctx.stdin_mode = 1;
     if (argv_is_login(name)) {
         source_login(&ctx);
+    }
+    if (!ctx.exit_req) {
+        source_btrrc(&ctx);
     }
     btr_histfile(&ctx);
     hist_load(&ctx);

@@ -21,13 +21,13 @@ SRC = src/main.c src/arena.c src/error.c src/ast.c \
       src/eval_expr.c \
       src/builtins.c src/builtin_printf.c src/builtin_test.c src/builtin_cd.c \
       src/builtin_var.c src/builtin_proc.c src/builtin_cmd.c src/builtin_posix.c \
-      src/builtin_fc.c src/builtin_limit.c \
+      src/builtin_fc.c src/builtin_limit.c src/builtin_edit.c src/editor_launch.c \
       src/eval.c src/eval_sh.c src/eval_flow.c src/expand.c src/arith_text.c src/redir.c src/hash.c \
       src/chunk.c src/mod_scan.c src/mod_expr.c src/mod_parse.c \
       src/compiler.c src/compile_expr.c src/compile_flow.c src/verify.c src/disasm.c \
       src/vm.c src/vm_ops.c src/vm_method.c src/vm_exec.c src/interp.c src/interp_expr.c \
       src/module.c src/host.c src/host_term.c src/host_fs.c src/host_pipe.c src/modern.c \
-      src/shjob.c src/interact.c src/vi_line.c src/vi_draw.c src/vi_complete.c src/vi_hist.c \
+      src/shjob.c src/interact.c src/vi_line.c src/vi_draw.c src/vi_complete.c src/vi_opts.c src/vi_hist.c \
       src/btr_prompt.c \
       src/utf8.c src/suggest.c src/trace.c src/bcode.c
 OBJ = $(patsubst src/%.c,$(OBJDIR)/%.o,$(SRC))

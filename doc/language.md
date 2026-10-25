@@ -9,11 +9,15 @@ A `.btr` file always uses modern mode. A `.sh` file uses strict mode unless its 
 ```text
 bettersh [options] [file [argument...]]
 bettersh [options] -c command [name [argument...]]
+bettersh -e file
+bettersh edit [path...]
 bettersh --compile --output image file
 bettersh --bytecode image [argument...]
 bettersh --help
 bettersh --version
 ```
+
+`bettersh -e file` and `bettersh edit [path...]` open the terminal editor. Inside the shell, `edit [path...]` does the same. A folder opens in the editor's side bar, and no paths reopens the last session or an empty buffer. `bettersh -- edit` still runs a file named `edit`. When `-e` comes before another option, as in `-e -c`, it still turns errexit on.
 
 Arguments after a file name become positional parameters. In strict mode they are available as `$1`, `$2`, and so on. In modern mode, `arg(index)` returns an argument.
 
@@ -169,7 +173,8 @@ The most common functions are `print`, `println`, `eprint`, and `eprintln`. Lowe
 | Math | `mathf` |
 | Processes | `proc_spawn`, `proc_await` |
 | Bidirectional processes | `pipe_open`, `pipe_write`, `pipe_read`, `pipe_close` |
-| Terminal | `term_raw`, `term_read`, `term_poll`, `term_cols`, `term_rows`, `term_tty` |
+| Terminal | `term_raw`, `term_read`, `term_poll`, `term_take`, `term_idle`, `term_cols`, `term_rows`, `term_tty` |
+| Time | `clock_ms` |
 
 Host interfaces that pass a value to an operating-system C string reject interior zero bytes. Byte-oriented functions such as `bytes`, `unbytes`, `readall`, and `fs_load` preserve them.
 
@@ -193,7 +198,7 @@ The library is implemented in `.btr` source files under `std/`.
 | `std/json` | Parse and serialize one JSON value. |
 | `std/ui` | Character-grid drawing and terminal key decoding. |
 | `std/tui` | Labels, fields, buttons, lists, and windows on a terminal frame. |
-| `std/edit` | Modal terminal editor. |
+| `std/edit` | Terminal text editor with multiple selections, in the style of Sublime Text. |
 | `std/theme` | Editor themes and language-server configuration. |
 | `std/lsp` | Language Server Protocol client over a bidirectional child process. |
 
@@ -207,9 +212,9 @@ Start an interactive session with `bettersh -i`. `PS1` is used for a complete co
 
 `btr` and `bsh` are the same binary started as the themed terminal shell. Its prompt is built by `std/btr.btr` from `~/.bettersh/btr.conf`, which names a theme, prompt segments, and editor plugins. Directory names and git branches are shown with terminal control characters replaced, so an untrusted path cannot retitle the terminal. `bettersh -i` does not read that file and keeps the plain `PS1` prompt.
 
-A login shell is started with the name `-btr` or `-bsh`. It reads `/etc/profile` and then `~/.profile` when those files can be read. There is no separate interactive startup file. The themed prompt ignores `PS1`.
+A login shell is started with the name `-btr` or `-bsh`. It reads `/etc/profile` and then `~/.profile` when those files can be read. Interactive `btr` and `bsh` then read `~/.btrrc` when that file can be read. `bettersh -i` does not read it. A missing file is skipped, and `exit` in one of these files ends the shell before the prompt. `~/.btrrc` is a shell script: aliases, `PATH`, and options such as `set -o vi` belong there. Colors and prompt segments stay in `~/.bettersh/btr.conf`. The themed prompt ignores `PS1`.
 
-`set -o vi` and `set -o emacs` choose the command-line editor. `fc` reads or edits command history. With `HISTFILE` set, bettersh loads history at startup and appends new commands. Without it, history lasts for the current process. `btr` and `bsh` use `~/.bettersh/history` when `HISTFILE` is unset. Up lists matching commands under the line, and Ctrl-R searches them as you type.
+`set -o vi` and `set -o emacs` choose the command-line editor. `fc` reads or edits command history. With `HISTFILE` set, bettersh loads history at startup and appends new commands. Without it, history lasts for the current process. `btr` and `bsh` use `~/.bettersh/history` when `HISTFILE` is unset. Up lists matching commands under the line, and Ctrl-R searches them as you type. Tab on a word that starts with `-` lists known options for that command, with a short description. `git` lists its subcommands the same way, and `set -o` lists option names.
 
 Bettersh adds `pipefail` to the shell options. The `debug` option is stored and displayed but does not create a trace file. `ignoreeof` asks the user to type `exit` instead of leaving on Ctrl-D.
 
@@ -220,7 +225,7 @@ Strict mode implements pipelines, `if`, `while`, `until`, `for`, `case`, functio
 The builtins are:
 
 ```text
-: . alias bg break cd command continue echo eval exec exit export false
+: . alias bg break cd command continue echo edit eval exec exit export false
 fc fg getopts hash jobs kill local printf pwd read readonly return set shift
 source test times trap true type ulimit umask unalias unset wait [
 ```

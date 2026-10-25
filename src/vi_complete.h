@@ -8,10 +8,12 @@ enum { VI_MATCH_MAX = 128 };
 /* Names are malloc'd. vi_matches_clear frees them. */
 typedef struct ViMatches {
     char *name[VI_MATCH_MAX];
+    char *help[VI_MATCH_MAX];
     int n;
     size_t start;
     size_t end;
     int command;
+    int trail;
 } ViMatches;
 
 void vi_matches_clear(ViMatches *matches);

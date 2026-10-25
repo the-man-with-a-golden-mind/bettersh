@@ -1,0 +1,837 @@
+#!/usr/bin/env bettersh
+
+# One open document: its lines, selections, undo history, and syntax marks.
+# A position is a row and a column, both 0-based. The column is a scalar index.
+# A selection has an anchor (ar, ac) and a head (hr, hc). The head is where the caret is.
+# goal is the display column that Up and Down try to keep, or -1. p marks the primary selection.
+
+import std/edit_text
+import std/edit_syntax
+
+let serial = { next: 1 }
+
+fn next_id() {
+  let n = serial.next
+  let junk = map_set(serial, "next", n + 1)
+  return n
+}
+
+fn caret(r, c) {
+  return { ar: r, ac: c, hr: r, hc: c, goal: 0 - 1, p: false }
+}
+
+fn span(ar, ac, hr, hc) {
+  return { ar: ar, ac: ac, hr: hr, hc: hc, goal: 0 - 1, p: false }
+}
+
+fn copy_sel(s) {
+  return { ar: s.ar, ac: s.ac, hr: s.hr, hc: s.hc, goal: s.goal, p: s.p }
+}
+
+fn copy_sels(list) {
+  let out = []
+  let i = 0
+  while i < list.length {
+    let out = out.push(copy_sel(list[i]))
+    let i = i + 1
+  }
+  return out
+}
+
+fn before(r1, c1, r2, c2) {
+  return r1 < r2 || (r1 == r2 && c1 < c2)
+}
+
+fn empty(s) {
+  return s.ar == s.hr && s.ac == s.hc
+}
+
+# The start of the selection in document order.
+fn lo(s) {
+  if before(s.hr, s.hc, s.ar, s.ac) { return { r: s.hr, c: s.hc } }
+  return { r: s.ar, c: s.ac }
+}
+
+fn hi(s) {
+  if before(s.hr, s.hc, s.ar, s.ac) { return { r: s.ar, c: s.ac } }
+  return { r: s.hr, c: s.hc }
+}
+
+# True when the head is before the anchor.
+fn backward(s) {
+  return before(s.hr, s.hc, s.ar, s.ac)
+}
+
+# Splits file text into lines. A final newline and CRLF line ends are remembered for the save.
+fn split_text(text) {
+  let body = text
+  if body == null { let body = "" }
+  let eol = false
+  if body.length > 0 && body[body.length - 1] == "\n" { let eol = true }
+  let parts = body.split("\n")
+  if eol { let junk = parts.pop() }
+  if parts.length == 0 { let parts = parts.push("") }
+  let cr = chr(13)
+  let crlf = false
+  if parts.length > 0 && parts[0].length > 0 && parts[0][parts[0].length - 1] == cr && (parts.length > 1 || eol) {
+    let crlf = true
+  }
+  if crlf {
+    let i = 0
+    while i < parts.length {
+      let line = parts[i]
+      if line.length > 0 && line[line.length - 1] == cr { let junk = parts.set(i, line.slice(0, line.length - 1)) }
+      let i = i + 1
+    }
+  }
+  return { lines: parts, eol: eol, crlf: crlf }
+}
+
+# Guesses tabs or spaces, and the indent width, from the first lines. Null keeps the defaults.
+fn detect_indent(lines) {
+  let tabs = 0
+  let spaced = 0
+  let steps = { two: 0, four: 0, eight: 0 }
+  let prev = 0
+  let n = lines.length
+  if n > 2000 { let n = 2000 }
+  let i = 0
+  while i < n {
+    let line = lines[i]
+    if line.length > 0 && !edit_text.blank(line) {
+      if line[0] == "\t" { let tabs = tabs + 1 }
+      let w = 0
+      while w < line.length && line[w] == " " { let w = w + 1 }
+      if w > 0 && line[0] == " " { let spaced = spaced + 1 }
+      if w != prev && line[0] != "\t" {
+        let d = w - prev
+        if d < 0 { let d = 0 - d }
+        if d == 2 { let junk = map_set(steps, "two", steps.two + 1) }
+        if d == 4 { let junk = map_set(steps, "four", steps.four + 1) }
+        if d == 8 { let junk = map_set(steps, "eight", steps.eight + 1) }
+      }
+      let prev = w
+      if line[0] == "\t" { let prev = 0 }
+    }
+    let i = i + 1
+  }
+  if tabs == 0 && spaced == 0 { return null }
+  if tabs > spaced { return { spaces: false, tab: 0 } }
+  let tab = 4
+  if steps.two > steps.four && steps.two >= steps.eight { let tab = 2 }
+  if steps.eight > steps.four && steps.eight > steps.two { let tab = 8 }
+  return { spaces: true, tab: tab }
+}
+
+fn base_name(p) {
+  if p == null || p == "" { return "untitled" }
+  let parts = p.split("/")
+  let name = parts[parts.length - 1]
+  if name == "" { return p }
+  return name
+}
+
+fn line(d, r) {
+  return d.lines[r]
+}
+
+fn clamp_row(d, r) {
+  if r < 0 { return 0 }
+  if r >= d.lines.length { return d.lines.length - 1 }
+  return r
+}
+
+fn clamp_col(d, r, c) {
+  if c < 0 { return 0 }
+  let n = d.lines[r].length
+  if c > n { return n }
+  return c
+}
+
+fn primary(d) {
+  let i = 0
+  while i < d.sels.length {
+    if d.sels[i].p { return d.sels[i] }
+    let i = i + 1
+  }
+  return d.sels[d.sels.length - 1]
+}
+
+# The text between two ordered positions.
+fn get_text(d, r1, c1, r2, c2) {
+  if r1 == r2 { return d.lines[r1].slice(c1, c2) }
+  let parts = [d.lines[r1].slice(c1, d.lines[r1].length)]
+  let i = r1 + 1
+  while i < r2 {
+    let parts = parts.push(d.lines[i])
+    let i = i + 1
+  }
+  let parts = parts.push(d.lines[r2].slice(0, c2))
+  return parts.join("\n")
+}
+
+fn sel_text(d, s) {
+  let a = lo(s)
+  let b = hi(s)
+  return get_text(d, a.r, a.c, b.r, b.c)
+}
+
+# Where text ends when it is inserted at r, c.
+fn end_of(r, c, text) {
+  let at = text.index("\n")
+  if at < 0 { return { r: r, c: c + text.length } }
+  let parts = text.split("\n")
+  return { r: r + parts.length - 1, c: parts[parts.length - 1].length }
+}
+
+# Replaces arr[lo, lo + count) with items. A large change builds a new array.
+fn splice(arr, lo, count, items) {
+  let n = items.length
+  if count + n > 256 {
+    let out = arr.slice(0, lo)
+    let i = 0
+    while i < n {
+      let out = out.push(items[i])
+      let i = i + 1
+    }
+    let i = lo + count
+    while i < arr.length {
+      let out = out.push(arr[i])
+      let i = i + 1
+    }
+    return out
+  }
+  let k = 0
+  while k < count && k < n {
+    let junk = arr.set(lo + k, items[k])
+    let k = k + 1
+  }
+  if count > n {
+    let extra = count - n
+    while extra > 0 {
+      let junk = arr.delete(lo + n)
+      let extra = extra - 1
+    }
+  }
+  if n > count {
+    let k = count
+    while k < n {
+      let junk = arr.insert(lo + k, items[k])
+      let k = k + 1
+    }
+  }
+  return arr
+}
+
+fn nulls(n) {
+  let out = []
+  let i = 0
+  while i < n {
+    let out = out.push(null)
+    let i = i + 1
+  }
+  return out
+}
+
+fn syn_reset(d) {
+  let n = d.lines.length
+  let junk = map_set(d, "marks", nulls(n))
+  let junk = map_set(d, "ins", nulls(n))
+  let junk = map_set(d, "outs", nulls(n))
+  let junk = map_set(d, "valid", 0)
+}
+
+fn syn_touch(d, at, count, newn) {
+  let blank = nulls(newn)
+  let junk = map_set(d, "marks", splice(d.marks, at, count, blank))
+  let junk = map_set(d, "ins", splice(d.ins, at, count, nulls(newn)))
+  let junk = map_set(d, "outs", splice(d.outs, at, count, nulls(newn)))
+  if d.valid > at { let junk = map_set(d, "valid", at) }
+}
+
+fn scan_row(d, i, state) {
+  let got = edit_syntax.scan(d.lines[i], d.lang, state, true)
+  let junk = d.marks.set(i, got.marks)
+  let junk = d.ins.set(i, state)
+  let junk = d.outs.set(i, got.state)
+  return got.state
+}
+
+# Makes the marks for rows first..last current. A far jump starts fresh 200 rows above.
+fn syn_ensure(d, first, last) {
+  if d.lang == "" { return null }
+  let last = last
+  if last >= d.lines.length { let last = d.lines.length - 1 }
+  if last < d.valid { return null }
+  if first - d.valid > 2000 {
+    let i = first - 200
+    let state = ""
+    while i <= last {
+      if d.marks[i] == null || i < first {
+        let state = scan_row(d, i, state)
+      } else {
+        let state = d.outs[i]
+      }
+      let i = i + 1
+    }
+    return null
+  }
+  let i = d.valid
+  let state = ""
+  if i > 0 { let state = d.outs[i - 1] }
+  while i <= last {
+    if d.marks[i] != null && d.ins[i] == state {
+      let state = d.outs[i]
+    } else {
+      let state = scan_row(d, i, state)
+    }
+    let i = i + 1
+  }
+  let junk = map_set(d, "valid", last + 1)
+  return null
+}
+
+# The role marks for row r. An empty string means plain text.
+fn marks(d, r) {
+  if d.lang == "" { return "" }
+  if d.marks[r] == null { syn_ensure(d, r, r) }
+  let m = d.marks[r]
+  if m == null { return "" }
+  return m
+}
+
+# Folds hide rows a + 1 through b. Row a stays on screen with a marker.
+# An edit inside a fold opens it. An edit that stays on the folded row keeps it. Folds below the edit move with their lines.
+fn fold_touch(d, at, count, newn) {
+  let out = []
+  let last = at + count - 1
+  let i = 0
+  while i < d.folds.length {
+    let f = d.folds[i]
+    if f.b < at || (at == f.a && count == 1 && newn == 1) {
+      let out = out.push(f)
+    } else if f.a > last {
+      let out = out.push({ a: f.a + newn - count, b: f.b + newn - count })
+    }
+    let i = i + 1
+  }
+  let junk = map_set(d, "folds", out)
+}
+
+# The fold that hides row r, or null.
+fn fold_over(d, r) {
+  let i = 0
+  while i < d.folds.length {
+    let f = d.folds[i]
+    if r > f.a && r <= f.b { return f }
+    let i = i + 1
+  }
+  return null
+}
+
+fn folded_at(d, r) {
+  let i = 0
+  while i < d.folds.length {
+    if d.folds[i].a == r { return true }
+    let i = i + 1
+  }
+  return false
+}
+
+fn hidden(d, r) {
+  if d.folds.length == 0 { return false }
+  return fold_over(d, r) != null
+}
+
+# The next row on screen after r (dir 1) or before it (dir -1), or -1 at the end.
+fn shown_row(d, r, dir) {
+  let n = r + dir
+  while n >= 0 && n < d.lines.length && hidden(d, n) {
+    let f = fold_over(d, n)
+    if dir > 0 { let n = f.b + 1 }
+    else { let n = f.a }
+  }
+  if n < 0 || n >= d.lines.length { return 0 - 1 }
+  return n
+}
+
+# Hides rows a + 1 through b. Folds inside it are replaced by it.
+fn add_fold(d, a, b) {
+  if b <= a { return false }
+  let out = []
+  let placed = false
+  let i = 0
+  while i < d.folds.length {
+    let f = d.folds[i]
+    if f.a <= a && f.b >= b { return false }
+    let inside = f.a >= a && f.b <= b
+    if !inside {
+      if !placed && f.a > a {
+        let out = out.push({ a: a, b: b })
+        let placed = true
+      }
+      let out = out.push(f)
+    }
+    let i = i + 1
+  }
+  if !placed { let out = out.push({ a: a, b: b }) }
+  let junk = map_set(d, "folds", out)
+  return true
+}
+
+# Opens the folds whose rows include r, the header row too.
+fn open_folds(d, r) {
+  let out = []
+  let opened = false
+  let i = 0
+  while i < d.folds.length {
+    let f = d.folds[i]
+    if r >= f.a && r <= f.b { let opened = true }
+    else { let out = out.push(f) }
+    let i = i + 1
+  }
+  let junk = map_set(d, "folds", out)
+  return opened
+}
+
+# Screen-line starts for row r: [0] unless word wrap is on.
+fn segs(d, r) {
+  if d.wrap < 2 { return [0] }
+  return edit_text.segments(d.lines[r], d.wrap, d.tab)
+}
+
+# Which screen line of row r column c is on.
+fn seg_of(list, c) {
+  let k = list.length - 1
+  while k > 0 && list[k] > c { let k = k - 1 }
+  return k
+}
+
+# Replaces r1,c1..r2,c2 with text and returns where the text ends. Nothing is recorded for undo.
+fn raw_replace(d, r1, c1, r2, c2, text) {
+  let first = d.lines[r1]
+  let last = d.lines[r2]
+  let pre = first.slice(0, c1)
+  let post = last.slice(c2, last.length)
+  let count = r2 - r1 + 1
+  let end = null
+  if text.index("\n") < 0 {
+    let one = "@{ pre }@{ text }@{ post }"
+    if count == 1 {
+      let junk = d.lines.set(r1, one)
+      let junk = d.marks.set(r1, null)
+    } else {
+      let junk = map_set(d, "lines", splice(d.lines, r1, count, [one]))
+      syn_touch(d, r1, count, 1)
+    }
+    if count == 1 && d.valid > r1 { let junk = map_set(d, "valid", r1) }
+    let end = { r: r1, c: c1 + text.length }
+  } else {
+    let parts = text.split("\n")
+    let k = parts.length
+    let tail = parts[k - 1]
+    let end = { r: r1 + k - 1, c: tail.length }
+    let junk = parts.set(0, "@{ pre }@{ parts[0] }")
+    let junk = parts.set(k - 1, "@{ parts[k - 1] }@{ post }")
+    let junk = map_set(d, "lines", splice(d.lines, r1, count, parts))
+    syn_touch(d, r1, count, k)
+  }
+  if d.folds.length > 0 { fold_touch(d, r1, count, end.r - r1 + 1) }
+  let junk = map_set(d, "version", d.version + 1)
+  return end
+}
+
+# Replaces a range inside the open edit and records it for undo.
+fn replace(d, r1, c1, r2, c2, text) {
+  let old = get_text(d, r1, c1, r2, c2)
+  if old == text { return end_of(r1, c1, text) }
+  let end = raw_replace(d, r1, c1, r2, c2, text)
+  if d.cur != null {
+    let junk = d.cur.ops.push({ r: r1, c: c1, old: old, new: text })
+  }
+  return end
+}
+
+fn seal(d) {
+  if d.undo.length > 0 { let junk = map_set(d.undo[d.undo.length - 1], "open", false) }
+}
+
+# Opens an undo step. Typing, deleting backward, and deleting forward each merge into one open step.
+fn begin(d, kind) {
+  let top = null
+  if d.undo.length > 0 { let top = d.undo[d.undo.length - 1] }
+  let merge = kind == "type" || kind == "back" || kind == "del"
+  if top != null && merge && top.open && top.kind == kind && top.ver == d.version && d.redo.length == 0 {
+    let junk = map_set(d, "cur", top)
+    return top
+  }
+  seal(d)
+  let txn = { id: next_id(), kind: kind, ops: [], before: copy_sels(d.sels), after: null, open: merge, ver: d.version }
+  let junk = map_set(d, "cur", txn)
+  return txn
+}
+
+# Keeps every endpoint inside the document.
+fn clamp_sel(d, s) {
+  let ar = clamp_row(d, s.ar)
+  let hr = clamp_row(d, s.hr)
+  let junk = map_set(s, "ar", ar)
+  let junk = map_set(s, "hr", hr)
+  let junk = map_set(s, "ac", clamp_col(d, ar, s.ac))
+  let junk = map_set(s, "hc", clamp_col(d, hr, s.hc))
+  return s
+}
+
+fn sel_before(a, b) {
+  let x = lo(a)
+  let y = lo(b)
+  if x.r != y.r { return x.r < y.r }
+  if x.c != y.c { return x.c < y.c }
+  let p = hi(a)
+  let q = hi(b)
+  return before(p.r, p.c, q.r, q.c)
+}
+
+# Sorts selections by start and merges the ones that overlap. One stays primary.
+fn set_sels(d, list) {
+  if list.length == 0 { let list = [caret(0, 0)] }
+  let sorted = []
+  let i = 0
+  while i < list.length {
+    let s = clamp_sel(d, list[i])
+    let j = sorted.length
+    let junk = sorted.push(s)
+    while j > 0 && sel_before(s, sorted[j - 1]) {
+      let junk = sorted.set(j, sorted[j - 1])
+      let j = j - 1
+    }
+    let junk = sorted.set(j, s)
+    let i = i + 1
+  }
+  let out = []
+  let i = 0
+  while i < sorted.length {
+    let s = sorted[i]
+    if out.length == 0 {
+      let out = out.push(s)
+    } else {
+      let last = out[out.length - 1]
+      let a1 = lo(last)
+      let b1 = hi(last)
+      let a2 = lo(s)
+      let b2 = hi(s)
+      let same = a1.r == a2.r && a1.c == a2.c && b1.r == b2.r && b1.c == b2.c
+      if same || before(a2.r, a2.c, b1.r, b1.c) {
+        let er = b1.r
+        let ec = b1.c
+        if before(b1.r, b1.c, b2.r, b2.c) {
+          let er = b2.r
+          let ec = b2.c
+        }
+        let merged = span(a1.r, a1.c, er, ec)
+        if backward(s) && backward(last) { let merged = span(er, ec, a1.r, a1.c) }
+        let junk = map_set(merged, "p", last.p || s.p)
+        let junk = map_set(merged, "goal", s.goal)
+        let junk = out.set(out.length - 1, merged)
+      } else {
+        let out = out.push(s)
+      }
+    }
+    let i = i + 1
+  }
+  let has = false
+  let i = 0
+  while i < out.length {
+    if out[i].p {
+      if has { let junk = map_set(out[i], "p", false) }
+      let has = true
+    }
+    let i = i + 1
+  }
+  if !has { let junk = map_set(out[out.length - 1], "p", true) }
+  let junk = map_set(d, "sels", out)
+}
+
+# Closes the edit opened by begin. An edit that changed nothing leaves no undo step.
+fn commit(d) {
+  let txn = d.cur
+  if txn == null { return false }
+  let junk = map_set(d, "cur", null)
+  set_sels(d, d.sels)
+  let junk = map_set(txn, "after", copy_sels(d.sels))
+  let junk = map_set(txn, "ver", d.version)
+  let top = null
+  if d.undo.length > 0 { let top = d.undo[d.undo.length - 1] }
+  if top == txn { return true }
+  if txn.ops.length == 0 { return false }
+  let junk = d.undo.push(txn)
+  if d.undo.length > 1000 { let junk = d.undo.delete(0) }
+  let junk = map_set(d, "redo", [])
+  return true
+}
+
+fn single(d, s) {
+  let junk = map_set(s, "p", true)
+  set_sels(d, [s])
+}
+
+# Moves an endpoint for an edit that replaced from..to with text ending at end.
+fn shift(r, c, t) {
+  if r == t.r2 && c >= t.c2 { return { r: t.er, c: t.ec + c - t.c2 } }
+  if r > t.r2 { return { r: r + t.er - t.r2, c: c } }
+  return { r: r, c: c }
+}
+
+# Applies one edit to every selection, last first, then fixes the later selections.
+# specfn(d, s) returns null to leave s alone, or { r1, c1, r2, c2, text, place }.
+# place is "end" (caret after the text), "select" (select the text), "inner" (select all but
+# the first and last scalar), "before" (caret one scalar before the end), or "at" (caret at_r rows
+# below r1, at column at_c). The selection passed to specfn has k, its index before the edit.
+fn edit_sels(d, kind, specfn) {
+  begin(d, kind)
+  let sels = d.sels
+  let n = sels.length
+  let finished = []
+  let rows = 0
+  let fence = null
+  let i = n - 1
+  while i >= 0 {
+    let s = copy_sel(sels[i])
+    let junk = map_set(s, "k", i)
+    if fence != null {
+      if before(fence.r, fence.c, s.ar, s.ac) {
+        let junk = map_set(s, "ar", fence.r)
+        let junk = map_set(s, "ac", fence.c)
+      }
+      if before(fence.r, fence.c, s.hr, s.hc) {
+        let junk = map_set(s, "hr", fence.r)
+        let junk = map_set(s, "hc", fence.c)
+      }
+    }
+    let spec = specfn(d, s)
+    if spec == null {
+      let junk = finished.push({ s: s, base: rows })
+    } else {
+      let end = replace(d, spec.r1, spec.c1, spec.r2, spec.c2, spec.text)
+      let t = { r2: spec.r2, c2: spec.c2, er: end.r, ec: end.c }
+      let k = finished.length - 1
+      let going = true
+      while k >= 0 && going {
+        let item = finished[k]
+        let lift = rows - item.base
+        let o = item.s
+        let touched = false
+        if o.ar + lift == spec.r2 {
+          let junk = map_set(o, "ac", shift(spec.r2, o.ac, t).c)
+          let touched = true
+        }
+        if o.hr + lift == spec.r2 {
+          let junk = map_set(o, "hc", shift(spec.r2, o.hc, t).c)
+          let touched = true
+        }
+        if !touched { let going = false }
+        let k = k - 1
+      }
+      let rows = rows + end.r - spec.r2
+      let ns = caret(end.r, end.c)
+      let place = "end"
+      if spec.has("place") { let place = spec.place }
+      if place == "select" { let ns = span(spec.r1, spec.c1, end.r, end.c) }
+      if place == "inner" { let ns = span(spec.r1, spec.c1 + 1, end.r, end.c - 1) }
+      if place == "before" { let ns = caret(end.r, end.c - 1) }
+      if place == "at" { let ns = caret(spec.r1 + spec.at_r, spec.at_c) }
+      let junk = map_set(ns, "p", s.p)
+      let junk = finished.push({ s: ns, base: rows })
+      let fence = { r: spec.r1, c: spec.c1 }
+    }
+    let i = i - 1
+  }
+  let out = []
+  let k = finished.length - 1
+  while k >= 0 {
+    let item = finished[k]
+    let lift = rows - item.base
+    let o = item.s
+    let junk = map_set(o, "ar", o.ar + lift)
+    let junk = map_set(o, "hr", o.hr + lift)
+    let out = out.push(o)
+    let k = k - 1
+  }
+  set_sels(d, out)
+  return commit(d)
+}
+
+# Inserts text at every selection, replacing what is selected.
+fn insert(d, kind, text) {
+  return edit_sels(d, kind, fn(dd, s) {
+    let a = lo(s)
+    let b = hi(s)
+    return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: text, place: "end" }
+  })
+}
+
+fn moved_col(c, from, dc, at_too) {
+  if dc < 0 {
+    if c >= from - dc { return c + dc }
+    if c > from { return from }
+    return c
+  }
+  if c > from || (c == from && at_too) { return c + dc }
+  return c
+}
+
+# Moves the columns on row r for text of dc scalars put in (or taken out, when dc is negative)
+# at column from. A caret at from moves with the text. The start of a selection at from stays,
+# so the selection takes in the new text. Endpoints inside removed text go to from.
+fn move_cols(d, r, from, dc) {
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let flat = empty(s)
+    let back = backward(s)
+    if s.ar == r { let junk = map_set(s, "ac", moved_col(s.ac, from, dc, flat || back)) }
+    if s.hr == r { let junk = map_set(s, "hc", moved_col(s.hc, from, dc, flat || !back)) }
+    let i = i + 1
+  }
+}
+
+# Rows covered by the selections as ascending { a, b } blocks. A selection that ends at column 0
+# of a later row does not cover that row. touching joins blocks that meet on adjacent rows.
+fn row_blocks(d, touching) {
+  let out = []
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let a = lo(s)
+    let b = hi(s)
+    let last = b.r
+    if b.r > a.r && b.c == 0 { let last = b.r - 1 }
+    let reach = 0 - 2
+    if out.length > 0 {
+      let reach = out[out.length - 1].b
+      if touching { let reach = reach + 1 }
+    }
+    if out.length > 0 && a.r <= reach {
+      if last > out[out.length - 1].b { let junk = map_set(out[out.length - 1], "b", last) }
+    } else {
+      let out = out.push({ a: a.r, b: last })
+    }
+    let i = i + 1
+  }
+  return out
+}
+
+# A document for text. path is null for an untitled buffer. opts has tab and spaces.
+fn make(text, path, opts) {
+  let got = split_text(text)
+  let tab = 4
+  let spaces = true
+  if opts != null {
+    if opts.has("tab") { let tab = opts.tab }
+    if opts.has("spaces") { let spaces = opts.spaces }
+  }
+  let guess = null
+  if opts == null || !opts.has("detect") || opts.detect { let guess = detect_indent(got.lines) }
+  if guess != null {
+    let spaces = guess.spaces
+    if guess.tab > 0 { let tab = guess.tab }
+  }
+  let eol = got.eol
+  if text == null { let eol = true }
+  let wrap_on = opts != null && opts.has("wrap") && opts.wrap
+  let first = caret(0, 0)
+  let junk = map_set(first, "p", true)
+  let d = {
+    lines: got.lines,
+    path: path,
+    name: base_name(path),
+    title: null,
+    eol: eol,
+    crlf: got.crlf,
+    tab: tab,
+    spaces: spaces,
+    lang: edit_syntax.lang(path),
+    sels: [first],
+    top: 0,
+    left: 0,
+    undo: [],
+    redo: [],
+    cur: null,
+    saved: 0,
+    version: 1,
+    marks: [],
+    ins: [],
+    outs: [],
+    valid: 0,
+    disk: text,
+    gone: false,
+    whole: false,
+    typed: "",
+    folds: [],
+    wrap: 0,
+    wrap_on: wrap_on,
+    lsp: null,
+    lsp_ver: 0,
+    diags: []
+  }
+  syn_reset(d)
+  return d
+}
+
+# The file bytes for a save.
+fn file_text(d) {
+  let sep = "\n"
+  if d.crlf { let sep = "@{ chr(13) }\n" }
+  let body = d.lines.join(sep)
+  if d.eol { return "@{ body }@{ sep }" }
+  return body
+}
+
+fn text(d) {
+  return d.lines.join("\n")
+}
+
+fn top_id(d) {
+  if d.undo.length == 0 { return 0 }
+  return d.undo[d.undo.length - 1].id
+}
+
+fn dirty(d) {
+  return top_id(d) != d.saved
+}
+
+fn mark_saved(d) {
+  let junk = map_set(d, "saved", top_id(d))
+  seal(d)
+}
+
+fn undo(d) {
+  if d.undo.length == 0 { return false }
+  let txn = d.undo.pop()
+  let i = txn.ops.length - 1
+  while i >= 0 {
+    let op = txn.ops[i]
+    let end = end_of(op.r, op.c, op.new)
+    let junk = raw_replace(d, op.r, op.c, end.r, end.c, op.old)
+    let i = i - 1
+  }
+  let junk = map_set(txn, "open", false)
+  let junk = d.redo.push(txn)
+  set_sels(d, copy_sels(txn.before))
+  return true
+}
+
+fn redo(d) {
+  if d.redo.length == 0 { return false }
+  let txn = d.redo.pop()
+  let i = 0
+  while i < txn.ops.length {
+    let op = txn.ops[i]
+    let end = end_of(op.r, op.c, op.old)
+    let junk = raw_replace(d, op.r, op.c, end.r, end.c, op.new)
+    let i = i + 1
+  }
+  let junk = d.undo.push(txn)
+  set_sels(d, copy_sels(txn.after))
+  return true
+}

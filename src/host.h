@@ -17,5 +17,7 @@ int host_fs_builtin(struct VM *vm, int id, int argc);
 int host_pipe_builtin(struct VM *vm, int id, int argc);
 /* Put the terminal back if this process entered raw mode. Safe to call twice. */
 void term_shutdown(void);
+/* Evaluate one modern chunk in a process-lifetime environment. Returns 0. */
+int host_btr_eval(struct VM *vm);
 
 #endif

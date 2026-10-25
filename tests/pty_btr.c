@@ -325,6 +325,42 @@ static int git_ok(int have, int code, const Buf *raw) {
     return ok;
 }
 
+static int opt_ok(int have, int code, const Buf *raw) {
+    Buf shown;
+    int ok;
+    if (!have || code != 0) {
+        return 0;
+    }
+    shown = text_of(raw);
+    ok = buf_has(raw, "\033[7m-1") && buf_has(&shown, "one entry per line") && buf_has(&shown, "long listing");
+    buf_free(&shown);
+    return ok;
+}
+
+static int opt_one_ok(int have, int code, const Buf *raw) {
+    Buf shown;
+    int ok;
+    if (!have || code != 0) {
+        return 0;
+    }
+    shown = text_of(raw);
+    ok = buf_has(&shown, "echo -n ");
+    buf_free(&shown);
+    return ok;
+}
+
+static int opt_git_ok(int have, int code, const Buf *raw) {
+    Buf shown;
+    int ok;
+    if (!have || code != 0) {
+        return 0;
+    }
+    shown = text_of(raw);
+    ok = buf_has(raw, "\033[7mshow") && buf_has(&shown, "working tree");
+    buf_free(&shown);
+    return ok;
+}
+
 static int tab_ok(int have, int code, const Buf *raw) {
     Buf shown;
     int ok;
@@ -396,6 +432,51 @@ static int theme_ok(int have, int code, const Buf *raw) {
     return have && code == 0 && buf_has(raw, "38;2;129;161;193");
 }
 
+static int rc_alias_ok(int have, int code, const Buf *raw) {
+    Buf shown;
+    int mark;
+    int later;
+    int ok;
+    if (!have || code != 0) {
+        return 0;
+    }
+    shown = text_of(raw);
+    mark = find_from(&shown, "BTRRCMARK", 0);
+    later = mark < 0 ? -1 : find_from(&shown, "RCALIAS", (size_t)mark);
+    ok = mark >= 0 && later > mark && find_from(&shown, "LOGINMARK", 0) < 0;
+    buf_free(&shown);
+    return ok;
+}
+
+static int rc_login_ok(int have, int code, const Buf *raw) {
+    Buf shown;
+    int mark;
+    int later;
+    int ok;
+    if (!have || code != 0) {
+        return 0;
+    }
+    shown = text_of(raw);
+    mark = find_from(&shown, "LOGINMARK", 0);
+    later = mark < 0 ? -1 : find_from(&shown, "BTRRCMARK", (size_t)mark + strlen("LOGINMARK"));
+    ok = mark >= 0 && later > mark && buf_has(raw, "38;2;");
+    buf_free(&shown);
+    return ok;
+}
+
+static int rc_plain_ok(int have, int code, const Buf *raw) {
+    Buf shown;
+    int ok;
+    if (!have || code != 0) {
+        return 0;
+    }
+    shown = text_of(raw);
+    ok = buf_has(&shown, "P ") && buf_has(&shown, "HI") && find_from(&shown, "BTRRCMARK", 0) < 0 &&
+         !buf_has(raw, "38;2;");
+    buf_free(&shown);
+    return ok;
+}
+
 static int login_ok(int have, int code, const Buf *raw) {
     Buf shown;
     int ok;
@@ -424,6 +505,7 @@ int main(int argc, char **argv) {
     char script[1024];
     char conf[1024];
     char profile[1024];
+    char btrrc[1024];
     char bsh[1024];
     char login_btr[1024];
     char login_bsh[1024];
@@ -435,6 +517,9 @@ int main(int argc, char **argv) {
     Step cursor[2];
     Step plain_step[1];
     Step tab[2];
+    Step opt[2];
+    Step opt_one[2];
+    Step opt_git[2];
     Step menu[4];
     Step hist_seed[1];
     Step hist_nav[3];
@@ -469,6 +554,7 @@ int main(int argc, char **argv) {
     snprintf(script, sizeof script, "%s/std/btr.btr", root);
     snprintf(conf, sizeof conf, "%s/.bettersh/btr.conf", home);
     snprintf(profile, sizeof profile, "%s/.profile", home);
+    snprintf(btrrc, sizeof btrrc, "%s/.btrrc", home);
     if (strlen(btr) >= sizeof bsh) {
         fprintf(stderr, "FAIL btr bsh\n");
         return 1;
@@ -603,6 +689,41 @@ int main(int argc, char **argv) {
         }
         buf_free(&raw);
     }
+    opt[0].need = "38;2;";
+    opt[0].send = "ls -\t";
+    opt[1].need = "\033[7m-1";
+    opt[1].send = "\025exit 0\n";
+    opt_one[0].need = "38;2;";
+    opt_one[0].send = "echo -\t";
+    opt_one[1].need = "-n";
+    opt_one[1].send = "\nexit 0\n";
+    opt_git[0].need = "38;2;";
+    opt_git[0].send = "git s\t";
+    opt_git[1].need = "\033[7mshow";
+    opt_git[1].send = "\025exit 0\n";
+    {
+        Buf raw;
+        int code = 0;
+        int have = 0;
+        run_steps(btr, argv_btr, env, plain, opt, 2, 12, &raw, &code, &have);
+        if (!opt_ok(have, code, &raw)) {
+            show_pty("opt", have, code, &raw);
+            bad("opt", "pty output did not match");
+        }
+        buf_free(&raw);
+        run_steps(btr, argv_btr, env, plain, opt_one, 2, 12, &raw, &code, &have);
+        if (!opt_one_ok(have, code, &raw)) {
+            show_pty("opt-one", have, code, &raw);
+            bad("opt-one", "pty output did not match");
+        }
+        buf_free(&raw);
+        run_steps(btr, argv_btr, env, plain, opt_git, 2, 12, &raw, &code, &have);
+        if (!opt_git_ok(have, code, &raw)) {
+            show_pty("opt-git", have, code, &raw);
+            bad("opt-git", "pty output did not match");
+        }
+        buf_free(&raw);
+    }
     snprintf(aaone, sizeof aaone, "%s/aaone", plain);
     snprintf(aatwo, sizeof aatwo, "%s/aatwo", plain);
     if (write_text(aaone, "") != 0 || write_text(aatwo, "") != 0) {
@@ -709,6 +830,49 @@ int main(int argc, char **argv) {
         if (!login_ok(have, code, &raw)) {
             show_pty("login-bsh", have, code, &raw);
             bad("login-bsh", "pty output did not match");
+        }
+        buf_free(&raw);
+    }
+    env_free(env);
+
+    write_text(btrrc, "echo BTRRCMARK\nalias btrmark=echo\n");
+    env = base_env(home, root);
+    {
+        Step rc[2];
+        Buf raw;
+        int code = 0;
+        int have = 0;
+        rc[0].need = "BTRRCMARK";
+        rc[0].send = "btrmark RCALIAS\n";
+        rc[1].need = "RCALIAS";
+        rc[1].send = "exit 0\n";
+        run_steps(btr, argv_btr, env, plain, rc, 2, 12, &raw, &code, &have);
+        if (!rc_alias_ok(have, code, &raw)) {
+            show_pty("btrrc", have, code, &raw);
+            bad("btrrc", "pty output did not match");
+        }
+        buf_free(&raw);
+        run_steps(login_btr, argv_login_btr, env, plain, color, 1, 12, &raw, &code, &have);
+        if (!rc_login_ok(have, code, &raw)) {
+            show_pty("btrrc-login", have, code, &raw);
+            bad("btrrc-login", "pty output did not match");
+        }
+        buf_free(&raw);
+    }
+    env_free(env);
+
+    env = base_env(home, root);
+    env_set(&env, "PS1", "P ");
+    {
+        Buf raw;
+        int code = 0;
+        int have = 0;
+        plain_step[0].need = "P ";
+        plain_step[0].send = "echo HI\nexit 0\n";
+        run_steps(bin, argv_bin, env, plain, plain_step, 1, 8, &raw, &code, &have);
+        if (!rc_plain_ok(have, code, &raw)) {
+            show_pty("btrrc-plain", have, code, &raw);
+            bad("btrrc-plain", "pty output did not match");
         }
         buf_free(&raw);
     }

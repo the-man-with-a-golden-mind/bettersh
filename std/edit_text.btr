@@ -1,0 +1,474 @@
+#!/usr/bin/env bettersh
+
+# Text helpers for the editor. Columns are Unicode scalar indexes into one line.
+# Display columns count a tab to the next tab stop and a wide character as two.
+
+import std/ui
+
+# Returns v as text. A string that is only one interpolation keeps the value's kind.
+fn str(v) {
+  let t = "@{ v } "
+  return t.slice(0, t.length - 1)
+}
+
+fn is_space(ch) {
+  return ch == " " || ch == "\t"
+}
+
+# Letters, digits, underscore, and every scalar past ASCII belong to words.
+fn is_word(ch) {
+  if ch >= "a" && ch <= "z" { return true }
+  if ch >= "A" && ch <= "Z" { return true }
+  if ch >= "0" && ch <= "9" { return true }
+  if ch == "_" { return true }
+  return ord(ch) > 127
+}
+
+fn is_upper(ch) {
+  return ch >= "A" && ch <= "Z"
+}
+
+fn is_lower(ch) {
+  return ch >= "a" && ch <= "z"
+}
+
+fn is_digit(ch) {
+  return ch >= "0" && ch <= "9"
+}
+
+# 0 for blank, 1 for a word scalar, 2 for punctuation.
+fn class_of(ch) {
+  if is_space(ch) { return 0 }
+  if is_word(ch) { return 1 }
+  return 2
+}
+
+# The end of the next word, punctuation run, or the line end. Ctrl-Right stops here.
+fn word_right(line, col) {
+  let n = line.length
+  let i = col
+  while i < n && is_space(line[i]) { let i = i + 1 }
+  if i >= n { return n }
+  let k = class_of(line[i])
+  while i < n && class_of(line[i]) == k { let i = i + 1 }
+  return i
+}
+
+# The start of the previous word or punctuation run. Ctrl-Left stops here.
+fn word_left(line, col) {
+  let i = col
+  if i > line.length { let i = line.length }
+  while i > 0 && is_space(line[i - 1]) { let i = i - 1 }
+  if i == 0 { return 0 }
+  let k = class_of(line[i - 1])
+  while i > 0 && class_of(line[i - 1]) == k { let i = i - 1 }
+  return i
+}
+
+# True when a subword starts at i: after a blank or a class change, at camelCase, or after _.
+fn sub_start(line, i) {
+  if i <= 0 || i >= line.length { return false }
+  let prev = line[i - 1]
+  let cur = line[i]
+  if is_space(cur) { return false }
+  if class_of(prev) != class_of(cur) { return true }
+  if prev == "_" && cur != "_" { return true }
+  if is_word(cur) {
+    if is_lower(prev) && is_upper(cur) { return true }
+    if is_digit(prev) != is_digit(cur) { return true }
+    if is_upper(prev) && is_upper(cur) && i + 1 < line.length && is_lower(line[i + 1]) { return true }
+  }
+  return false
+}
+
+# True when a subword ends at i, so line[i - 1] is its last scalar.
+fn sub_end(line, i) {
+  if i <= 0 || i > line.length { return false }
+  if is_space(line[i - 1]) { return false }
+  if i == line.length { return true }
+  if is_space(line[i]) { return true }
+  return sub_start(line, i)
+}
+
+# Alt-Right: the end of the next subword.
+fn sub_right(line, col) {
+  let n = line.length
+  let i = col
+  while i < n && is_space(line[i]) { let i = i + 1 }
+  if i >= n { return n }
+  let i = i + 1
+  while i < n && !sub_end(line, i) { let i = i + 1 }
+  return i
+}
+
+# Alt-Left: the start of the previous subword.
+fn sub_left(line, col) {
+  let i = col
+  if i > line.length { let i = line.length }
+  while i > 0 && is_space(line[i - 1]) { let i = i - 1 }
+  if i == 0 { return 0 }
+  let i = i - 1
+  while i > 0 && !sub_start(line, i) { let i = i - 1 }
+  return i
+}
+
+# The run of one class around col: { a, b }. A caret after a word still finds that word.
+fn word_range(line, col) {
+  let n = line.length
+  if n == 0 { return { a: 0, b: 0 } }
+  let at = col
+  if at >= n { let at = n - 1 }
+  if at > 0 && class_of(line[at]) != 1 && class_of(line[at - 1]) == 1 { let at = at - 1 }
+  let k = class_of(line[at])
+  let a = at
+  while a > 0 && class_of(line[a - 1]) == k { let a = a - 1 }
+  let b = at + 1
+  while b < n && class_of(line[b]) == k { let b = b + 1 }
+  return { a: a, b: b }
+}
+
+# The identifier around col, or an empty range when the caret is not touching one.
+fn ident_range(line, col) {
+  let n = line.length
+  let a = col
+  if a > n { let a = n }
+  let b = a
+  while a > 0 && is_word(line[a - 1]) { let a = a - 1 }
+  while b < n && is_word(line[b]) { let b = b + 1 }
+  return { a: a, b: b }
+}
+
+# Count of leading blanks.
+fn lead(line) {
+  let i = 0
+  while i < line.length && is_space(line[i]) { let i = i + 1 }
+  return i
+}
+
+fn indent_of(line) {
+  return line.slice(0, lead(line))
+}
+
+fn blank(line) {
+  return lead(line) == line.length
+}
+
+# Display columns of one scalar that starts at display column col.
+fn cell(ch, col, tab) {
+  if ch == "\t" { return tab - (col % tab) }
+  let n = ord(ch)
+  if n < 128 { return 1 }
+  if ui.zero_width(n) { return 0 }
+  if ui.wide(n) { return 2 }
+  return 1
+}
+
+# Display column of scalar index idx.
+fn col_at(line, idx, tab) {
+  let n = idx
+  if n > line.length { let n = line.length }
+  let col = 0
+  let i = 0
+  while i < n {
+    let col = col + cell(line[i], col, tab)
+    let i = i + 1
+  }
+  return col
+}
+
+# The scalar index whose cell holds display column want. Past the end is the length.
+fn index_at(line, want, tab) {
+  let col = 0
+  let i = 0
+  while i < line.length {
+    let w = cell(line[i], col, tab)
+    if col + w > want {
+      # The nearer edge of a wide cell wins.
+      if w > 1 && want - col >= (w + 1) / 2 { return i + 1 }
+      return i
+    }
+    let col = col + w
+    let i = i + 1
+  }
+  return line.length
+}
+
+# Steps right over one scalar and any zero-width marks after it.
+fn next_char(line, col) {
+  if col >= line.length { return line.length }
+  let i = col + 1
+  while i < line.length && ord(line[i]) >= 768 && ui.zero_width(ord(line[i])) { let i = i + 1 }
+  return i
+}
+
+fn prev_char(line, col) {
+  if col <= 0 { return 0 }
+  let i = col - 1
+  while i > 0 && ord(line[i]) >= 768 && ui.zero_width(ord(line[i])) { let i = i - 1 }
+  return i
+}
+
+# True when line[at, at + len) is a whole word: no word scalar touches either edge.
+fn whole_at(line, at, len) {
+  if at > 0 && is_word(line[at - 1]) { return false }
+  let end = at + len
+  if end < line.length && is_word(line[end]) { return false }
+  return true
+}
+
+# The first match of pat in line at or after from, or -1. hay is line, lowered when case is off.
+fn find_in(line, hay, pat, from, whole) {
+  if pat.length == 0 { return 0 - 1 }
+  let i = from
+  if i < 0 { let i = 0 }
+  while i + pat.length <= hay.length {
+    let rest = hay.slice(i, hay.length)
+    let at = rest.index(pat)
+    if at < 0 { return 0 - 1 }
+    let hit = i + at
+    if !whole || whole_at(line, hit, pat.length) { return hit }
+    let i = hit + 1
+  }
+  return 0 - 1
+}
+
+# The last match of pat in line that starts before limit, or -1.
+fn find_back(line, hay, pat, limit, whole) {
+  let last = 0 - 1
+  let i = 0
+  let going = true
+  while going {
+    let at = find_in(line, hay, pat, i, whole)
+    if at < 0 || at >= limit {
+      let going = false
+    } else {
+      let last = at
+      let i = at + 1
+    }
+  }
+  return last
+}
+
+# Every match start in line, without overlaps.
+fn find_all(line, hay, pat, whole) {
+  let out = []
+  if pat.length == 0 { return out }
+  let i = 0
+  let going = true
+  while going {
+    let at = find_in(line, hay, pat, i, whole)
+    if at < 0 {
+      let going = false
+    } else {
+      let out = out.push(at)
+      let i = at + pat.length
+    }
+  }
+  return out
+}
+
+fn opener_of(ch) {
+  if ch == ")" { return "(" }
+  if ch == "]" { return "[" }
+  if ch == "}" { return "{" }
+  return ""
+}
+
+fn closer_of(ch) {
+  if ch == "(" { return ")" }
+  if ch == "[" { return "]" }
+  if ch == "{" { return "}" }
+  return ""
+}
+
+fn is_bracket(ch) {
+  return closer_of(ch) != "" || opener_of(ch) != ""
+}
+
+# The line comment token for a language from edit_syntax.lang, or "".
+fn comment_token(lang) {
+  if lang == "js" || lang == "ts" || lang == "rust" || lang == "c" || lang == "go" { return "//" }
+  if lang == "lua" { return "--" }
+  if lang == "btr" || lang == "sh" || lang == "py" || lang == "" { return "#" }
+  return "#"
+}
+
+# A display name for the status bar.
+fn lang_title(lang) {
+  if lang == "js" { return "JavaScript" }
+  if lang == "ts" { return "TypeScript" }
+  if lang == "rust" { return "Rust" }
+  if lang == "sh" { return "Shell" }
+  if lang == "btr" { return "BetterSh" }
+  if lang == "py" { return "Python" }
+  if lang == "lua" { return "Lua" }
+  return "Plain Text"
+}
+
+# Spaces up to the next tab stop from display column col.
+fn tab_fill(col, tab) {
+  let n = tab - (col % tab)
+  return " ".repeat(n)
+}
+
+fn to_int(text) {
+  let n = 0
+  let i = 0
+  let neg = false
+  if text.length > 0 && text[0] == "-" {
+    let neg = true
+    let i = 1
+  }
+  while i < text.length {
+    let c = text[i]
+    if c < "0" || c > "9" {
+      if neg { return 0 - n }
+      return n
+    }
+    let n = n * 10 + "0123456789".index(c)
+    let i = i + 1
+  }
+  if neg { return 0 - n }
+  return n
+}
+
+fn is_digits(text) {
+  if text.length == 0 { return false }
+  let i = 0
+  while i < text.length {
+    if !is_digit(text[i]) { return false }
+    let i = i + 1
+  }
+  return true
+}
+
+fn word_start(name, i) {
+  if i == 0 { return true }
+  let prev = name[i - 1]
+  if prev == "/" || prev == "_" || prev == "-" || prev == " " || prev == "." || prev == ":" { return true }
+  return is_lower(prev) && is_upper(name[i])
+}
+
+# One alignment of q in h from start: a following scalar that is next in h wins, then the next
+# copy at a word start, then any next copy. Returns the score, or -1.
+fn fuzzy_from(q, h, name, start) {
+  let score = 0
+  let hi = start
+  let qi = 0
+  let last = 0 - 2
+  while qi < q.length {
+    let c = q[qi]
+    let at = 0 - 1
+    if hi < h.length && h[hi] == c && last == hi - 1 { let at = hi }
+    if at < 0 {
+      let k = hi
+      let any = 0 - 1
+      while k < h.length && at < 0 {
+        if h[k] == c {
+          if any < 0 { let any = k }
+          if word_start(name, k) { let at = k }
+        }
+        let k = k + 1
+      }
+      if at < 0 { let at = any }
+    }
+    if at < 0 { return 0 - 1 }
+    let bonus = 1
+    if word_start(name, at) { let bonus = 8 }
+    if at == last + 1 { let bonus = bonus + 6 }
+    let score = score + bonus
+    let last = at
+    let hi = at + 1
+    let qi = qi + 1
+  }
+  return score
+}
+
+# The fuzzy score of query in name, or -1 when query is not a subsequence.
+# Runs of matches and matches at word starts score higher. Shorter names win ties.
+fn fuzzy(query, name) {
+  if query.length == 0 { return 0 }
+  let q = query.lower()
+  let h = name.lower()
+  let best = 0 - 1
+  let tries = 0
+  let i = 0
+  while i < h.length && tries < 12 {
+    if h[i] == q[0] {
+      let got = fuzzy_from(q, h, name, i)
+      if got > best { let best = got }
+      let tries = tries + 1
+    }
+    let i = i + 1
+  }
+  if best < 0 { return 0 - 1 }
+  let score = best * 20 - h.length
+  if score < 1 { let score = 1 }
+  return score
+}
+
+# Sorts items by score, highest first. Equal scores keep their order.
+fn by_score(items) {
+  let n = items.length
+  let keyed = []
+  let i = 0
+  while i < n {
+    let s = 999999 - items[i].score
+    if s < 0 { let s = 0 }
+    let pad = str(s)
+    while pad.length < 6 { let pad = "0@{ pad }" }
+    let idx = str(i)
+    while idx.length < 7 { let idx = "0@{ idx }" }
+    let keyed = keyed.push("@{ pad }@{ idx }")
+    let i = i + 1
+  }
+  let keyed = keyed.sort()
+  let out = []
+  let i = 0
+  while i < n {
+    let k = keyed[i]
+    let at = to_int(k.slice(6, 13))
+    let out = out.push(items[at])
+    let i = i + 1
+  }
+  return out
+}
+
+# True when the scalars of q appear in h in order.
+fn subseq(q, h) {
+  let at = 0
+  let i = 0
+  while i < q.length {
+    let k = h.slice(at, h.length).index(q[i])
+    if k < 0 { return false }
+    let at = at + k + 1
+    let i = i + 1
+  }
+  return true
+}
+
+# Where each screen line of a wrapped line starts, as scalar indexes. The first is 0.
+# A line breaks after the last blank that fits, or inside a word longer than width.
+fn segments(line, width, tab) {
+  let out = [0]
+  if width < 2 { return out }
+  let col = 0
+  let start_col = 0
+  let space = 0 - 1
+  let i = 0
+  while i < line.length {
+    let ch = line[i]
+    let w = cell(ch, col, tab)
+    if col + w - start_col > width && i > out[out.length - 1] {
+      let cut = i
+      if space > out[out.length - 1] { let cut = space }
+      let out = out.push(cut)
+      let start_col = col_at(line, cut, tab)
+      let space = 0 - 1
+    }
+    if is_space(ch) { let space = i + 1 }
+    let col = col + w
+    let i = i + 1
+  }
+  return out
+}

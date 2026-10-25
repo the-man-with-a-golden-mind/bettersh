@@ -1,0 +1,1568 @@
+#!/usr/bin/env bettersh
+
+# Editing commands on one document. Every command works on all selections at once.
+# The app module maps keys, menus, and the palette to these.
+
+import std/edit_text as tx
+import std/edit_doc as doc
+
+# The indent unit for one level: a tab, or tab-size spaces.
+fn unit(d) {
+  if d.spaces { return " ".repeat(d.tab) }
+  return "\t"
+}
+
+fn last_row(d) {
+  return d.lines.length - 1
+}
+
+# Moves the selections. pos(d, s) returns { r, c } for the new head, and may set goal.
+# With extend the anchor stays, otherwise the selection becomes a caret.
+fn move_with(d, extend, keep_goal, pos) {
+  let out = []
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let to = pos(d, s)
+    let ns = doc.caret(to.r, to.c)
+    if extend { let ns = doc.span(s.ar, s.ac, to.r, to.c) }
+    if keep_goal && to.has("goal") { let junk = map_set(ns, "goal", to.goal) }
+    let junk = map_set(ns, "p", s.p)
+    let out = out.push(ns)
+    let i = i + 1
+  }
+  doc.set_sels(d, out)
+  doc.seal(d)
+}
+
+# The display column of the head on its screen line. Up and Down keep it.
+fn goal_of(d, s) {
+  if s.goal >= 0 { return s.goal }
+  let list = doc.segs(d, s.hr)
+  let k = doc.seg_of(list, s.hc)
+  let text = d.lines[s.hr]
+  return tx.col_at(text, s.hc, d.tab) - tx.col_at(text, list[k], d.tab)
+}
+
+# Moves rows screen lines up (negative) or down. Wrapped lines count each screen line and
+# folded rows are skipped. Past the first line is its start, past the last is its end.
+fn vertical(d, s, rows) {
+  let goal = goal_of(d, s)
+  let r = s.hr
+  let list = doc.segs(d, r)
+  let k = doc.seg_of(list, s.hc)
+  let n = rows
+  if n < 0 { let n = 0 - n }
+  while n > 0 {
+    if rows < 0 {
+      if k > 0 {
+        let k = k - 1
+      } else {
+        let up = doc.shown_row(d, r, 0 - 1)
+        if up < 0 { return { r: r, c: 0, goal: goal } }
+        let r = up
+        let list = doc.segs(d, r)
+        let k = list.length - 1
+      }
+    } else {
+      if k < list.length - 1 {
+        let k = k + 1
+      } else {
+        let down = doc.shown_row(d, r, 1)
+        if down < 0 { return { r: r, c: d.lines[r].length, goal: goal } }
+        let r = down
+        let list = doc.segs(d, r)
+        let k = 0
+      }
+    }
+    let n = n - 1
+  }
+  let text = d.lines[r]
+  let base = tx.col_at(text, list[k], d.tab)
+  let c = tx.index_at(text, base + goal, d.tab)
+  if k + 1 < list.length && c >= list[k + 1] { let c = list[k + 1] - 1 }
+  if c < list[k] { let c = list[k] }
+  return { r: r, c: c, goal: goal }
+}
+
+# Where the head goes for a named motion.
+fn motion(d, s, how, page) {
+  let text = d.lines[s.hr]
+  if how == "left" {
+    if s.hc > 0 { return { r: s.hr, c: tx.prev_char(text, s.hc) } }
+    let up = doc.shown_row(d, s.hr, 0 - 1)
+    if up >= 0 { return { r: up, c: d.lines[up].length } }
+    return { r: 0, c: 0 }
+  }
+  if how == "right" {
+    if s.hc < text.length { return { r: s.hr, c: tx.next_char(text, s.hc) } }
+    let down = doc.shown_row(d, s.hr, 1)
+    if down >= 0 { return { r: down, c: 0 } }
+    return { r: s.hr, c: s.hc }
+  }
+  if how == "up" { return vertical(d, s, 0 - 1) }
+  if how == "down" { return vertical(d, s, 1) }
+  if how == "page_up" { return vertical(d, s, 0 - page) }
+  if how == "page_down" { return vertical(d, s, page) }
+  if how == "home" {
+    let lead = tx.lead(text)
+    if s.hc == lead { return { r: s.hr, c: 0 } }
+    return { r: s.hr, c: lead }
+  }
+  if how == "end" { return { r: s.hr, c: text.length } }
+  if how == "word_left" {
+    if s.hc == 0 && s.hr > 0 { return { r: s.hr - 1, c: d.lines[s.hr - 1].length } }
+    return { r: s.hr, c: tx.word_left(text, s.hc) }
+  }
+  if how == "word_right" {
+    if s.hc >= text.length && s.hr < last_row(d) { return { r: s.hr + 1, c: 0 } }
+    return { r: s.hr, c: tx.word_right(text, s.hc) }
+  }
+  if how == "sub_left" {
+    if s.hc == 0 && s.hr > 0 { return { r: s.hr - 1, c: d.lines[s.hr - 1].length } }
+    return { r: s.hr, c: tx.sub_left(text, s.hc) }
+  }
+  if how == "sub_right" {
+    if s.hc >= text.length && s.hr < last_row(d) { return { r: s.hr + 1, c: 0 } }
+    return { r: s.hr, c: tx.sub_right(text, s.hc) }
+  }
+  if how == "doc_start" { return { r: 0, c: 0 } }
+  if how == "doc_end" { return { r: last_row(d), c: d.lines[last_row(d)].length } }
+  return { r: s.hr, c: s.hc }
+}
+
+# Moves every caret by a motion. Left and Right without Shift first collapse a selection to its edge.
+fn move(d, how, extend, page) {
+  move_with(d, extend, true, fn(dd, s) {
+    if !extend && !doc.empty(s) {
+      if how == "left" { return doc.lo(s) }
+      if how == "right" { return doc.hi(s) }
+    }
+    return motion(dd, s, how, page)
+  })
+}
+
+fn caret_at(d, r, c) {
+  let s = doc.caret(doc.clamp_row(d, r), 0)
+  let junk = map_set(s, "hc", doc.clamp_col(d, s.hr, c))
+  let junk = map_set(s, "ac", s.hc)
+  doc.single(d, s)
+  doc.seal(d)
+}
+
+fn select_all(d) {
+  let n = last_row(d)
+  doc.single(d, doc.span(0, 0, n, d.lines[n].length))
+}
+
+# Escape: several selections become the primary one, and one selection becomes a caret.
+fn single_selection(d) {
+  if d.sels.length > 1 {
+    let p = doc.copy_sel(doc.primary(d))
+    doc.single(d, p)
+    return true
+  }
+  let s = d.sels[0]
+  if !doc.empty(s) {
+    doc.single(d, doc.caret(s.hr, s.hc))
+    return true
+  }
+  return false
+}
+
+fn pair_close(ch) {
+  if ch == "(" { return ")" }
+  if ch == "[" { return "]" }
+  if ch == "{" { return "}" }
+  if ch == "\"" || ch == "'" || ch == "`" { return ch }
+  return ""
+}
+
+fn is_quote(ch) {
+  return ch == "\"" || ch == "'" || ch == "`"
+}
+
+fn is_closer(ch) {
+  return ch == ")" || ch == "]" || ch == "}" || is_quote(ch)
+}
+
+# True when every caret is empty and sits right before ch.
+fn all_before(d, ch) {
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    if !doc.empty(s) { return false }
+    let text = d.lines[s.hr]
+    if s.hc >= text.length || text[s.hc] != ch { return false }
+    let i = i + 1
+  }
+  return true
+}
+
+# A pair opens only before a blank, a closer, or the line end. A quote also needs no word before it.
+fn pair_ok(d, s, ch) {
+  let text = d.lines[s.hr]
+  if s.hc < text.length {
+    let next = text[s.hc]
+    if !tx.is_space(next) && next != ")" && next != "]" && next != "}" && next != "," && next != ";" && next != ":" { return false }
+  }
+  if is_quote(ch) {
+    if s.hc > 0 && (tx.is_word(text[s.hc - 1]) || text[s.hc - 1] == ch) { return false }
+    let n = 0
+    let i = 0
+    while i < s.hc {
+      if text[i] == ch { let n = n + 1 }
+      let i = i + 1
+    }
+    if n % 2 == 1 { return false }
+  }
+  return true
+}
+
+# Types one character at every caret. Brackets and quotes pair up and wrap selections.
+fn type_char(d, ch, auto_match) {
+  let close = ""
+  if auto_match { let close = pair_close(ch) }
+  if auto_match && is_closer(ch) && all_before(d, ch) {
+    move(d, "right", false, 1)
+    return null
+  }
+  # Typing after a blank starts a new undo step, so undo takes back about a word.
+  if d.typed == " " && ch != " " { doc.seal(d) }
+  let junk = map_set(d, "typed", ch)
+  doc.edit_sels(d, "type", fn(dd, s) {
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    if close != "" && !doc.empty(s) {
+      let inner = doc.get_text(dd, a.r, a.c, b.r, b.c)
+      return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: "@{ ch }@{ inner }@{ close }", place: "inner" }
+    }
+    if close != "" && pair_ok(dd, s, ch) {
+      return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: "@{ ch }@{ close }", place: "before" }
+    }
+    return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: ch, place: "end" }
+  })
+  return null
+}
+
+fn insert_text(d, text, kind) {
+  doc.insert(d, kind, text)
+  doc.seal(d)
+}
+
+# Enter: a new line with the indent of this one. Between a bracket pair the closer goes one line lower.
+fn newline(d, auto_indent) {
+  doc.edit_sels(d, "line", fn(dd, s) {
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    let text = dd.lines[a.r]
+    let after = dd.lines[b.r]
+    let indent = ""
+    if auto_indent {
+      let indent = tx.indent_of(text)
+      if indent.length > a.c { let indent = indent.slice(0, a.c) }
+    }
+    let start = a.c
+    if auto_indent && tx.blank(text.slice(0, a.c)) && tx.blank(after.slice(b.c, after.length)) && a.r == b.r {
+      let start = 0
+      let b = { r: b.r, c: after.length }
+    }
+    let prev = ""
+    if a.c > 0 { let prev = text[a.c - 1] }
+    let next = ""
+    if b.c < after.length { let next = after[b.c] }
+    let more = ""
+    if auto_indent && (prev == "{" || prev == "[" || prev == "(" || (prev == ":" && dd.lang == "py")) { let more = unit(dd) }
+    if auto_indent && more != "" && next != "" && tx.closer_of(prev) == next {
+      let body = "\n@{ indent }@{ more }\n@{ indent }"
+      return { r1: a.r, c1: start, r2: b.r, c2: b.c, text: body, place: "at", at_r: 1, at_c: indent.length + more.length }
+    }
+    let rest = after.slice(b.c, after.length)
+    let lead = tx.lead(rest)
+    return { r1: a.r, c1: start, r2: b.r, c2: b.c + lead, text: "\n@{ indent }@{ more }", place: "end" }
+  })
+  doc.seal(d)
+}
+
+# Width of the indent step that Backspace removes in leading spaces.
+fn back_step(d, text, c) {
+  if !d.spaces || c == 0 { return 1 }
+  let i = 0
+  while i < c {
+    if text[i] != " " { return 1 }
+    let i = i + 1
+  }
+  let n = c % d.tab
+  if n == 0 { let n = d.tab }
+  return n
+}
+
+fn backspace(d, auto_match) {
+  doc.edit_sels(d, "back", fn(dd, s) {
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    if !doc.empty(s) { return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: "" } }
+    let text = dd.lines[s.hr]
+    if s.hc == 0 {
+      if s.hr == 0 { return null }
+      let up = dd.lines[s.hr - 1]
+      return { r1: s.hr - 1, c1: up.length, r2: s.hr, c2: 0, text: "" }
+    }
+    let prev = text[s.hc - 1]
+    if auto_match && s.hc < text.length && pair_close(prev) != "" && text[s.hc] == pair_close(prev) {
+      return { r1: s.hr, c1: s.hc - 1, r2: s.hr, c2: s.hc + 1, text: "" }
+    }
+    let step = back_step(dd, text, s.hc)
+    let from = s.hc - step
+    if step == 1 { let from = tx.prev_char(text, s.hc) }
+    return { r1: s.hr, c1: from, r2: s.hr, c2: s.hc, text: "" }
+  })
+}
+
+fn delete_forward(d) {
+  doc.edit_sels(d, "del", fn(dd, s) {
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    if !doc.empty(s) { return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: "" } }
+    let text = dd.lines[s.hr]
+    if s.hc >= text.length {
+      if s.hr >= last_row(dd) { return null }
+      return { r1: s.hr, c1: s.hc, r2: s.hr + 1, c2: 0, text: "" }
+    }
+    return { r1: s.hr, c1: s.hc, r2: s.hr, c2: tx.next_char(text, s.hc), text: "" }
+  })
+}
+
+# Deletes from each caret to where a motion would take it. A selection is deleted as it is.
+fn delete_motion(d, how) {
+  doc.edit_sels(d, "cut", fn(dd, s) {
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    if !doc.empty(s) { return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: "" } }
+    let text = dd.lines[s.hr]
+    let to = motion(dd, s, how, 1)
+    if how == "bol" { let to = { r: s.hr, c: 0 } }
+    if how == "eol" {
+      let to = { r: s.hr, c: text.length }
+      if s.hc >= text.length && s.hr < last_row(dd) { let to = { r: s.hr + 1, c: 0 } }
+    }
+    if to.r == s.hr && to.c == s.hc { return null }
+    if doc.before(to.r, to.c, s.hr, s.hc) { return { r1: to.r, c1: to.c, r2: s.hr, c2: s.hc, text: "" } }
+    return { r1: s.hr, c1: s.hc, r2: to.r, c2: to.c, text: "" }
+  })
+  doc.seal(d)
+}
+
+# Indents every line a selection covers. Blank lines stay empty.
+fn indent_lines(d) {
+  let u = unit(d)
+  let blocks = doc.row_blocks(d, false)
+  doc.begin(d, "indent")
+  let i = 0
+  while i < blocks.length {
+    let r = blocks[i].a
+    while r <= blocks[i].b {
+      if d.lines[r].length > 0 {
+        let junk = doc.replace(d, r, 0, r, 0, u)
+        doc.move_cols(d, r, 0, u.length)
+      }
+      let r = r + 1
+    }
+    let i = i + 1
+  }
+  doc.commit(d)
+  doc.seal(d)
+}
+
+# Removes one indent level from every line a selection covers.
+fn unindent_lines(d) {
+  let blocks = doc.row_blocks(d, false)
+  doc.begin(d, "indent")
+  let i = 0
+  while i < blocks.length {
+    let r = blocks[i].a
+    while r <= blocks[i].b {
+      let text = d.lines[r]
+      let n = 0
+      if text.length > 0 && text[0] == "\t" { let n = 1 }
+      else {
+        while n < d.tab && n < text.length && text[n] == " " { let n = n + 1 }
+      }
+      if n > 0 {
+        let junk = doc.replace(d, r, 0, r, n, "")
+        doc.move_cols(d, r, 0, 0 - n)
+      }
+      let r = r + 1
+    }
+    let i = i + 1
+  }
+  doc.commit(d)
+  doc.seal(d)
+}
+
+# Tab: indents when a selection spans lines, otherwise inserts an indent at each caret.
+fn tab_key(d) {
+  let i = 0
+  while i < d.sels.length {
+    if doc.lo(d.sels[i]).r != doc.hi(d.sels[i]).r {
+      indent_lines(d)
+      return null
+    }
+    let i = i + 1
+  }
+  if !d.spaces {
+    doc.insert(d, "type", "\t")
+    return null
+  }
+  doc.edit_sels(d, "type", fn(dd, s) {
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    let col = tx.col_at(dd.lines[a.r], a.c, dd.tab)
+    return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: tx.tab_fill(col, dd.tab), place: "end" }
+  })
+  return null
+}
+
+fn starts_at(text, at, token) {
+  return text.slice(at, at + token.length) == token
+}
+
+# Toggles a line comment on every line the selections cover. A block whose lines all have the
+# token loses it. Otherwise the token goes in at the smallest indent of the block.
+fn toggle_comment(d) {
+  let token = tx.comment_token(d.lang)
+  let blocks = doc.row_blocks(d, true)
+  doc.begin(d, "comment")
+  let i = 0
+  while i < blocks.length {
+    let b = blocks[i]
+    let all = true
+    let least = 0 - 1
+    let r = b.a
+    while r <= b.b {
+      let text = d.lines[r]
+      if !tx.blank(text) {
+        let lead = tx.lead(text)
+        if least < 0 || lead < least { let least = lead }
+        if !starts_at(text, lead, token) { let all = false }
+      }
+      let r = r + 1
+    }
+    if least < 0 {
+      let least = 0
+      let all = false
+    }
+    let r = b.a
+    while r <= b.b {
+      let text = d.lines[r]
+      if all {
+        if !tx.blank(text) {
+          let lead = tx.lead(text)
+          let n = token.length
+          if starts_at(text, lead + n, " ") { let n = n + 1 }
+          let junk = doc.replace(d, r, lead, r, lead + n, "")
+          doc.move_cols(d, r, lead, 0 - n)
+        }
+      } else if !tx.blank(text) || b.a == b.b {
+        let at = least
+        if at > text.length { let at = text.length }
+        let add = "@{ token } "
+        let junk = doc.replace(d, r, at, r, at, add)
+        doc.move_cols(d, r, at, add.length)
+      }
+      let r = r + 1
+    }
+    let i = i + 1
+  }
+  doc.commit(d)
+  doc.seal(d)
+}
+
+# Copies each line, or each selection, right after itself.
+fn duplicate(d) {
+  doc.edit_sels(d, "dup", fn(dd, s) {
+    if doc.empty(s) {
+      let text = dd.lines[s.hr]
+      return { r1: s.hr, c1: text.length, r2: s.hr, c2: text.length, text: "\n@{ text }", place: "at", at_r: 1, at_c: s.hc }
+    }
+    let b = doc.hi(s)
+    return { r1: b.r, c1: b.c, r2: b.r, c2: b.c, text: doc.sel_text(dd, s), place: "select" }
+  })
+  doc.seal(d)
+}
+
+# Deletes every line a selection touches. Carets stay in their column on the next line.
+fn delete_lines(d) {
+  let blocks = doc.row_blocks(d, true)
+  let col = doc.primary(d).hc
+  doc.begin(d, "lines")
+  let i = blocks.length - 1
+  while i >= 0 {
+    let b = blocks[i]
+    if b.b < last_row(d) {
+      let junk = doc.replace(d, b.a, 0, b.b + 1, 0, "")
+    } else if b.a > 0 {
+      let junk = doc.replace(d, b.a - 1, d.lines[b.a - 1].length, b.b, d.lines[b.b].length, "")
+    } else {
+      let junk = doc.replace(d, 0, 0, b.b, d.lines[b.b].length, "")
+    }
+    let i = i - 1
+  }
+  let out = []
+  let gone = 0
+  let i = 0
+  while i < blocks.length {
+    let b = blocks[i]
+    let r = b.a - gone
+    if r > last_row(d) { let r = last_row(d) }
+    let c = col
+    if c > d.lines[r].length { let c = d.lines[r].length }
+    let out = out.push(doc.caret(r, c))
+    let gone = gone + b.b - b.a + 1
+    let i = i + 1
+  }
+  doc.set_sels(d, out)
+  doc.commit(d)
+  doc.seal(d)
+}
+
+# The last row of the unit that starts at row r: a folded row with its hidden rows, or r.
+fn unit_end(d, r) {
+  let i = 0
+  while i < d.folds.length {
+    if d.folds[i].a == r { return d.folds[i].b }
+    let i = i + 1
+  }
+  return r
+}
+
+# Swaps each block of selected lines with the line above (dir -1) or below (dir 1).
+# A folded line moves with what it hides, and stays folded.
+fn move_lines(d, dir) {
+  let blocks = doc.row_blocks(d, true)
+  if blocks.length == 0 { return false }
+  let i = 0
+  while i < blocks.length {
+    let junk = map_set(blocks[i], "b", unit_end(d, blocks[i].b))
+    let i = i + 1
+  }
+  if dir < 0 && blocks[0].a == 0 { return false }
+  if dir > 0 && blocks[blocks.length - 1].b >= last_row(d) { return false }
+  let keep = []
+  doc.begin(d, "move")
+  let shifts = []
+  let i = 0
+  while i < blocks.length {
+    let b = blocks[i]
+    let na = b.a - 1
+    let nb = b.a - 1
+    if dir > 0 {
+      let na = b.b + 1
+      let nb = unit_end(d, na)
+    } else if doc.hidden(d, na) {
+      let na = doc.fold_over(d, na).a
+    }
+    let size = b.b - b.a + 1
+    let other = nb - na + 1
+    # Folds in the block move by the other part's size, and the other part's folds the other way.
+    let k = 0
+    while k < d.folds.length {
+      let f = d.folds[k]
+      if f.a >= b.a && f.b <= b.b { let keep = keep.push({ a: f.a + dir * other, b: f.b + dir * other }) }
+      else if f.a >= na && f.b <= nb { let keep = keep.push({ a: f.a - dir * size, b: f.b - dir * size }) }
+      let k = k + 1
+    }
+    let body = doc.get_text(d, b.a, 0, b.b, d.lines[b.b].length)
+    let them = doc.get_text(d, na, 0, nb, d.lines[nb].length)
+    if dir < 0 {
+      let junk = doc.replace(d, na, 0, b.b, d.lines[b.b].length, "@{ body }\n@{ them }")
+    } else {
+      let junk = doc.replace(d, b.a, 0, nb, d.lines[nb].length, "@{ them }\n@{ body }")
+    }
+    let shifts = shifts.push({ a: b.a, b: b.b, by: dir * other })
+    let i = i + 1
+  }
+  let out = []
+  let lr = last_row(d)
+  let i = 0
+  while i < d.sels.length {
+    let s = doc.copy_sel(d.sels[i])
+    let by = dir
+    let k = 0
+    while k < shifts.length {
+      let sh = shifts[k]
+      if doc.lo(s).r >= sh.a && doc.lo(s).r <= sh.b { let by = sh.by }
+      let k = k + 1
+    }
+    let junk = map_set(s, "ar", s.ar + by)
+    let junk = map_set(s, "hr", s.hr + by)
+    # A selection that ended at the start of the line after the block now ends at the last line.
+    if s.ar > lr {
+      let junk = map_set(s, "ar", lr)
+      let junk = map_set(s, "ac", d.lines[lr].length)
+    }
+    if s.hr > lr {
+      let junk = map_set(s, "hr", lr)
+      let junk = map_set(s, "hc", d.lines[lr].length)
+    }
+    let out = out.push(s)
+    let i = i + 1
+  }
+  doc.set_sels(d, out)
+  let i = 0
+  while i < keep.length {
+    let junk = doc.add_fold(d, keep[i].a, keep[i].b)
+    let i = i + 1
+  }
+  doc.commit(d)
+  doc.seal(d)
+  return true
+}
+
+# Joins each line with the next one. Leading blanks of the next line become one space.
+fn join_lines(d) {
+  let blocks = doc.row_blocks(d, false)
+  doc.begin(d, "join")
+  let marks = []
+  let i = blocks.length - 1
+  while i >= 0 {
+    let b = blocks[i]
+    let stop = b.b
+    if stop == b.a { let stop = b.a + 1 }
+    if stop > last_row(d) { let stop = last_row(d) }
+    let r = stop - 1
+    while r >= b.a {
+      let left = d.lines[r]
+      let right = d.lines[r + 1]
+      let keep = left.length
+      while keep > 0 && tx.is_space(left[keep - 1]) { let keep = keep - 1 }
+      let lead = tx.lead(right)
+      let glue = " "
+      if keep == 0 || lead == right.length || right[lead] == ")" || right[lead] == "]" || right[lead] == "}" { let glue = "" }
+      let junk = doc.replace(d, r, keep, r + 1, lead, glue)
+      if r == b.a { let marks = marks.push(doc.caret(r, keep)) }
+      let r = r - 1
+    }
+    let i = i - 1
+  }
+  if marks.length > 0 && d.sels.length == blocks.length && d.sels.length == marks.length {
+    let all_empty = true
+    let k = 0
+    while k < d.sels.length {
+      if !doc.empty(d.sels[k]) { let all_empty = false }
+      let k = k + 1
+    }
+    if all_empty { doc.set_sels(d, marks) }
+  }
+  doc.commit(d)
+  doc.seal(d)
+}
+
+# Ctrl-Enter opens a line after each caret's line. Ctrl-Shift-Enter opens one before it.
+fn open_line(d, after) {
+  doc.edit_sels(d, "line", fn(dd, s) {
+    let text = dd.lines[s.hr]
+    let indent = tx.indent_of(text)
+    if after { return { r1: s.hr, c1: text.length, r2: s.hr, c2: text.length, text: "\n@{ indent }", place: "end" } }
+    return { r1: s.hr, c1: 0, r2: s.hr, c2: 0, text: "@{ indent }\n", place: "at", at_r: 0, at_c: indent.length }
+  })
+  doc.seal(d)
+}
+
+# Ctrl-L: selects each selection's lines through the start of the next line. Again adds a line.
+fn select_line(d) {
+  let out = []
+  let lr = last_row(d)
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    let ns = doc.span(a.r, 0, b.r + 1, 0)
+    if b.r + 1 > lr { let ns = doc.span(a.r, 0, lr, d.lines[lr].length) }
+    let junk = map_set(ns, "p", s.p)
+    let out = out.push(ns)
+    let i = i + 1
+  }
+  doc.set_sels(d, out)
+}
+
+# Ctrl-Shift-L: one selection per line of each multi-line selection, with the caret at its end.
+fn split_lines(d) {
+  let out = []
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    if a.r == b.r {
+      let out = out.push(doc.copy_sel(s))
+    } else {
+      let last = b.r
+      if b.c == 0 { let last = b.r - 1 }
+      let r = a.r
+      while r <= last {
+        let c1 = 0
+        if r == a.r { let c1 = a.c }
+        let c2 = d.lines[r].length
+        if r == b.r { let c2 = b.c }
+        let out = out.push(doc.span(r, c1, r, c2))
+        let r = r + 1
+      }
+    }
+    let i = i + 1
+  }
+  doc.set_sels(d, out)
+}
+
+# Adds a caret on the line above the topmost caret (dir -1) or below the lowest one (dir 1).
+fn add_caret(d, dir) {
+  let s = d.sels[0]
+  if dir > 0 { let s = d.sels[d.sels.length - 1] }
+  let r = s.hr + dir
+  if r < 0 || r > last_row(d) { return false }
+  let goal = goal_of(d, s)
+  let ns = doc.caret(r, tx.index_at(d.lines[r], goal, d.tab))
+  let junk = map_set(ns, "goal", goal)
+  let junk = map_set(ns, "p", true)
+  let out = []
+  let i = 0
+  while i < d.sels.length {
+    let c = doc.copy_sel(d.sels[i])
+    let junk = map_set(c, "p", false)
+    let out = out.push(c)
+    let i = i + 1
+  }
+  let out = out.push(ns)
+  doc.set_sels(d, out)
+  return true
+}
+
+fn word_sel(d, s) {
+  let text = d.lines[s.hr]
+  let w = tx.ident_range(text, s.hc)
+  if w.a == w.b { let w = tx.word_range(text, s.hc) }
+  return doc.span(s.hr, w.a, s.hr, w.b)
+}
+
+# A pattern with line breaks: compared line by line from each candidate start.
+fn search_multi(d, want, r, c, fold, forward) {
+  let parts = want.split("\n")
+  let n = d.lines.length
+  let step = 0
+  while step < n {
+    let row = (r + step) % n
+    if !forward { let row = (r - step + n) % n }
+    if row + parts.length <= n {
+      let text = d.lines[row]
+      let hay = text
+      if fold { let hay = text.lower() }
+      let first = parts[0]
+      let at = hay.length - first.length
+      if at >= 0 && hay.slice(at, hay.length) == first {
+        let ok = true
+        let k = 1
+        while ok && k < parts.length {
+          let t = d.lines[row + k]
+          if fold { let t = t.lower() }
+          if k == parts.length - 1 {
+            if t.slice(0, parts[k].length) != parts[k] { let ok = false }
+          } else if t != parts[k] {
+            let ok = false
+          }
+          let k = k + 1
+        }
+        let good = ok
+        if forward && step == 0 && at < c { let good = false }
+        if !forward && step == 0 && at >= c { let good = false }
+        if good { return { r: row, c: at } }
+      }
+    }
+    let step = step + 1
+  }
+  return null
+}
+
+# The next match of pat at or after r, c, wrapping once, as { r, c } or null.
+fn search_forward(d, pat, r, c, fold, whole) {
+  if pat == "" { return null }
+  let want = pat
+  if fold { let want = pat.lower() }
+  if want.index("\n") >= 0 { return search_multi(d, want, r, c, fold, true) }
+  let n = d.lines.length
+  let step = 0
+  while step <= n {
+    let row = (r + step) % n
+    let text = d.lines[row]
+    let hay = text
+    if fold { let hay = text.lower() }
+    let from = 0
+    if step == 0 { let from = c }
+    let at = tx.find_in(text, hay, want, from, whole)
+    if step == n && at >= c { let at = 0 - 1 }
+    if at >= 0 { return { r: row, c: at } }
+    let step = step + 1
+  }
+  return null
+}
+
+fn search_backward(d, pat, r, c, fold, whole) {
+  if pat == "" { return null }
+  let want = pat
+  if fold { let want = pat.lower() }
+  if want.index("\n") >= 0 { return search_multi(d, want, r, c, fold, false) }
+  let n = d.lines.length
+  let step = 0
+  while step <= n {
+    let row = (r - step + n * 2) % n
+    let text = d.lines[row]
+    let hay = text
+    if fold { let hay = text.lower() }
+    let limit = text.length + 1
+    if step == 0 { let limit = c }
+    let at = tx.find_back(text, hay, want, limit, whole)
+    if at >= 0 { return { r: row, c: at } }
+    let step = step + 1
+  }
+  return null
+}
+
+fn span_for(d, at, pat) {
+  let end = doc.end_of(at.r, at.c, pat)
+  if pat.index("\n") >= 0 {
+    let parts = pat.split("\n")
+    let end = { r: at.r + parts.length - 1, c: parts[parts.length - 1].length }
+  }
+  return doc.span(at.r, at.c, end.r, end.c)
+}
+
+fn already(d, sel) {
+  let a = doc.lo(sel)
+  let b = doc.hi(sel)
+  let i = 0
+  while i < d.sels.length {
+    let x = doc.lo(d.sels[i])
+    let y = doc.hi(d.sels[i])
+    if x.r == a.r && x.c == a.c && y.r == b.r && y.c == b.c { return true }
+    let i = i + 1
+  }
+  return false
+}
+
+# Ctrl-D: selects the word under each caret, then adds the next copy of the selection.
+# Returns a message, or "".
+fn find_under_expand(d) {
+  let all_empty = true
+  let i = 0
+  while i < d.sels.length {
+    if !doc.empty(d.sels[i]) { let all_empty = false }
+    let i = i + 1
+  }
+  if all_empty {
+    let out = []
+    let i = 0
+    while i < d.sels.length {
+      let ns = word_sel(d, d.sels[i])
+      let junk = map_set(ns, "p", d.sels[i].p)
+      let out = out.push(ns)
+      let i = i + 1
+    }
+    doc.set_sels(d, out)
+    let junk = map_set(d, "whole", true)
+    return ""
+  }
+  let p = doc.primary(d)
+  let pat = doc.sel_text(d, p)
+  if pat == "" { return "" }
+  let from = doc.hi(p)
+  let tries = 0
+  while tries < d.sels.length + 1 {
+    let at = search_forward(d, pat, from.r, from.c, false, d.whole)
+    if at == null { return "no more matches" }
+    let ns = span_for(d, at, pat)
+    if !already(d, ns) {
+      let out = []
+      let i = 0
+      while i < d.sels.length {
+        let c = doc.copy_sel(d.sels[i])
+        let junk = map_set(c, "p", false)
+        let out = out.push(c)
+        let i = i + 1
+      }
+      let junk = map_set(ns, "p", true)
+      let out = out.push(ns)
+      doc.set_sels(d, out)
+      return ""
+    }
+    let from = doc.hi(ns)
+    let tries = tries + 1
+  }
+  return "no more matches"
+}
+
+# Ctrl-K Ctrl-D: drops the primary selection and adds the next match instead.
+fn skip_occurrence(d) {
+  let p = doc.copy_sel(doc.primary(d))
+  if doc.empty(p) { return find_under_expand(d) }
+  let msg = find_under_expand(d)
+  if msg != "" { return msg }
+  let out = []
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    let x = doc.lo(p)
+    let y = doc.hi(p)
+    if !(a.r == x.r && a.c == x.c && b.r == y.r && b.c == y.c) { let out = out.push(doc.copy_sel(s)) }
+    let i = i + 1
+  }
+  doc.set_sels(d, out)
+  return ""
+}
+
+# Every match of pat as selections. Returns the count.
+fn select_matches(d, pat, fold, whole) {
+  if pat == "" { return 0 }
+  let out = []
+  let want = pat
+  if fold { let want = pat.lower() }
+  if want.index("\n") < 0 {
+    let r = 0
+    while r < d.lines.length {
+      let text = d.lines[r]
+      let hay = text
+      if fold { let hay = text.lower() }
+      let hits = tx.find_all(text, hay, want, whole)
+      let k = 0
+      while k < hits.length {
+        let out = out.push(doc.span(r, hits[k], r, hits[k] + want.length))
+        let k = k + 1
+      }
+      let r = r + 1
+    }
+  } else {
+    let at = search_forward(d, pat, 0, 0, fold, whole)
+    let first = at
+    let going = at != null
+    while going {
+      let ns = span_for(d, at, pat)
+      let out = out.push(ns)
+      let end = doc.hi(ns)
+      let at = search_forward(d, pat, end.r, end.c, fold, whole)
+      if at == null || doc.before(at.r, at.c, end.r, end.c) { let going = false }
+    }
+  }
+  if out.length == 0 { return 0 }
+  let junk = map_set(out[0], "p", true)
+  doc.set_sels(d, out)
+  return out.length
+}
+
+# Alt-F3: selects every copy of the selection, or of the word under the caret.
+fn select_all_occurrences(d) {
+  let p = doc.primary(d)
+  if doc.empty(p) {
+    let w = word_sel(d, p)
+    doc.single(d, w)
+    let junk = map_set(d, "whole", true)
+  }
+  let p = doc.primary(d)
+  let pat = doc.sel_text(d, p)
+  let whole = d.whole
+  return select_matches(d, pat, false, whole)
+}
+
+# The closer for the opener at r, c, or null.
+fn close_of(d, r, c) {
+  let open = d.lines[r][c]
+  let want = tx.closer_of(open)
+  let depth = 0
+  let row = r
+  let col = c
+  let steps = 0
+  while row < d.lines.length && steps < 4000 {
+    let text = d.lines[row]
+    let marks = doc.marks(d, row)
+    while col < text.length {
+      let m = "."
+      if col < marks.length { let m = marks[col] }
+      if m != "s" && m != "c" {
+        let ch = text[col]
+        if ch == open { let depth = depth + 1 }
+        if ch == want {
+          let depth = depth - 1
+          if depth == 0 { return { r: row, c: col } }
+        }
+      }
+      let col = col + 1
+    }
+    let row = row + 1
+    let col = 0
+    let steps = steps + 1
+  }
+  return null
+}
+
+# The opener for the closer at r, c, or null.
+fn open_of(d, r, c) {
+  let close = d.lines[r][c]
+  let want = tx.opener_of(close)
+  let depth = 0
+  let row = r
+  let col = c
+  let steps = 0
+  while row >= 0 && steps < 4000 {
+    let text = d.lines[row]
+    let marks = doc.marks(d, row)
+    while col >= 0 {
+      let m = "."
+      if col < marks.length { let m = marks[col] }
+      if m != "s" && m != "c" {
+        let ch = text[col]
+        if ch == close { let depth = depth + 1 }
+        if ch == want {
+          let depth = depth - 1
+          if depth == 0 { return { r: row, c: col } }
+        }
+      }
+      let col = col - 1
+    }
+    let row = row - 1
+    if row >= 0 { let col = d.lines[row].length - 1 }
+    let steps = steps + 1
+  }
+  return null
+}
+
+# The innermost bracket pair around r, c, as { a: { r, c }, b: { r, c } } with a on the opener, or null.
+fn enclosing(d, r, c) {
+  let depth = 0
+  let row = r
+  let col = c - 1
+  let steps = 0
+  while row >= 0 && steps < 2000 {
+    let text = d.lines[row]
+    let marks = doc.marks(d, row)
+    if col >= text.length { let col = text.length - 1 }
+    while col >= 0 {
+      let m = "."
+      if col < marks.length { let m = marks[col] }
+      if m != "s" && m != "c" {
+        let ch = text[col]
+        if tx.opener_of(ch) != "" { let depth = depth + 1 }
+        if tx.closer_of(ch) != "" {
+          if depth == 0 {
+            let mate = close_of(d, row, col)
+            if mate != null && !doc.before(mate.r, mate.c, r, c - 1) { return { a: { r: row, c: col }, b: mate } }
+          } else {
+            let depth = depth - 1
+          }
+        }
+      }
+      let col = col - 1
+    }
+    let row = row - 1
+    if row >= 0 { let col = d.lines[row].length - 1 }
+    let steps = steps + 1
+  }
+  return null
+}
+
+# Ctrl-Shift-M: selects the text inside the brackets around each caret, then the brackets too.
+fn expand_brackets(d) {
+  let out = []
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    let pair = enclosing(d, a.r, a.c)
+    let ns = doc.copy_sel(s)
+    if pair != null {
+      let ns = doc.span(pair.a.r, pair.a.c + 1, pair.b.r, pair.b.c)
+      if a.r == pair.a.r && a.c == pair.a.c + 1 && b.r == pair.b.r && b.c == pair.b.c {
+        let ns = doc.span(pair.a.r, pair.a.c, pair.b.r, pair.b.c + 1)
+      }
+    }
+    let junk = map_set(ns, "p", s.p)
+    let out = out.push(ns)
+    let i = i + 1
+  }
+  doc.set_sels(d, out)
+}
+
+# Ctrl-M: jumps to the bracket that matches the one beside the caret, or to the closer of the
+# brackets around it.
+fn jump_bracket(d) {
+  let out = []
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let text = d.lines[s.hr]
+    let c = s.hc
+    let to = null
+    if c < text.length && tx.closer_of(text[c]) != "" { let to = close_of(d, s.hr, c) }
+    else if c < text.length && tx.opener_of(text[c]) != "" { let to = open_of(d, s.hr, c) }
+    else if c > 0 && c - 1 < text.length && tx.opener_of(text[c - 1]) != "" { let to = open_of(d, s.hr, c - 1) }
+    else if c > 0 && c - 1 < text.length && tx.closer_of(text[c - 1]) != "" { let to = close_of(d, s.hr, c - 1) }
+    else {
+      let pair = enclosing(d, s.hr, c)
+      if pair != null { let to = pair.b }
+    }
+    let ns = doc.copy_sel(s)
+    if to != null {
+      let ns = doc.caret(to.r, to.c)
+      let junk = map_set(ns, "p", s.p)
+    }
+    let out = out.push(ns)
+    let i = i + 1
+  }
+  doc.set_sels(d, out)
+  doc.seal(d)
+}
+
+fn title_word(w) {
+  if w.length == 0 { return w }
+  return "@{ w.slice(0, 1).upper() }@{ w.slice(1, w.length).lower() }"
+}
+
+# Upper, lower, or title case for each selection, or the word under an empty caret.
+fn change_case(d, how) {
+  let empty_all = true
+  let i = 0
+  while i < d.sels.length {
+    if !doc.empty(d.sels[i]) { let empty_all = false }
+    let i = i + 1
+  }
+  if empty_all {
+    let out = []
+    let i = 0
+    while i < d.sels.length {
+      let ns = word_sel(d, d.sels[i])
+      let junk = map_set(ns, "p", d.sels[i].p)
+      let out = out.push(ns)
+      let i = i + 1
+    }
+    doc.set_sels(d, out)
+  }
+  doc.edit_sels(d, "case", fn(dd, s) {
+    if doc.empty(s) { return null }
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    let t = doc.sel_text(dd, s)
+    let nt = t.upper()
+    if how == "lower" { let nt = t.lower() }
+    if how == "title" {
+      let words = t.split(" ")
+      let k = 0
+      while k < words.length {
+        let junk = words.set(k, title_word(words[k]))
+        let k = k + 1
+      }
+      let nt = words.join(" ")
+    }
+    return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: nt, place: "select" }
+  })
+  doc.seal(d)
+}
+
+# Ctrl-T: swaps the characters around each caret. At a line end the two before it swap.
+fn transpose(d) {
+  doc.edit_sels(d, "swap", fn(dd, s) {
+    if !doc.empty(s) { return null }
+    let text = dd.lines[s.hr]
+    if text.length < 2 { return null }
+    let c = s.hc
+    if c >= text.length { let c = text.length - 1 }
+    if c < 1 { let c = 1 }
+    let pair = "@{ text[c] }@{ text[c - 1] }"
+    return { r1: s.hr, c1: c - 1, r2: s.hr, c2: c + 1, text: pair, place: "end" }
+  })
+  doc.seal(d)
+}
+
+fn sort_block(d, a, b) {
+  let rows = d.lines.slice(a, b + 1).sort()
+  let junk = doc.replace(d, a, 0, b, d.lines[b].length, rows.join("\n"))
+}
+
+# F9: sorts the selected lines, or the whole file when nothing is selected.
+fn sort_lines(d) {
+  let blocks = doc.row_blocks(d, false)
+  doc.begin(d, "sort")
+  let did = false
+  let i = 0
+  while i < blocks.length {
+    if blocks[i].b > blocks[i].a {
+      sort_block(d, blocks[i].a, blocks[i].b)
+      let did = true
+    }
+    let i = i + 1
+  }
+  if !did && d.sels.length == 1 && doc.empty(d.sels[0]) { sort_block(d, 0, last_row(d)) }
+  doc.commit(d)
+  doc.seal(d)
+}
+
+# Removes blanks at line ends. Carets past the new end move back.
+fn trim_trailing(d) {
+  doc.begin(d, "trim")
+  let r = 0
+  while r < d.lines.length {
+    let text = d.lines[r]
+    let k = text.length
+    while k > 0 && tx.is_space(text[k - 1]) { let k = k - 1 }
+    if k < text.length {
+      let junk = doc.replace(d, r, k, r, text.length, "")
+    }
+    let r = r + 1
+  }
+  doc.set_sels(d, d.sels)
+  return doc.commit(d)
+}
+
+# What Copy takes: { pieces, lines }. Empty selections copy their whole lines.
+fn copy_pieces(d) {
+  let any = false
+  let i = 0
+  while i < d.sels.length {
+    if !doc.empty(d.sels[i]) { let any = true }
+    let i = i + 1
+  }
+  let out = []
+  if any {
+    let i = 0
+    while i < d.sels.length {
+      if !doc.empty(d.sels[i]) { let out = out.push(doc.sel_text(d, d.sels[i])) }
+      let i = i + 1
+    }
+    return { pieces: out, lines: false }
+  }
+  let last = 0 - 1
+  let i = 0
+  while i < d.sels.length {
+    let r = d.sels[i].hr
+    if r != last { let out = out.push("@{ d.lines[r] }\n") }
+    let last = r
+    let i = i + 1
+  }
+  return { pieces: out, lines: true }
+}
+
+# Cut: deletes the selections, or the whole lines of empty ones.
+fn cut(d) {
+  let got = copy_pieces(d)
+  if got.lines {
+    delete_lines(d)
+    return got
+  }
+  doc.edit_sels(d, "cut", fn(dd, s) {
+    if doc.empty(s) { return null }
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: "" }
+  })
+  doc.seal(d)
+  return got
+}
+
+# Pastes clip { pieces, lines, text }. One piece per selection goes to each selection.
+# Whole lines copied from empty selections go in above the caret's line.
+fn paste(d, clip) {
+  let n = d.sels.length
+  let pieces = clip.pieces
+  let each = pieces.length == n && n > 1
+  if clip.lines && !each && pieces.length == 1 {
+    let line = pieces[0]
+    let all_empty = true
+    let i = 0
+    while i < n {
+      if !doc.empty(d.sels[i]) { let all_empty = false }
+      let i = i + 1
+    }
+    if all_empty {
+      doc.edit_sels(d, "paste", fn(dd, s) {
+        return { r1: s.hr, c1: 0, r2: s.hr, c2: 0, text: line, place: "at", at_r: line.split("\n").length - 1, at_c: s.hc }
+      })
+      doc.seal(d)
+      return null
+    }
+  }
+  doc.edit_sels(d, "paste", fn(dd, s) {
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    let t = clip.text
+    if each {
+      let t = pieces[s.k]
+      if clip.lines && t.length > 0 && t[t.length - 1] == "\n" { let t = t.slice(0, t.length - 1) }
+    }
+    return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: t, place: "end" }
+  })
+  doc.seal(d)
+  return null
+}
+
+fn ident_after(t, at) {
+  let i = at
+  while i < t.length && tx.is_space(t[i]) { let i = i + 1 }
+  let a = i
+  while i < t.length && tx.is_word(t[i]) { let i = i + 1 }
+  return t.slice(a, i)
+}
+
+fn ident_after_dotted(t, at) {
+  let i = at
+  while i < t.length && tx.is_space(t[i]) { let i = i + 1 }
+  let a = i
+  while i < t.length && (tx.is_word(t[i]) || t[i] == "." || t[i] == ":") { let i = i + 1 }
+  return t.slice(a, i)
+}
+
+# Lines that define something, for Goto Symbol: [{ name, row }].
+fn symbols(d) {
+  let out = []
+  let lang = d.lang
+  let r = 0
+  while r < d.lines.length {
+    let text = d.lines[r]
+    let t = text.slice(tx.lead(text), text.length)
+    let name = ""
+    if lang == "btr" || lang == "rust" {
+      let t2 = t
+      if t2.slice(0, 4) == "pub " { let t2 = t2.slice(4, t2.length) }
+      if t2.slice(0, 3) == "fn " { let name = ident_after(t2, 3) }
+      if lang == "rust" {
+        if t2.slice(0, 7) == "struct " { let name = ident_after(t2, 7) }
+        if t2.slice(0, 5) == "enum " { let name = ident_after(t2, 5) }
+        if t2.slice(0, 6) == "trait " { let name = ident_after(t2, 6) }
+        if t2.slice(0, 5) == "impl " { let name = "impl @{ t2.slice(5, t2.length).split("{")[0].trim() }" }
+      }
+    } else if lang == "py" {
+      if t.slice(0, 4) == "def " { let name = ident_after(t, 4) }
+      if t.slice(0, 10) == "async def " { let name = ident_after(t, 10) }
+      if t.slice(0, 6) == "class " { let name = ident_after(t, 6) }
+    } else if lang == "js" || lang == "ts" {
+      let t2 = t
+      if t2.slice(0, 7) == "export " { let t2 = t2.slice(7, t2.length) }
+      if t2.slice(0, 8) == "default " { let t2 = t2.slice(8, t2.length) }
+      if t2.slice(0, 6) == "async " { let t2 = t2.slice(6, t2.length) }
+      if t2.slice(0, 9) == "function " { let name = ident_after(t2, 9) }
+      if t2.slice(0, 6) == "class " { let name = ident_after(t2, 6) }
+      if t2.slice(0, 10) == "interface " { let name = ident_after(t2, 10) }
+      if t2.slice(0, 5) == "type " { let name = ident_after(t2, 5) }
+      if t2.slice(0, 6) == "const " && t2.contains("=>") { let name = ident_after(t2, 6) }
+    } else if lang == "go" {
+      if t.slice(0, 5) == "func " {
+        let rest = t.slice(5, t.length)
+        if rest.length > 0 && rest[0] == "(" {
+          let close = rest.index(")")
+          if close > 0 { let rest = rest.slice(close + 1, rest.length).trim() }
+        }
+        let name = ident_after(rest, 0)
+      }
+      if t.slice(0, 5) == "type " { let name = ident_after(t, 5) }
+    } else if lang == "lua" {
+      if t.slice(0, 9) == "function " { let name = ident_after_dotted(t, 9) }
+      if t.slice(0, 15) == "local function " { let name = ident_after_dotted(t, 15) }
+    } else if lang == "sh" {
+      if t.slice(0, 9) == "function " { let name = ident_after(t, 9) }
+      else if t.contains("()") && tx.lead(text) == 0 {
+        let head = t.split("(")[0].trim()
+        if head != "" && !head.contains(" ") { let name = head }
+      }
+    } else if lang == "c" {
+      if tx.lead(text) == 0 && t.contains("(") && !t.contains(";") && t.length > 0 && tx.is_word(t[0]) {
+        let head = t.split("(")[0]
+        let words = head.split(" ")
+        let last = words[words.length - 1]
+        while last.length > 0 && last[0] == "*" { let last = last.slice(1, last.length) }
+        if last != "" && last != "if" && last != "while" && last != "for" && last != "switch" && last != "return" { let name = last }
+      }
+    }
+    if name == "" && lang == "" && t.length > 1 && t[0] == "#" && tx.lead(text) == 0 {
+      let name = t
+    }
+    if name != "" { let out = out.push({ name: name, row: r }) }
+    let r = r + 1
+  }
+  return out
+}
+
+# How many matches of pat the document has, or -1 when it is too long to count quickly.
+fn count_matches(d, pat, fold, whole) {
+  if pat == "" { return 0 }
+  if d.lines.length > 50000 { return 0 - 1 }
+  let want = pat
+  if fold { let want = pat.lower() }
+  if want.index("\n") >= 0 { return 0 - 1 }
+  let n = 0
+  let r = 0
+  while r < d.lines.length {
+    let text = d.lines[r]
+    let hay = text
+    if fold { let hay = text.lower() }
+    if hay.index(want) >= 0 { let n = n + tx.find_all(text, hay, want, whole).length }
+    let r = r + 1
+  }
+  return n
+}
+
+# The 1-based number of the match that starts at r, c.
+fn match_index(d, pat, fold, whole, r, c) {
+  if pat == "" || d.lines.length > 50000 { return 0 }
+  let want = pat
+  if fold { let want = pat.lower() }
+  if want.index("\n") >= 0 { return 0 }
+  let n = 0
+  let row = 0
+  while row <= r {
+    let text = d.lines[row]
+    let hay = text
+    if fold { let hay = text.lower() }
+    if hay.index(want) >= 0 {
+      let hits = tx.find_all(text, hay, want, whole)
+      let k = 0
+      while k < hits.length {
+        if row < r || hits[k] <= c { let n = n + 1 }
+        let k = k + 1
+      }
+    }
+    let row = row + 1
+  }
+  return n
+}
+
+# True when the primary selection is exactly a match of pat.
+fn on_match(d, pat, fold) {
+  let s = doc.primary(d)
+  if doc.empty(s) { return false }
+  let t = doc.sel_text(d, s)
+  if fold { return t.lower() == pat.lower() }
+  return t == pat
+}
+
+# Replaces every match. Returns the count.
+fn replace_all(d, pat, repl, fold, whole) {
+  let n = select_matches(d, pat, fold, whole)
+  if n == 0 { return 0 }
+  doc.edit_sels(d, "replace", fn(dd, s) {
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    return { r1: a.r, c1: a.c, r2: b.r, c2: b.c, text: repl, place: "end" }
+  })
+  doc.single(d, doc.copy_sel(doc.primary(d)))
+  doc.seal(d)
+  return n
+}
+
+fn indent_width(d, r) {
+  let text = d.lines[r]
+  return tx.col_at(text, tx.lead(text), d.tab)
+}
+
+# The last row of the block indented under row r, or r when the next line is not deeper.
+# Blank lines inside the block belong to it. Blank lines after it do not.
+fn block_end(d, r) {
+  let base = indent_width(d, r)
+  let last = r
+  let i = r + 1
+  let going = true
+  while going && i < d.lines.length {
+    if !tx.blank(d.lines[i]) {
+      if indent_width(d, i) > base { let last = i }
+      else { let going = false }
+    }
+    let i = i + 1
+  }
+  return last
+}
+
+# The row whose block holds row r: r itself when a deeper block starts under it,
+# otherwise the nearest line above with less indent. -1 when there is none.
+fn block_head(d, r) {
+  if block_end(d, r) > r { return r }
+  let want = indent_width(d, r)
+  let i = r - 1
+  while i >= 0 {
+    if !tx.blank(d.lines[i]) && indent_width(d, i) < want { return i }
+    let i = i - 1
+  }
+  return 0 - 1
+}
+
+# Carets on hidden rows move to the end of the row that hides them.
+fn lift_carets(d) {
+  let out = []
+  let i = 0
+  while i < d.sels.length {
+    let s = doc.copy_sel(d.sels[i])
+    let f = doc.fold_over(d, s.hr)
+    if f != null {
+      let s = doc.caret(f.a, d.lines[f.a].length)
+      let junk = map_set(s, "p", d.sels[i].p)
+    }
+    let out = out.push(s)
+    let i = i + 1
+  }
+  doc.set_sels(d, out)
+}
+
+# Ctrl-Shift-[: folds the selected lines, or the indented block around each caret.
+# Returns how many folds were made.
+fn fold(d) {
+  let made = 0
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let a = doc.lo(s)
+    let b = doc.hi(s)
+    let last = b.r
+    if b.c == 0 && b.r > a.r { let last = b.r - 1 }
+    if last > a.r {
+      if doc.add_fold(d, a.r, last) { let made = made + 1 }
+    } else {
+      let head = block_head(d, s.hr)
+      if head >= 0 && doc.add_fold(d, head, block_end(d, head)) { let made = made + 1 }
+    }
+    let i = i + 1
+  }
+  lift_carets(d)
+  return made
+}
+
+# Ctrl-Shift-]: opens the folds on the rows of the selections. Returns true when one opened.
+fn unfold(d) {
+  let opened = false
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let r = doc.lo(s).r
+    while r <= doc.hi(s).r {
+      if doc.open_folds(d, r) { let opened = true }
+      let r = r + 1
+    }
+    let i = i + 1
+  }
+  return opened
+}
+
+fn unfold_all(d) {
+  let junk = map_set(d, "folds", [])
+}
+
+# Ctrl-K Ctrl-1 through 9: folds every block whose first line is at that indent level.
+fn fold_level(d, level) {
+  unfold_all(d)
+  let want = (level - 1) * d.tab
+  let r = 0
+  while r < d.lines.length {
+    let next = r + 1
+    if !tx.blank(d.lines[r]) && indent_width(d, r) == want {
+      let end = block_end(d, r)
+      if end > r && doc.add_fold(d, r, end) { let next = end + 1 }
+    }
+    let r = next
+  }
+  lift_carets(d)
+}

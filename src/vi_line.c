@@ -247,7 +247,7 @@ static void show_line(const char *prompt, const char *buf, size_t len, size_t cu
     vi_redraw(prompt, buf, len, cur, ghost, style, primed, &col);
     if (menu && (menu->on || menu->rows > 0)) {
         vi_menu_draw(menu->on ? menu->matches.name : NULL, menu->on ? menu->matches.n : 0, menu->sel, col,
-                     &menu->rows, &menu->cols, 0);
+                     &menu->rows, &menu->cols, 0, menu->on ? menu->matches.help : NULL);
     }
     if (hh && (hh->on || hh->rows > 0)) {
         vi_hist_draw(hh, hist, nhist, col);
@@ -383,7 +383,7 @@ static void menu_begin(ViMenu *menu, char **buf, size_t *cap, size_t *len, size_
     if (found.n == 1) {
         ln = strlen(found.name[0]);
         slash = ln > 0 && found.name[0][ln - 1] == '/';
-        if (found.command && !slash) {
+        if (found.trail && !slash) {
             char *put = xmalloc(ln + 2);
             memcpy(put, found.name[0], ln);
             put[ln] = ' ';
@@ -812,10 +812,10 @@ int vi_read_line_ex(const char *prompt, char **hist, uint32_t nhist, const ViSty
         show_line(prompt, buf, len, cur, hist, nhist, use, 0, &menu, &hh, &primed);
     }
     if (menu.rows > 0) {
-        vi_menu_draw(NULL, 0, 0, 0, &menu.rows, &menu.cols, 0);
+        vi_menu_draw(NULL, 0, 0, 0, &menu.rows, &menu.cols, 0, NULL);
     }
     if (hh.rows > 0) {
-        vi_menu_draw(NULL, 0, 0, 0, &hh.rows, &hh.cols, 1);
+        vi_menu_draw(NULL, 0, 0, 0, &hh.rows, &hh.cols, 1, NULL);
     }
     if (done) {
         fputc('\n', stderr);

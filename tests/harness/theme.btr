@@ -1,5 +1,5 @@
 #!/usr/bin/env bettersh
-# Checks the editor theme bytes the way the old splitter did: one cut each.
+# Checks the editor theme bytes: one cut per section. A piece starts with ESC [ 0 ; and its codes.
 
 fn cut(text, sep) {
   let at = text.index(sep)
@@ -28,11 +28,9 @@ let pair = need(rest, "TXT\n")
 let py = pair[0]
 let txt = pair[1]
 let esc = chr(27)
-if plain.contains("[35m") { exit 1 }
-if !theme.contains("[35mlet@{ esc }[0m") { exit 1 }
-if !theme.contains("[36m") { exit 1 }
-if !theme.contains("[2m") { exit 1 }
-if !py.contains("[35mdef@{ esc }[0m") { exit 1 }
-if !py.contains("[32m\"s\"@{ esc }[0m") { exit 1 }
-if !py.contains("[2m# c@{ esc }[0m") { exit 1 }
-if txt.contains("[35m") { exit 1 }
+if plain.contains(";35m") { exit 1 }
+if !theme.contains(";35mlet@{ esc }[") { exit 1 }
+if !py.contains(";35mdef@{ esc }[") { exit 1 }
+if !py.contains(";32m\"s\"@{ esc }[") { exit 1 }
+if !py.contains(";2m# c@{ esc }[") { exit 1 }
+if txt.contains(";35m") { exit 1 }

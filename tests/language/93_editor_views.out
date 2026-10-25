@@ -1,0 +1,56 @@
+Word wrap on
+  1 alpha beta gamma delta    
+    epsilon zeta              
+  2 short                     
+                              
+3:5
+1:24
+4:5
+2:1
+2:6
+1:24
+4:17
+1:27
+  1 alpha beta gamma delta eps
+  2 short                     
+▸ 1 fn a() { ⋯                
+  5 }                         
+  6 fn b() {                  
+  7 │ three                   
+  8 }                         
+  9 last                      
+1:9
+5:2
+1:9
+5:1
+  1 fn a() {                  
+  2 │ one                     
+  3 │                         
+▸ 1 fn a() { ⋯                
+  5 }                         
+▸ 6 fn b() { ⋯                
+  8 }                         
+}
+  1 fn a() {                  
+  2 │ one                     
+  3 │                         
+4:3-4:6
+  1 fn a() {                  
+  2 │ one                     
+  3 │                         
+  4 │ two                     
+  5 }                         
+▸ 1 fn a() {  ⋯               
+  5 }                         
+▸ 6 fn b() { ⋯                
+  1 fn a() {                  
+  2 │ one                     
+  1 │   code 0 here                                           ███     
+  2 │   code 1 here                                           ███     
+9
+ 10 │   code 9 here                                                   
+true
+true
+one.txt
+3:2
+false

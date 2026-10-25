@@ -1,0 +1,54 @@
+untitled*
+Open: /tmp/btr-tabs/ [alpha.btr,beta.btr,other/,sub/] pick=0
+Open: /tmp/btr-tabs/beta.btr [beta.btr] pick=0
+Open: /tmp/btr-tabs/beta.btr [beta.btr] pick=0
+(no prompt)
+Open: /tmp/btr-tabs/alpha.btr /tmp/btr-tabs/beta.btr [beta.btr] pick=0
+alpha.btr beta.btr*
+alpha.btr — btr-tabs beta.btr alpha.btr — other*
+alpha.btr — btr-tabs* beta.btr alpha.btr — other
+alpha.btr — btr-tabs beta.btr* alpha.btr — other
+alpha.btr — btr-tabs beta.btr alpha.btr — other*
+alpha.btr — btr-tabs beta.btr alpha.btr — other*
+alpha.btr — btr-tabs beta.btr alpha.btr — other*+
+Save changes to alpha.btr — other before closing?
+alpha.btr — btr-tabs beta.btr alpha.btr — other*+
+alpha.btr beta.btr*
+alpha.btr — btr-tabs beta.btr alpha.btr — other*
+other alpha
+alpha.btr — btr-tabs beta.btr alpha.btr — other untitled*
+Save As:  [LICENSE,Makefile,README.md,TODO.md,VERSION,bench/,bettersh,dist/,doc/,examples/,install.sh,plans/,src/,std/,tests/] pick=0
+alpha.btr — btr-tabs beta.btr alpha.btr — other made.txt*
+made
+
+/tmp/btr-tabs/made.txt already exists. Replace it?
+made
+
+is a directory: /tmp/btr-tabs/sub
+Save changes to new.txt before closing?
+Save changes to two.txt before closing?
+true
+true
+!keep
+
+false
+true
+ File  Edit  Selection  Find  View  Goto  Tools             
+ FOLDERS           untitled ×                               
+ ▸ other            1                                       
+ ▸ sub                                                      
+   alpha.btr                                                
+   beta.btr                                                 
+   made.txt                                                 
+   new.txt                                                  
+                                                            
+                                                            
+                                                            
+ Line 1, Column 1           Spaces: 4    Unix    Plain Text 
+side
+ ▾ sub                                                      
+     inner.txt                                              
+inner.txt*
+text
+   alpha.btr                                                
+text

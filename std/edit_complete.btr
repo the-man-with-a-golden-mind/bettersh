@@ -1,0 +1,738 @@
+#!/usr/bin/env bettersh
+
+import std/strings
+import std/edit_text
+
+# Completions. A .btr buffer completes names from the built-in catalog and its own fn, let,
+# and import lines. Every buffer completes words that already appear in it.
+# The inserted text is only the identifier under the cursor. A dot stays put.
+
+let table_hold = []
+let memo = { n: 0, locals: {}, words: {} }
+
+fn catalog() {
+  return [
+    "let|let name",
+    "fn|fn name()",
+    "if|if",
+    "else|else",
+    "while|while",
+    "for|for name in",
+    "return|return",
+    "import|import std/name",
+    "case|case",
+    "in|in",
+    "true|true",
+    "false|false",
+    "null|null",
+    "print|print(value...)",
+    "println|println(value...)",
+    "eprint|eprint(value...)",
+    "eprintln|eprintln(value...)",
+    "chr|chr(code)",
+    "ord|ord(text)",
+    "exit|exit(status)",
+    "arg|arg(index)",
+    "kind|kind(value)",
+    "map_set|map_set(map, key, value)",
+    "bytes|bytes(text)",
+    "unbytes|unbytes(codes)",
+    "getenv|getenv(name)",
+    "setenv|setenv(name, value)",
+    "capture|capture(command)",
+    "readfile|readfile(path)",
+    "writefile|writefile(path, text)",
+    "readln|readln()",
+    "readall|readall()",
+    "fs_exists|fs_exists(path)",
+    "fs_remove|fs_remove(path)",
+    "fs_append|fs_append(path, text)",
+    "fs_mkdir|fs_mkdir(path)",
+    "fs_rmdir|fs_rmdir(path)",
+    "fs_list|fs_list(path)",
+    "fs_kind|fs_kind(path)",
+    "fs_size|fs_size(path)",
+    "fs_load|fs_load(path)",
+    "fs_save|fs_save(path, text)",
+    "mathf|mathf(name, x)",
+    "proc_spawn|proc_spawn(command)",
+    "proc_await|proc_await(id)",
+    "pipe_open|pipe_open(command)",
+    "pipe_write|pipe_write(id, text)",
+    "pipe_read|pipe_read(id, ms)",
+    "pipe_close|pipe_close(id)",
+    "term_raw|term_raw(on)",
+    "term_read|term_read()",
+    "term_poll|term_poll()",
+    "term_take|term_take()",
+    "term_idle|term_idle()",
+    "clock_ms|clock_ms()",
+    "term_cols|term_cols()",
+    "term_rows|term_rows()",
+    "term_tty|term_tty()",
+    ".upper|.upper()",
+    ".lower|.lower()",
+    ".trim|.trim()",
+    ".split|.split(sep)",
+    ".contains|.contains(part)",
+    ".replace|.replace(from, to)",
+    ".length|.length()",
+    ".index|.index(part)",
+    ".slice|.slice(start, end)",
+    ".repeat|.repeat(n)",
+    ".reverse|.reverse()",
+    ".visible|.visible()",
+    ".push|.push(value)",
+    ".pop|.pop()",
+    ".map|.map(fn)",
+    ".filter|.filter(fn)",
+    ".reduce|.reduce(fn)",
+    ".sort|.sort()",
+    ".join|.join(sep)",
+    ".keys|.keys()",
+    ".values|.values()",
+    ".has|.has(key)",
+    ".remove|.remove(key)",
+    "strings|strings",
+    "strings.shout|strings.shout(s)",
+    "strings.slice|strings.slice(s, start, end)",
+    "strings.starts|strings.starts(s, prefix)",
+    "strings.ends|strings.ends(s, suffix)",
+    "strings.reverse|strings.reverse(s)",
+    "strings.repeat|strings.repeat(s, n)",
+    "strings.pad_left|strings.pad_left(s, width, ch)",
+    "strings.pad_right|strings.pad_right(s, width, ch)",
+    "strings.count|strings.count(s, part)",
+    "strings.words|strings.words(s)",
+    "fs|fs",
+    "fs.read|fs.read(path)",
+    "fs.write|fs.write(path, text)",
+    "fs.exists|fs.exists(path)",
+    "fs.remove|fs.remove(path)",
+    "fs.append|fs.append(path, text)",
+    "fs.copy|fs.copy(src, dst)",
+    "fs.mkdir|fs.mkdir(path)",
+    "fs.rmdir|fs.rmdir(path)",
+    "fs.list|fs.list(path)",
+    "fs.kind|fs.kind(path)",
+    "fs.size|fs.size(path)",
+    "fs.load|fs.load(path)",
+    "fs.save|fs.save(path, text)",
+    "path|path",
+    "path.slice|path.slice(p, start, end)",
+    "path.base|path.base(p)",
+    "path.dir|path.dir(p)",
+    "path.ext|path.ext(p)",
+    "path.stem|path.stem(p)",
+    "path.join|path.join(a, b)",
+    "path.is_abs|path.is_abs(p)",
+    "math|math",
+    "math.abs|math.abs(n)",
+    "math.min|math.min(a, b)",
+    "math.max|math.max(a, b)",
+    "math.clamp|math.clamp(n, lo, hi)",
+    "math.sign|math.sign(n)",
+    "math.gcd|math.gcd(a, b)",
+    "math.lcm|math.lcm(a, b)",
+    "math.pow|math.pow(base, exp)",
+    "math.fact|math.fact(n)",
+    "math.sqrt|math.sqrt(x)",
+    "math.sin|math.sin(x)",
+    "math.cos|math.cos(x)",
+    "math.tan|math.tan(x)",
+    "math.asin|math.asin(x)",
+    "math.acos|math.acos(x)",
+    "math.atan|math.atan(x)",
+    "math.atan2|math.atan2(y, x)",
+    "math.floor|math.floor(x)",
+    "math.ceil|math.ceil(x)",
+    "math.round|math.round(x)",
+    "math.log|math.log(x)",
+    "math.exp|math.exp(x)",
+    "math.hypot|math.hypot(x, y)",
+    "math.log10|math.log10(x)",
+    "math.log2|math.log2(x)",
+    "math.cbrt|math.cbrt(x)",
+    "math.exp2|math.exp2(x)",
+    "math.expm1|math.expm1(x)",
+    "math.log1p|math.log1p(x)",
+    "math.trunc|math.trunc(x)",
+    "math.sinh|math.sinh(x)",
+    "math.cosh|math.cosh(x)",
+    "math.tanh|math.tanh(x)",
+    "math.asinh|math.asinh(x)",
+    "math.acosh|math.acosh(x)",
+    "math.atanh|math.atanh(x)",
+    "math.tgamma|math.tgamma(x)",
+    "math.lgamma|math.lgamma(x)",
+    "math.fmod|math.fmod(x, y)",
+    "math.remainder|math.remainder(x, y)",
+    "math.copysign|math.copysign(x, y)",
+    "math.pi|math.pi()",
+    "math.e|math.e()",
+    "math.tau|math.tau()",
+    "math.deg|math.deg(radians)",
+    "math.rad|math.rad(degrees)",
+    "math.round_to|math.round_to(x, digits)",
+    "math.lerp|math.lerp(a, b, t)",
+    "math.sum|math.sum(xs)",
+    "math.mean|math.mean(xs)",
+    "math.median|math.median(xs)",
+    "math.choose|math.choose(n, k)",
+    "json|json",
+    "json.parse|json.parse(text)",
+    "json.stringify|json.stringify(value)",
+    "theme|theme",
+    "theme.plain|theme.plain()",
+    "theme.dark|theme.dark()",
+    "theme.light|theme.light()",
+    "theme.nord|theme.nord()",
+    "theme.gruvbox|theme.gruvbox()",
+    "theme.dracula|theme.dracula()",
+    "theme.catppuccin|theme.catppuccin()",
+    "theme.solarized|theme.solarized()",
+    "theme.monokai|theme.monokai()",
+    "theme.tokyonight|theme.tokyonight()",
+    "theme.load|theme.load(text)",
+    "theme.themed|theme.themed(theme)",
+    "theme.wrap|theme.wrap(style, text)",
+    "ui|ui",
+    "ui.blank|ui.blank(cols, rows)",
+    "ui.put|ui.put(screen, row, col, text)",
+    "ui.box|ui.box(screen, row, col, h, w, title)",
+    "ui.paint|ui.paint(screen)",
+    "ui.feed|ui.feed(pending, byte)",
+    "ui.flush|ui.flush(pending)",
+    "ui.width|ui.width(text)",
+    "ui.width_at|ui.width_at(text, n)",
+    "ui.take|ui.take(text, left, room)",
+    "text|text",
+    "text.flip|text.flip(s)",
+    "text.lines|text.lines(s)",
+    "text.fields|text.fields(s)",
+    "text.before|text.before(s, sep)",
+    "text.after|text.after(s, sep)",
+    "text.between|text.between(s, open, close)",
+    "text.truncate|text.truncate(s, n)",
+    "text.ellipsize|text.ellipsize(s, n)",
+    "text.wrap|text.wrap(s, width)",
+    "text.codepoints|text.codepoints(s)",
+    "text.from_codes|text.from_codes(xs)",
+    "env|env",
+    "env.get|env.get(name)",
+    "env.has|env.has(name)",
+    "env.set|env.set(name, value)",
+    "proc|proc",
+    "proc.run|proc.run(cmd)",
+    "proc.spawn|proc.spawn(cmd)",
+    "proc.await|proc.await(id)",
+    "http|http",
+    "http.get|http.get(url)",
+    "codec|codec",
+    "codec.hex|codec.hex(s)",
+    "codec.unhex|codec.unhex(s)",
+    "codec.base64|codec.base64(s)",
+    "codec.unbase64|codec.unbase64(s)",
+    "edit|edit",
+    "edit.run_files|edit.run_files(paths)",
+    "edit.app|edit.app(cols, rows)",
+    "edit.app_with|edit.app_with(cols, rows, cfg)",
+    "edit.load|edit.load(e, text, path)",
+    "edit.open_path|edit.open_path(e, path)",
+    "edit.key|edit.key(e, key)",
+    "edit.type_text|edit.type_text(e, text)",
+    "edit.text|edit.text(e)",
+    "edit.sels|edit.sels(e)",
+    "edit.frame|edit.frame(e)",
+    "edit.paint|edit.paint(e)",
+    "edit.cursor|edit.cursor(e)"
+  ]
+}
+
+fn table() {
+  if table_hold.length == 2 { return { book: table_hold[0], names: table_hold[1] } }
+  let book = {}
+  let names = []
+  let rows = catalog()
+  let i = 0
+  while i < rows.length {
+    let row = rows[i]
+    let cut = row.index("|")
+    if cut > 0 {
+      let name = row.slice(0, cut)
+      let blurb = row.slice(cut + 1, row.length)
+      if name != "" && !book.has(name) {
+        let book = map_set(book, name, blurb)
+        let names = names.push(name)
+      }
+    }
+    let i = i + 1
+  }
+  let junk = table_hold.push(book)
+  let junk = table_hold.push(names)
+  return { book: book, names: names }
+}
+
+fn last_dot(name) {
+  let base = 0
+  let last = 0 - 1
+  let rest = name
+  let at = rest.index(".")
+  while at >= 0 {
+    let last = base + at
+    let base = last + 1
+    let rest = name.slice(base, name.length)
+    let at = rest.index(".")
+  }
+  return last
+}
+
+fn tail_of(name) {
+  let at = last_dot(name)
+  if at < 0 { return name }
+  return name.slice(at + 1, name.length)
+}
+
+fn head_of(name) {
+  let at = last_dot(name)
+  if at < 0 { return "" }
+  return name.slice(0, at)
+}
+
+fn trim_left(text) {
+  let i = 0
+  while i < text.length && (text[i] == " " || text[i] == "\t") { let i = i + 1 }
+  return text.slice(i, text.length)
+}
+
+fn read_ident(text, i) {
+  let a = i
+  while i < text.length && edit_text.is_word(text[i]) { let i = i + 1 }
+  if i == a { return "" }
+  return text.slice(a, i)
+}
+
+fn read_fn(text) {
+  let i = 3
+  while i < text.length && text[i] == " " { let i = i + 1 }
+  let name = read_ident(text, i)
+  if name == "" { return null }
+  let i = i + name.length
+  while i < text.length && text[i] == " " { let i = i + 1 }
+  let blurb = name
+  if i < text.length && text[i] == "(" {
+    let j = i
+    while j < text.length && text[j] != ")" && text[j] != "{" { let j = j + 1 }
+    if j < text.length && text[j] == ")" { let blurb = "@{ name }@{ text.slice(i, j + 1) }" }
+  }
+  return { name: name, blurb: blurb }
+}
+
+fn read_let(text) {
+  let i = 4
+  while i < text.length && text[i] == " " { let i = i + 1 }
+  let name = read_ident(text, i)
+  if name == "" { return null }
+  return { name: name, blurb: "let @{ name }" }
+}
+
+fn read_import(text) {
+  let rest = trim_left(text.slice(7, text.length))
+  if rest.contains(" as ") {
+    let parts = rest.split(" as ")
+    let alias = trim_left(parts[parts.length - 1])
+    let name = read_ident(alias, 0)
+    if name == "" { return null }
+    return { name: name, blurb: "import @{ name }" }
+  }
+  if strings.starts(rest, "std/") {
+    let body = rest.slice(4, rest.length)
+    let raw = ""
+    let i = 0
+    while i < body.length && body[i] != " " && body[i] != "\t" && body[i] != "#" {
+      let raw = "@{ raw }@{ body[i] }"
+      let i = i + 1
+    }
+    let name = tail_of(raw)
+    if name == "" { return null }
+    return { name: name, blurb: "import std/@{ raw }" }
+  }
+  return null
+}
+
+fn one_local(text) {
+  let text = trim_left(text)
+  let got = null
+  if strings.starts(text, "fn ") { let got = read_fn(text) }
+  else if strings.starts(text, "let ") { let got = read_let(text) }
+  else if strings.starts(text, "import ") { let got = read_import(text) }
+  if got == null || got.name == "" { return null }
+  return got
+}
+
+fn forget() {
+  let junk = map_set(memo, "locals", {})
+  let junk = map_set(memo, "words", {})
+  let junk = map_set(memo, "n", 0)
+}
+
+# Line text to its declaration, or false. Text with a zero byte is not a map key.
+fn local_of(text) {
+  let book = memo.locals
+  if book.has(text) { return book[text] }
+  let got = one_local(text)
+  let keep = got
+  if got == null { let keep = false }
+  if text.index(chr(0)) < 0 {
+    if memo.n > 50000 { forget() }
+    let junk = map_set(memo.locals, text, keep)
+    let junk = map_set(memo, "n", memo.n + 1)
+  }
+  return keep
+}
+
+# Declarations in the file. The first one of each name wins.
+fn locals(lines) {
+  let out = []
+  let seen = {}
+  let i = 0
+  while i < lines.length {
+    let got = local_of(lines[i])
+    if got != false && !seen.has(got.name) {
+      let junk = map_set(seen, got.name, true)
+      let out = out.push(got)
+    }
+    let i = i + 1
+  }
+  return out
+}
+
+fn lookup(lines, name) {
+  if name == "" { return "" }
+  let book = table().book
+  if book.has(name) { return book[name] }
+  if name[0] != "." {
+    let dot = ".@{ name }"
+    if book.has(dot) { return book[dot] }
+  }
+  let want = tail_of(name)
+  let found = locals(lines)
+  let i = 0
+  while i < found.length {
+    if found[i].name == name || found[i].name == want { return found[i].blurb }
+    let i = i + 1
+  }
+  if want != name && book.has(want) { return book[want] }
+  if want != name {
+    let dot = ".@{ want }"
+    if book.has(dot) { return book[dot] }
+  }
+  return ""
+}
+
+# The identifier, with dots, that ends at col.
+fn prefix_at(line, col) {
+  if col < 0 { let col = 0 }
+  if col > line.length { let col = line.length }
+  let i = col
+  let going = true
+  while going && i > 0 {
+    let ch = line[i - 1]
+    if edit_text.is_word(ch) || ch == "." { let i = i - 1 }
+    else { let going = false }
+  }
+  return line.slice(i, col)
+}
+
+# True when the scalar before col is inside a string or a comment.
+fn in_literal(marks, col) {
+  if col <= 0 || marks == null { return false }
+  let at = col - 1
+  if at >= marks.length { return false }
+  let mark = marks[at]
+  return mark == "s" || mark == "c"
+}
+
+fn call_name(line, paren) {
+  let i = paren
+  while i > 0 && (line[i - 1] == " " || line[i - 1] == "\t") { let i = i - 1 }
+  let b = i
+  let going = true
+  while going && i > 0 {
+    let ch = line[i - 1]
+    if edit_text.is_word(ch) || ch == "." { let i = i - 1 }
+    else { let going = false }
+  }
+  return line.slice(i, b)
+}
+
+# The signature of the call the caret is inside, or "".
+fn call_hint(lines, row, col, marks) {
+  let line = lines[row]
+  let depth = 0
+  let i = col
+  if i > line.length { let i = line.length }
+  while i > 0 {
+    let i = i - 1
+    let skip = false
+    if marks != null && i < marks.length {
+      if marks[i] == "s" || marks[i] == "c" { let skip = true }
+    }
+    if !skip {
+      if line[i] == ")" { let depth = depth + 1 }
+      if line[i] == "(" {
+        if depth == 0 { return lookup(lines, call_name(line, i)) }
+        let depth = depth - 1
+      }
+    }
+  }
+  return ""
+}
+
+fn tag(name) {
+  return " @{ name }"
+}
+
+fn blurb_of(book, extra, name, head) {
+  let marked = tag(name)
+  if extra.has(marked) { return extra[marked] }
+  if book.has(name) { return book[name] }
+  if head != "" {
+    let key = "@{ head }.@{ name }"
+    if book.has(key) { return book[key] }
+  }
+  let key = ".@{ name }"
+  if book.has(key) { return book[key] }
+  return name
+}
+
+fn remember(seen, extra, hit, name, blurb) {
+  if name == "" { return { seen: seen, extra: extra, hit: hit } }
+  let marked = tag(name)
+  if seen.has(marked) { return { seen: seen, extra: extra, hit: hit } }
+  let seen = map_set(seen, marked, true)
+  if blurb != "" { let extra = map_set(extra, marked, blurb) }
+  let hit = hit.push(name)
+  return { seen: seen, extra: extra, hit: hit }
+}
+
+# Catalog and declaration names that start with the prefix before col.
+fn collect(lines, row, col) {
+  let prefix = prefix_at(lines[row], col)
+  if prefix == "" { return [] }
+  let head = head_of(prefix)
+  let tail = tail_of(prefix)
+  let method = prefix[0] == "." && head == ""
+  let got = table()
+  let book = got.book
+  let names = got.names
+  let known = head != "" && book.has(head)
+  let hit = []
+  let extra = {}
+  let seen = {}
+  if !method && head == "" {
+    let found = locals(lines)
+    let i = 0
+    while i < found.length {
+      let item = found[i]
+      if strings.starts(item.name, prefix) {
+        let kept = remember(seen, extra, hit, item.name, item.blurb)
+        let seen = kept.seen
+        let extra = kept.extra
+        let hit = kept.hit
+      }
+      let i = i + 1
+    }
+  }
+  let i = 0
+  while i < names.length {
+    let name = names[i]
+    let take = ""
+    if method {
+      if name[0] == "." && strings.starts(name.slice(1, name.length), tail) {
+        let take = name.slice(1, name.length)
+      }
+    } else if head != "" {
+      if strings.starts(name, "@{ head }.") && strings.starts(tail_of(name), tail) {
+        let take = tail_of(name)
+      } else if !known && name[0] == "." && strings.starts(name.slice(1, name.length), tail) {
+        let take = name.slice(1, name.length)
+      }
+    } else if name[0] != "." {
+      if strings.starts(name, prefix) { let take = name }
+      else if name.contains(".") && strings.starts(tail_of(name), prefix) { let take = name }
+    }
+    if take != "" {
+      let kept = remember(seen, extra, hit, take, "")
+      let seen = kept.seen
+      let extra = kept.extra
+      let hit = kept.hit
+    }
+    let i = i + 1
+  }
+  # Plain names come before dotted ones, each group sorted.
+  let keyed = []
+  let j = 0
+  while j < hit.length {
+    let rank = "0"
+    if hit[j].contains(".") { let rank = "1" }
+    let keyed = keyed.push("@{ rank }@{ hit[j] }")
+    let j = j + 1
+  }
+  let keyed = keyed.sort()
+  let out = []
+  let n = keyed.length
+  if n > 12 { let n = 12 }
+  let j = 0
+  while j < n {
+    let name = keyed[j].slice(1, keyed[j].length)
+    let out = out.push({ name: name, blurb: blurb_of(book, extra, name, head) })
+    let j = j + 1
+  }
+  return out
+}
+
+# The identifiers in a line of text, cached by the text.
+fn words_of(text) {
+  let book = memo.words
+  if book.has(text) { return book[text] }
+  let out = []
+  let i = 0
+  let n = text.length
+  while i < n {
+    if edit_text.is_word(text[i]) && !edit_text.is_digit(text[i]) {
+      let j = i + 1
+      while j < n && edit_text.is_word(text[j]) { let j = j + 1 }
+      if j - i >= 3 { let out = out.push(text.slice(i, j)) }
+      let i = j
+    } else if edit_text.is_word(text[i]) {
+      let j = i + 1
+      while j < n && edit_text.is_word(text[j]) { let j = j + 1 }
+      let i = j
+    } else {
+      let i = i + 1
+    }
+  }
+  if text.index(chr(0)) < 0 {
+    if memo.n > 50000 { forget() }
+    let junk = map_set(memo.words, text, out)
+    let junk = map_set(memo, "n", memo.n + 1)
+  }
+  return out
+}
+
+# Words within 800 lines of row that fuzzy-match the identifier before col, best first. The word being typed is left out.
+fn buffer_words(lines, row, col, limit) {
+  let line = lines[row]
+  let r = edit_text.ident_range(line, col)
+  let prefix = line.slice(r.a, col)
+  if prefix.length < 2 { return [] }
+  let typed = line.slice(r.a, r.b)
+  let seen = {}
+  let found = []
+  let lo = row - 800
+  if lo < 0 { let lo = 0 }
+  let hi = row + 800
+  if hi > lines.length { let hi = lines.length }
+  let i = lo
+  while i < hi {
+    let list = words_of(lines[i])
+    let k = 0
+    while k < list.length {
+      let w = list[k]
+      if w != typed && w != prefix && !seen.has(w) && w[0].lower() == prefix[0].lower() {
+        let score = edit_text.fuzzy(prefix, w)
+        if score > 0 {
+          let near = row - i
+          if near < 0 { let near = 0 - near }
+          let score = score * 4 - near / 50
+          if score < 1 { let score = 1 }
+          let junk = map_set(seen, w, true)
+          let found = found.push({ name: w, blurb: "", score: score })
+        }
+      }
+      let k = k + 1
+    }
+    let i = i + 1
+  }
+  let found = edit_text.by_score(found)
+  if found.length > limit { let found = found.slice(0, limit) }
+  return found
+}
+
+# The completion rows and the signature hint for this caret. marks are the row's syntax marks.
+fn offer(lines, row, col, marks, lang) {
+  if lines == null || row < 0 || row >= lines.length { return { items: [], hint: "" } }
+  if in_literal(marks, col) { return { items: [], hint: "" } }
+  let items = []
+  let sig = ""
+  if lang == "btr" {
+    let sig = call_hint(lines, row, col, marks)
+    let items = collect(lines, row, col)
+  }
+  let have = {}
+  let i = 0
+  while i < items.length {
+    let junk = map_set(have, items[i].name, true)
+    let i = i + 1
+  }
+  let extra = buffer_words(lines, row, col, 12)
+  let i = 0
+  while i < extra.length && items.length < 12 {
+    if !have.has(extra[i].name) { let items = items.push({ name: extra[i].name, blurb: "" }) }
+    let i = i + 1
+  }
+  if sig != "" && prefix_at(lines[row], col) == "" { return { items: [], hint: sig } }
+  return { items: items, hint: sig }
+}
+
+fn word_at(line, col) {
+  if line.length == 0 { return "" }
+  if col < 0 { let col = 0 }
+  if col >= line.length { let col = line.length - 1 }
+  if col < 0 { return "" }
+  if !edit_text.is_word(line[col]) {
+    if col > 0 && edit_text.is_word(line[col - 1]) { let col = col - 1 }
+    else { return "" }
+  }
+  let a = col
+  let b = col + 1
+  while a > 0 && (edit_text.is_word(line[a - 1]) || line[a - 1] == ".") { let a = a - 1 }
+  while b < line.length && (edit_text.is_word(line[b]) || line[b] == ".") { let b = b + 1 }
+  return line.slice(a, b)
+}
+
+# Returns the signature of the word under the cursor, or "".
+fn hover_text(lines, row, col, marks) {
+  if lines == null || row < 0 || row >= lines.length { return "" }
+  if in_literal(marks, col + 1) { return "" }
+  return lookup(lines, word_at(lines[row], col))
+}
+
+fn find_fn(lines, name) {
+  if name == "" { return null }
+  let i = 0
+  while i < lines.length {
+    let raw = lines[i]
+    let text = trim_left(raw)
+    if strings.starts(text, "fn ") {
+      let got = read_fn(text)
+      if got != null && got.name == name {
+        let pad = raw.length - text.length
+        let col = pad + 3
+        while col < raw.length && (raw[col] == " " || raw[col] == "\t") { let col = col + 1 }
+        return { row: i, col: col }
+      }
+    }
+    let i = i + 1
+  }
+  return null
+}
+
+# Returns the row and column of fn for the word under the cursor, or null.
+fn jump_at(lines, row, col) {
+  if lines == null || row < 0 || row >= lines.length { return null }
+  let word = word_at(lines[row], col)
+  if word == "" { return null }
+  return find_fn(lines, tail_of(word))
+}

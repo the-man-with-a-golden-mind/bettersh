@@ -1,873 +1,2839 @@
 #!/usr/bin/env bettersh
 
+# A terminal text editor that works like Sublime Text: no modes, multiple selections,
+# Goto Anything, a command palette, find and replace, tabs, a side bar, and a run panel.
+#
+# The app state e holds the open documents (e.docs, e.at is the one shown), the clipboard,
+# the theme, and whatever is open on top: e.overlay (palette, menu, dialog, hover), e.prompt
+# (the bottom input row), e.bar (find or replace), and e.comp (the completion list).
+
 import std/ui
 import std/fs
+import std/path
 import std/strings
-import std/edit_ops
-import std/edit_view
+import std/theme
+import std/codec
+import std/env
+import std/edit_text as tx
+import std/edit_doc as doc
+import std/edit_cmds as cmds
+import std/edit_syntax
+import std/edit_complete
 import std/edit_lsp
+import std/edit_files
+import std/edit_run
+import std/edit_view as view
 
-# Returns the normal-mode hint line.
-fn hint_text() {
-  return "i a o  x dd yy p  u  / n N  :w :q"
-}
+let keys_hold = { map: null }
 
-# Builds one editor buffer from these fields.
-fn pack(lines, row, col, mode, top, pending, yank, undo, dirty, path, cmd, hint, confirm, request, find, anchor, left, eol, redo, lsp, theme) {
+fn defaults() {
   return {
-    lines: lines,
-    row: row,
-    col: col,
-    mode: mode,
-    top: top,
-    pending: pending,
-    yank: yank,
-    undo: undo,
-    dirty: dirty,
-    path: path,
-    cmd: cmd,
-    hint: hint,
-    confirm: confirm,
-    request: request,
-    find: find,
-    anchor: anchor,
-    left: left,
-    eol: eol,
-    redo: redo,
-    lsp: lsp,
-    theme: theme
+    tab_size: 4,
+    translate_tabs_to_spaces: true,
+    detect_indentation: true,
+    auto_indent: true,
+    auto_match: true,
+    auto_complete: true,
+    highlight_line: true,
+    line_numbers: true,
+    draw_indent_guides: true,
+    menu_bar: true,
+    mouse: true,
+    scroll_past_end: true,
+    trim_trailing_white_space_on_save: false,
+    ensure_newline_at_eof_on_save: false,
+    restore_session: true,
+    word_wrap: false,
+    minimap: false
   }
 }
 
-# Returns a new array of the same line strings.
-fn copy_lines(lines) {
-  let out = []
-  for line in lines {
-    let out = out.push(line)
-  }
-  return out
-}
-
-# Returns lines with the line at index at replaced.
-fn replace_at(lines, at, line) {
-  let out = []
+fn settings_of(cfg) {
+  let out = defaults()
+  if cfg == null || !cfg.has("settings") { return out }
+  let keys = cfg.settings.keys()
   let i = 0
-  while i < lines.length {
-    if i == at { let out = out.push(line) }
-    if i != at { let out = out.push(lines[i]) }
+  while i < keys.length {
+    let junk = map_set(out, keys[i], cfg.settings[keys[i]])
     let i = i + 1
   }
   return out
 }
 
-# Returns lines without the line at index at.
-fn remove_at(lines, at) {
-  let out = []
-  let i = 0
-  while i < lines.length {
-    if i != at { let out = out.push(lines[i]) }
-    let i = i + 1
-  }
-  return out
+# Milliseconds from a fixed point, for double clicks.
+fn now_ms() {
+  return clock_ms()
 }
 
-# Returns lines with line inserted after index at.
-fn insert_after(lines, at, line) {
-  let out = []
-  let i = 0
-  while i < lines.length {
-    let out = out.push(lines[i])
-    if i == at { let out = out.push(line) }
-    let i = i + 1
-  }
-  return out
+fn cur(e) {
+  return e.docs[e.at]
 }
 
-# Returns lines with the line at index at replaced by left and right.
-fn split_at(lines, at, left, right) {
-  let out = []
+fn say(e, text) {
+  let junk = map_set(e, "msg", text)
+  let junk = map_set(e, "msg_bad", false)
+}
+
+fn warn(e, text) {
+  let junk = map_set(e, "msg", text)
+  let junk = map_set(e, "msg_bad", true)
+}
+
+fn doc_opts(e) {
+  return { tab: e.settings.tab_size, spaces: e.settings.translate_tabs_to_spaces, detect: e.settings.detect_indentation, wrap: e.settings.word_wrap }
+}
+
+# Tab names. Two files with the same name also show their folder.
+fn rename_tabs(e) {
+  let names = []
   let i = 0
-  while i < lines.length {
-    if i == at {
-      let out = out.push(left)
-      let out = out.push(right)
+  while i < e.docs.length {
+    let d = e.docs[i]
+    let name = d.name
+    if d.path == null && d.title != null { let name = d.title }
+    let names = names.push(name)
+    let i = i + 1
+  }
+  let shown = names.clone()
+  let i = 0
+  while i < e.docs.length {
+    let d = e.docs[i]
+    let k = 0
+    let twin = false
+    while k < e.docs.length {
+      if k != i && names[k] == names[i] && d.path != null { let twin = true }
+      let k = k + 1
     }
-    if i != at { let out = out.push(lines[i]) }
+    if twin {
+      let dir = path.base(path.dir(d.path))
+      if dir != "" && dir != "." { let junk = shown.set(i, "@{ names[i] } — @{ dir }") }
+    }
     let i = i + 1
   }
-  return out
+  let junk = map_set(e, "names", shown)
 }
 
-# Returns lines with the line before at and the line at replaced by merged.
-fn join_at(lines, at, merged) {
-  let out = []
-  let i = 0
-  while i < lines.length {
-    if i == at - 1 { let out = out.push(merged) }
-    if i != at - 1 && i != at { let out = out.push(lines[i]) }
-    let i = i + 1
+fn set_theme(e, colors) {
+  let junk = map_set(e, "colors", colors)
+  let junk = map_set(e, "pal", view.palette(colors))
+  let junk = map_set(e, "screen", [])
+}
+
+# A blank buffer named untitled, untitled 2, and so on.
+fn fresh_doc(e) {
+  let d = doc.make(null, null, doc_opts(e))
+  let junk = map_set(d, "eol", true)
+  let n = 1
+  let taken = true
+  while taken {
+    let name = "untitled"
+    if n > 1 { let name = "untitled @{ n }" }
+    let taken = false
+    let i = 0
+    while i < e.docs.length {
+      if e.docs[i].path == null && e.docs[i].title == name { let taken = true }
+      let i = i + 1
+    }
+    if !taken { let junk = map_set(d, "title", name) }
+    let n = n + 1
   }
-  return out
+  return d
 }
 
-# Splits text on newlines and drops one trailing empty piece after a final newline. Null is "". An empty result is [""].
-fn split_lines(text) {
-  if text == null { let text = "" }
-  let parts = text.split("\n")
-  if text.length > 0 && text[text.length - 1] == "\n" {
-    let junk = parts.pop()
+# The menus on the top row, as command ids.
+fn menus() {
+  return [
+    { title: "File", items: ["new_file", "open_file", "reopen_closed", "save", "save_as", "save_all", "close_tab", "quit"] },
+    { title: "Edit", items: ["undo", "redo", "cut", "copy", "paste", "duplicate", "delete_line", "join_lines", "swap_up", "swap_down", "toggle_comment", "indent", "unindent", "upper_case", "lower_case", "sort_lines"] },
+    { title: "Selection", items: ["select_all", "select_line", "find_under_expand", "skip_occurrence", "select_all_occurrences", "split_lines", "add_caret_above", "add_caret_below", "expand_brackets", "single_selection"] },
+    { title: "Find", items: ["find", "find_next", "find_prev", "replace", "find_in_files"] },
+    { title: "View", items: ["toggle_sidebar", "toggle_panel", "toggle_word_wrap", "toggle_minimap", "fold", "unfold", "unfold_all", "toggle_line_numbers", "toggle_guides", "toggle_menu_bar"] },
+    { title: "Goto", items: ["goto_anything", "goto_line", "goto_symbol", "goto_definition", "jump_back", "jump_bracket", "next_tab", "prev_tab"] },
+    { title: "Tools", items: ["command_palette", "run_file", "open_repl", "open_shell", "complete", "show_hover", "trim_whitespace"] }
+  ]
+}
+
+# An app of cols by rows with one empty buffer. cfg is a loaded editor.conf, or null.
+fn make_app(cols, rows, cfg) {
+  let colors = theme.nord()
+  if cfg != null { let colors = cfg }
+  let e = {
+    cols: cols, rows: rows, docs: [], at: 0, names: [],
+    cfg: cfg, settings: settings_of(cfg), colors: colors, pal: view.palette(colors),
+    msg: "", msg_bad: false, chord: "",
+    overlay: null, prompt: null, bar: null, comp: null,
+    focus: "text", live: false, quit: false, quitting: false,
+    clip: { pieces: [""], lines: false, text: "" }, clip_tool: null,
+    find: { query: "", fold: true, whole: false },
+    side: { open: false, root: ".", items: [], pick: 0, top: 0, opened: {} },
+    files: [], files_at: 0 - 100000, closed: [], jumps: [],
+    drag: null, click: { t: 0 - 100000, x: 0 - 1, y: 0 - 1, n: 0 },
+    screen: [], menus: []
   }
-  if parts.length == 0 { return [""] }
-  return parts
+  let junk = map_set(e, "menus", menus())
+  let junk = e.docs.push(fresh_doc(e))
+  rename_tabs(e)
+  return e
 }
 
-# Returns a normal-mode buffer for text at path. A missing final newline is remembered.
-fn buffer(text, path) {
-  let eol = false
-  if text != null && text.length > 0 && text[text.length - 1] == "\n" { let eol = true }
-  return pack(split_lines(text), 0, 0, "normal", 0, "", "", [], false, path, "", hint_text(), false, "", "", false, 0, eol, [], null, null)
+# True for a buffer that was never touched, so opening a file can take its place.
+fn pristine(d) {
+  return d.path == null && !doc.dirty(d) && d.lines.length == 1 && d.lines[0] == "" && d.undo.length == 0
 }
 
-# Joins the buffer lines with newlines and does not add a final newline.
-fn text(buf) {
-  return buf.lines.join("\n")
+fn show(e, k) {
+  if k < 0 || k >= e.docs.length { return null }
+  let junk = map_set(e, "at", k)
+  let junk = map_set(e, "comp", null)
+  view.reveal(e)
 }
 
-# Joins the buffer lines with newlines. A final newline is added only when the file had one, or the file is new.
-fn save_text(buf) {
-  let body = buf.lines.join("\n")
-  if buf.eol { return "@{ body }\n" }
-  return body
-}
-
-# Returns a copy of buf with the given fields replaced. top, path, find, and redo stay.
-fn re(buf, lines, row, col, mode, pending, yank, undo, dirty, cmd, hint, confirm, request, anchor) {
-  return pack(lines, row, col, mode, buf.top, pending, yank, undo, dirty, buf.path, cmd, hint, confirm, request, buf.find, anchor, buf.left, buf.eol, buf.redo, buf.lsp, buf.theme)
-}
-
-# Returns buf with request set and confirm cleared.
-fn set_request(buf, request) {
-  return re(buf, buf.lines, buf.row, buf.col, buf.mode, buf.pending, buf.yank, buf.undo, buf.dirty, buf.cmd, buf.hint, false, request, buf.anchor)
-}
-
-# Returns buf with hint set.
-fn set_hint(buf, hint) {
-  return re(buf, buf.lines, buf.row, buf.col, buf.mode, buf.pending, buf.yank, buf.undo, buf.dirty, buf.cmd, hint, buf.confirm, buf.request, buf.anchor)
-}
-
-# Returns a normal-mode buffer whose yank is yank. The command line is cleared.
-fn set_yank(buf, yank) {
-  return re(buf, buf.lines, buf.row, buf.col, "normal", "", yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
-}
-
-# Returns a normal-mode buffer waiting for the second key of a two-key command.
-fn set_pending(buf, pending) {
-  return re(buf, buf.lines, buf.row, buf.col, "normal", pending, buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
-}
-
-# Returns buf with the command or search line set to cmd.
-fn set_cmd(buf, cmd) {
-  return re(buf, buf.lines, buf.row, buf.col, buf.mode, "", buf.yank, buf.undo, buf.dirty, cmd, buf.hint, false, buf.request, buf.anchor)
-}
-
-# Returns a normal-mode buffer whose find pattern is find.
-fn set_find(buf, find) {
-  return pack(buf.lines, buf.row, buf.col, "normal", buf.top, "", buf.yank, buf.undo, buf.dirty, buf.path, "", hint_text(), false, buf.request, find, false, buf.left, buf.eol, buf.redo, buf.lsp, buf.theme)
-}
-
-# Returns buf marked clean, with the command line and request cleared.
-fn mark_clean(buf) {
-  return re(buf, buf.lines, buf.row, buf.col, buf.mode, "", buf.yank, buf.undo, false, "", hint_text(), false, "", false)
-}
-
-# Pushes a snapshot and drops the oldest once 32 are stored.
-fn remember(hist, snap) {
-  let hist = hist.push(snap)
-  if hist.length <= 32 { return hist }
-  let next = []
-  let i = 1
-  while i < hist.length {
-    let next = next.push(hist[i])
-    let i = i + 1
-  }
-  return next
-}
-
-# Pushes the current lines onto the undo stack.
-fn snapshot(buf) {
-  let snap = { lines: copy_lines(buf.lines), row: buf.row, col: buf.col, dirty: buf.dirty }
-  return remember(buf.undo, snap)
-}
-
-# Records an undo point, unless this insert already has one, and returns the edited buffer. A new edit drops redo.
-fn change(buf, lines, row, col) {
-  let undo = buf.undo
-  let redo = buf.redo
-  let anchor = false
-  if buf.mode == "insert" && buf.anchor {
-    let anchor = true
+# Adds d as a tab after the current one and shows it. A pristine current tab is replaced.
+fn add_doc(e, d) {
+  if e.docs.length == 1 && pristine(e.docs[0]) {
+    let junk = e.docs.set(0, d)
+    let junk = map_set(e, "at", 0)
   } else {
-    let undo = snapshot(buf)
-    let redo = []
-    if buf.mode == "insert" { let anchor = true }
+    let junk = e.docs.insert(e.at + 1, d)
+    let junk = map_set(e, "at", e.at + 1)
   }
-  let next = pack(lines, row, col, buf.mode, buf.top, "", buf.yank, undo, true, buf.path, "", hint_text(), false, buf.request, buf.find, anchor, buf.left, buf.eol, redo, buf.lsp, buf.theme)
-  return edit_lsp.changed(next)
+  rename_tabs(e)
+  view.reveal(e)
 }
 
-# Moves the cursor in normal mode. The column stays on a character.
-fn move(buf, row, col) {
-  if buf.lines.length == 0 { return buf }
-  if row < 0 { let row = 0 }
-  if row >= buf.lines.length { let row = buf.lines.length - 1 }
-  let limit = 0
-  if buf.lines[row].length > 0 { let limit = buf.lines[row].length - 1 }
-  if col < 0 { let col = 0 }
-  if col > limit { let col = limit }
-  return re(buf, buf.lines, row, col, "normal", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
-}
-
-# Moves the cursor in insert mode. The column may sit past the last character.
-fn imove(buf, row, col) {
-  if buf.lines.length == 0 { return buf }
-  if row < 0 { let row = 0 }
-  if row >= buf.lines.length { let row = buf.lines.length - 1 }
-  if col < 0 { let col = 0 }
-  if col > buf.lines[row].length { let col = buf.lines[row].length }
-  return re(buf, buf.lines, row, col, "insert", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
-}
-
-# Returns buf in insert mode at row, col.
-fn enter_insert(buf, row, col) {
-  return re(buf, buf.lines, row, col, "insert", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
-}
-
-# Returns buf in normal mode. A cursor past the end of the line moves back one character.
-fn leave_insert(buf) {
-  let row = buf.row
-  let col = buf.col
-  if row < 0 { let row = 0 }
-  if row >= buf.lines.length { let row = buf.lines.length - 1 }
-  if col > 0 && col >= buf.lines[row].length { let col = buf.lines[row].length - 1 }
-  if col < 0 { let col = 0 }
-  return re(buf, buf.lines, row, col, "normal", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
-}
-
-# Inserts ch at the cursor.
-fn insert_char(buf, ch) {
-  let line = buf.lines[buf.row]
-  let col = buf.col
-  if col < 0 { let col = 0 }
-  if col > line.length { let col = line.length }
-  let next = "@{ strings.slice(line, 0, col) }@{ ch }@{ strings.slice(line, col, line.length) }"
-  return change(buf, replace_at(buf.lines, buf.row, next), buf.row, col + 1)
-}
-
-# Splits the current line at the cursor and moves to the start of the new line.
-fn split_line(buf) {
-  let line = buf.lines[buf.row]
-  let col = buf.col
-  if col < 0 { let col = 0 }
-  if col > line.length { let col = line.length }
-  let left = strings.slice(line, 0, col)
-  let right = strings.slice(line, col, line.length)
-  return change(buf, split_at(buf.lines, buf.row, left, right), buf.row + 1, 0)
-}
-
-# Deletes the character before the cursor, or joins with the previous line at column 0.
-fn backspace(buf) {
-  if buf.col > 0 {
-    let line = buf.lines[buf.row]
-    let col = buf.col - 1
-    let next = "@{ strings.slice(line, 0, col) }@{ strings.slice(line, buf.col, line.length) }"
-    return change(buf, replace_at(buf.lines, buf.row, next), buf.row, col)
-  }
-  if buf.row == 0 { return buf }
-  let prev = buf.lines[buf.row - 1]
-  let merged = "@{ prev }@{ buf.lines[buf.row] }"
-  return change(buf, join_at(buf.lines, buf.row, merged), buf.row - 1, prev.length)
-}
-
-# Deletes the character at the cursor.
-fn delete_char(buf) {
-  let line = buf.lines[buf.row]
-  if line.length == 0 { return buf }
-  let col = buf.col
-  if col >= line.length {
-    if buf.mode == "insert" { return buf }
-    let col = line.length - 1
-  }
-  let next = "@{ strings.slice(line, 0, col) }@{ strings.slice(line, col + 1, line.length) }"
-  if buf.mode != "insert" && next.length > 0 && col >= next.length { let col = next.length - 1 }
-  if col < 0 { let col = 0 }
-  return change(buf, replace_at(buf.lines, buf.row, next), buf.row, col)
-}
-
-# Deletes the current line, keeps it as the yank, and leaves at least one empty line.
-fn delete_line(buf) {
-  let yanked = buf.lines[buf.row]
-  let lines = remove_at(buf.lines, buf.row)
-  if lines.length == 0 { let lines = [""] }
-  let row = buf.row
-  if row >= lines.length { let row = lines.length - 1 }
-  return set_yank(change(buf, lines, row, 0), yanked)
-}
-
-# Inserts the yanked line below the cursor. An empty yank leaves buf unchanged.
-fn paste(buf) {
-  if buf.yank.length == 0 { return buf }
-  return change(buf, insert_after(buf.lines, buf.row, buf.yank), buf.row + 1, 0)
-}
-
-# Inserts an empty line below the cursor and enters insert mode.
-fn open_below(buf) {
-  let buf = change(buf, insert_after(buf.lines, buf.row, ""), buf.row + 1, 0)
-  return re(buf, buf.lines, buf.row, 0, "insert", "", buf.yank, buf.undo, true, "", hint_text(), false, buf.request, true)
-}
-
-# Inserts an empty line above the cursor and enters insert mode.
-fn open_above(buf) {
-  let buf = change(buf, edit_ops.insert_before(buf.lines, buf.row, ""), buf.row, 0)
-  return re(buf, buf.lines, buf.row, 0, "insert", "", buf.yank, buf.undo, true, "", hint_text(), false, buf.request, true)
-}
-
-# Clamps a snapshot cursor onto a character.
-fn placed(snap) {
-  let row = snap.row
-  let col = snap.col
-  if row < 0 || snap.lines.length == 0 { let row = 0 }
-  if row >= snap.lines.length { let row = snap.lines.length - 1 }
-  if row < 0 { let row = 0 }
-  let limit = 0
-  if snap.lines.length > 0 && snap.lines[row].length > 0 { let limit = snap.lines[row].length - 1 }
-  if col < 0 { let col = 0 }
-  if col > limit { let col = limit }
-  return { row: row, col: col }
-}
-
-# Restores the newest snapshot and keeps it for redo. An empty undo stack leaves buf unchanged.
-fn undo(buf) {
-  if buf.undo.length == 0 { return buf }
-  let current = { lines: copy_lines(buf.lines), row: buf.row, col: buf.col, dirty: buf.dirty }
-  let snap = buf.undo.pop()
-  let redo = remember(buf.redo, current)
-  let at = placed(snap)
-  let next = pack(snap.lines, at.row, at.col, "normal", buf.top, "", buf.yank, buf.undo, snap.dirty, buf.path, "", hint_text(), false, "", buf.find, false, buf.left, buf.eol, redo, buf.lsp, buf.theme)
-  return edit_lsp.changed(next)
-}
-
-# Restores the newest redo snapshot. An empty redo stack leaves buf unchanged.
-fn redo(buf) {
-  if buf.redo.length == 0 { return buf }
-  let current = { lines: copy_lines(buf.lines), row: buf.row, col: buf.col, dirty: buf.dirty }
-  let snap = buf.redo.pop()
-  let undo = remember(buf.undo, current)
-  let at = placed(snap)
-  let next = pack(snap.lines, at.row, at.col, "normal", buf.top, "", buf.yank, undo, snap.dirty, buf.path, "", hint_text(), false, "", buf.find, false, buf.left, buf.eol, buf.redo, buf.lsp, buf.theme)
-  return edit_lsp.changed(next)
-}
-
-# Returns the index of pat in line at or after from, or -1.
-fn find_at(line, pat, from) {
-  if pat.length == 0 { return 0 - 1 }
-  if from < 0 { let from = 0 }
-  let i = from
-  while i + pat.length <= line.length {
-    if strings.slice(line, i, i + pat.length) == pat { return i }
+fn find_doc(e, p) {
+  let i = 0
+  while i < e.docs.length {
+    if e.docs[i].path != null && e.docs[i].path == p { return i }
     let i = i + 1
   }
   return 0 - 1
 }
 
-# Moves to the next match of the find pattern, wrapping around the buffer.
-fn search_next(buf, from_col) {
-  let pat = buf.find
-  if pat.length == 0 { return buf }
-  let n = buf.lines.length
-  let step = 0
-  while step < n {
-    let row = buf.row + step
-    if row >= n { let row = row - n }
-    let from = 0
-    if step == 0 { let from = from_col }
-    let at = find_at(buf.lines[row], pat, from)
-    if at >= 0 { return move(buf, row, at) }
-    let step = step + 1
-  }
-  return set_hint(buf, "not found")
+fn attach_lsp(e, d) {
+  if e.cfg == null { return null }
+  let note = edit_lsp.attach(d, e.cfg)
+  if note != "" { warn(e, note) }
 }
 
-# Returns the last index of pat in line that starts before limit, or -1.
-fn last_before(line, pat, limit) {
-  let last = 0 - 1
+# Opens a file from the disk in a tab, or shows it when it is already open. False on an error.
+fn open_path(e, p) {
+  let k = find_doc(e, p)
+  if k >= 0 {
+    show(e, k)
+    return true
+  }
+  let got = edit_files.read(p)
+  if !got.ok {
+    warn(e, "@{ got.err }: @{ p }")
+    return false
+  }
+  let d = doc.make(got.text, p, doc_opts(e))
+  if got.text == null { say(e, "New file: @{ p }") }
+  add_doc(e, d)
+  attach_lsp(e, d)
+  return true
+}
+
+# Opens text as a tab named p. Nothing is read from the disk.
+fn load(e, text, p) {
+  let d = doc.make(text, p, doc_opts(e))
+  add_doc(e, d)
+  return d
+}
+
+fn new_file(e) {
+  add_doc(e, fresh_doc(e))
+}
+
+# Remembers where the caret was before a jump, for Jump Back.
+fn mark_jump(e) {
+  let d = cur(e)
+  let s = doc.primary(d)
+  let junk = e.jumps.push({ d: d, r: s.hr, c: s.hc })
+  if e.jumps.length > 100 { let junk = e.jumps.delete(0) }
+}
+
+# Scrolls so the primary caret is in the middle of the view.
+fn center(e) {
+  let d = cur(e)
+  let lay = view.layout(e)
+  let s = doc.primary(d)
+  let junk = map_set(d, "top", view.clamp_top(e, s.hr - lay.view / 2))
+  view.reveal(e)
+}
+
+fn goto_pos(e, r, c) {
+  let d = cur(e)
+  cmds.caret_at(d, r, c)
+  center(e)
+}
+
+fn jump_back(e) {
+  let going = true
+  while going && e.jumps.length > 0 {
+    let j = e.jumps.pop()
+    let i = 0
+    while i < e.docs.length {
+      if e.docs[i] == j.d {
+        show(e, i)
+        goto_pos(e, j.r, j.c)
+        return null
+      }
+      let i = i + 1
+    }
+  }
+  say(e, "Nothing to jump back to")
+}
+
+# System clipboard: OSC 52 always, plus pbcopy, wl-copy, xclip, or xsel when one is installed.
+fn clip_tool(e) {
+  if e.clip_tool != null { return e.clip_tool }
+  let found = capture("command -v pbcopy >/dev/null 2>&1 && echo mac || { command -v wl-copy >/dev/null 2>&1 && [ -n \"$WAYLAND_DISPLAY\" ] && echo wl; } || { command -v xclip >/dev/null 2>&1 && [ -n \"$DISPLAY\" ] && echo xclip; } || { command -v xsel >/dev/null 2>&1 && [ -n \"$DISPLAY\" ] && echo xsel; } || echo none").trim()
+  let tool = { copy: "", paste: "" }
+  if found == "mac" { let tool = { copy: "pbcopy", paste: "pbpaste" } }
+  if found == "wl" { let tool = { copy: "wl-copy", paste: "wl-paste -n" } }
+  if found == "xclip" { let tool = { copy: "xclip -selection clipboard", paste: "xclip -selection clipboard -o" } }
+  if found == "xsel" { let tool = { copy: "xsel -b -i", paste: "xsel -b -o" } }
+  let junk = map_set(e, "clip_tool", tool)
+  return tool
+}
+
+fn scratch_file(name) {
+  let dir = getenv("TMPDIR")
+  if dir == null || dir == "" { let dir = "/tmp" }
+  if dir[dir.length - 1] == "/" { return "@{ dir }@{ name }" }
+  return "@{ dir }/@{ name }"
+}
+
+fn sys_copy(e, text) {
+  if !e.live { return null }
+  if text.length < 100000 { print("@{ chr(27) }]52;c;@{ codec.base64(text) }@{ chr(7) }") }
+  let tool = clip_tool(e)
+  if tool.copy == "" { return null }
+  let file = scratch_file("bettersh-clip-@{ capture("printf %s $PPID") }")
+  if fs.save(file, text) {
+    let junk = capture("@{ tool.copy } < @{ edit_files.sh_quote(file) } >/dev/null 2>&1 || true")
+    fs.remove(file)
+  }
+}
+
+fn sys_paste(e) {
+  if !e.live { return null }
+  let tool = clip_tool(e)
+  if tool.paste == "" { return null }
+  return capture("@{ tool.paste } 2>/dev/null || true")
+}
+
+fn set_clip(e, got) {
+  let text = got.pieces.join("")
+  if !got.lines { let text = got.pieces.join("\n") }
+  let junk = map_set(e, "clip", { pieces: got.pieces, lines: got.lines, text: text })
+  sys_copy(e, text)
+}
+
+# The clipboard to paste. Text copied in another program wins over our own copy.
+fn clip_now(e) {
+  let outside = sys_paste(e)
+  if outside != null && outside != "" && outside != e.clip.text {
+    return { pieces: [outside], lines: false, text: outside }
+  }
+  return e.clip
+}
+
+fn prompt_refresh(e) {
+  let p = e.prompt
+  if p == null || p.kind != "path" { return null }
+  let got = edit_files.choices(p.text)
+  let junk = map_set(p, "shown", got.shown)
+  let junk = map_set(p, "pick", 0)
+}
+
+# The bottom input row. act(e, text) runs on Enter. A path prompt lists completions.
+fn ask_text(e, label, text, kind, act) {
+  let p = { label: label, text: text, col: text.length, kind: kind, act: act, shown: [], pick: 0 }
+  let junk = map_set(e, "prompt", p)
+  prompt_refresh(e)
+}
+
+fn ask_path(e, label, text, act) {
+  ask_text(e, label, text, "path", act)
+}
+
+fn ask(e, text, buttons, act) {
+  let junk = map_set(e, "overlay", { kind: "confirm", text: text, buttons: buttons, pick: 0, act: act, at_r: 0, at_c: 0 })
+}
+
+# Writes d to its file. after(e) runs when the write worked.
+fn write_doc(e, d, after) {
+  if e.settings.trim_trailing_white_space_on_save { cmds.trim_trailing(d) }
+  if e.settings.ensure_newline_at_eof_on_save { let junk = map_set(d, "eol", true) }
+  let text = doc.file_text(d)
+  if !fs.save(edit_files.write_target(d.path), text) {
+    warn(e, "cannot write file: @{ d.path }")
+    return false
+  }
+  doc.mark_saved(d)
+  let junk = map_set(d, "disk", text)
+  edit_lsp.saved(d)
+  say(e, "Saved @{ d.path }")
+  if after != null { after(e) }
+  return true
+}
+
+# Gives d the file p and saves it there. An existing file other than its own asks first.
+fn save_to(e, d, p, after) {
+  if edit_files.is_dir(p) {
+    warn(e, "is a directory: @{ p }")
+    return null
+  }
+  let rename = fn(ee) {
+    let junk = map_set(d, "path", p)
+    let junk = map_set(d, "name", doc.base_name(p))
+    let junk = map_set(d, "lang", edit_syntax.lang(p))
+    doc.syn_reset(d)
+    rename_tabs(ee)
+    write_doc(ee, d, after)
+    attach_lsp(ee, d)
+  }
+  if p != d.path && fs.exists(p) {
+    ask(e, "@{ p } already exists. Replace it?", ["Replace", "Cancel"], fn(ee, choice) {
+      if choice == 0 { rename(ee) }
+    })
+    return null
+  }
+  rename(e)
+}
+
+# Saves d, asking for a file name first when it has none.
+fn save_doc(e, d, after) {
+  if d.path != null { return write_doc(e, d, after) }
+  ask_path(e, "Save As", "", fn(ee, text) {
+    let list = edit_files.split_paths(text)
+    if list.length > 0 { save_to(ee, d, list[0], after) }
+  })
+  return false
+}
+
+fn save_all(e) {
   let i = 0
-  while i + pat.length <= line.length && i < limit {
-    if strings.slice(line, i, i + pat.length) == pat { let last = i }
+  while i < e.docs.length {
+    let d = e.docs[i]
+    if doc.dirty(d) && d.path != null { save_doc(e, d, null) }
     let i = i + 1
   }
-  return last
 }
 
-# Moves to the previous match of the find pattern, wrapping around the buffer.
-fn search_back(buf) {
-  let pat = buf.find
-  if pat.length == 0 { return buf }
-  let n = buf.lines.length
-  let step = 0
-  while step < n {
-    let row = buf.row - step
-    if row < 0 { let row = row + n }
-    let limit = buf.lines[row].length + 1
-    if step == 0 { let limit = buf.col }
-    let at = last_before(buf.lines[row], pat, limit)
-    if at >= 0 { return move(buf, row, at) }
-    let step = step + 1
+fn drop_tab(e, k) {
+  let d = e.docs[k]
+  edit_lsp.stop(d)
+  if d.path != null {
+    let junk = e.closed.push(d.path)
+    if e.closed.length > 30 { let junk = e.closed.delete(0) }
   }
-  return set_hint(buf, "not found")
+  let junk = e.docs.delete(k)
+  if e.docs.length == 0 {
+    let junk = map_set(e, "quit", true)
+    let junk = e.docs.push(fresh_doc(e))
+  }
+  let at = e.at
+  if at > k || at >= e.docs.length { let at = at - 1 }
+  if at < 0 { let at = 0 }
+  let junk = map_set(e, "at", at)
+  rename_tabs(e)
+  view.reveal(e)
 }
 
-# Returns true when every byte of text is an ASCII digit. Empty text is false.
-fn is_digits(text) {
-  if text.length == 0 { return false }
+fn index_of_doc(e, d) {
   let i = 0
-  while i < text.length {
-    let c = text[i]
-    if c < "0" || c > "9" { return false }
+  while i < e.docs.length {
+    if e.docs[i] == d { return i }
     let i = i + 1
+  }
+  return 0 - 1
+}
+
+# Closes tab k. A dirty tab asks whether to save it first. Closing the last tab quits.
+fn close_tab(e, k, after) {
+  let d = e.docs[k]
+  if !doc.dirty(d) {
+    drop_tab(e, k)
+    if after != null { after(e) }
+    return null
+  }
+  show(e, k)
+  let name = e.names[k]
+  ask(e, "Save changes to @{ name } before closing?", ["Save", "Don't Save", "Cancel"], fn(ee, choice) {
+    if choice == 0 {
+      save_doc(ee, d, fn(e3) {
+        let at = index_of_doc(e3, d)
+        if at >= 0 { drop_tab(e3, at) }
+        if after != null { after(e3) }
+      })
+    } else if choice == 1 {
+      let at = index_of_doc(ee, d)
+      if at >= 0 { drop_tab(ee, at) }
+      if after != null { after(ee) }
+    } else {
+      let junk = map_set(ee, "quitting", false)
+    }
+  })
+}
+
+fn full_path(p) {
+  if path.is_abs(p) { return p }
+  let here = env.get("PWD")
+  if here == null || here == "" { return p }
+  if p == "." || p == "" { return here }
+  return path.join(here, p)
+}
+
+# The open files, their carets and scroll, the active tab, and the side bar, one per line.
+fn session_text(e) {
+  let tab = chr(9)
+  let lines = ["root@{ tab }@{ full_path(e.side.root) }@{ tab }@{ e.side.open }"]
+  let active = 0
+  let n = 0
+  let i = 0
+  while i < e.docs.length {
+    let d = e.docs[i]
+    if d.path != null && !d.has("results") {
+      if i == e.at { let active = n }
+      let s = doc.primary(d)
+      let lines = lines.push("file@{ tab }@{ full_path(d.path) }@{ tab }@{ s.hr }@{ tab }@{ s.hc }@{ tab }@{ d.top }")
+      let n = n + 1
+    }
+    let i = i + 1
+  }
+  let lines = lines.push("active@{ tab }@{ active }")
+  return "@{ lines.join("\n") }\n"
+}
+
+# Writes the session. A file that cannot be written is skipped.
+fn save_session(e, file) {
+  if file == "" { return false }
+  let dir = path.dir(file)
+  if dir != "" && !fs.exists(dir) { fs.mkdir(dir) }
+  return fs.save(file, session_text(e))
+}
+
+# BETTERSH_SESSION names the session file. Otherwise it is $HOME/.bettersh/session.
+fn session_path() {
+  let file = env.get("BETTERSH_SESSION")
+  if file != null { return file }
+  let home = env.get("HOME")
+  if home == null { return "" }
+  return "@{ home }/.bettersh/session"
+}
+
+# Quits after asking about each dirty tab in turn.
+fn quit(e) {
+  if !e.quitting && e.live && e.settings.restore_session { save_session(e, session_path()) }
+  let junk = map_set(e, "quitting", true)
+  let i = 0
+  while i < e.docs.length {
+    if doc.dirty(e.docs[i]) {
+      close_tab(e, i, fn(ee) {
+        if ee.quitting { quit(ee) }
+      })
+      return null
+    }
+    let i = i + 1
+  }
+  let junk = map_set(e, "quit", true)
+}
+
+fn reopen_closed(e) {
+  if e.closed.length == 0 {
+    say(e, "No closed tabs to reopen")
+    return null
+  }
+  open_path(e, e.closed.pop())
+}
+
+# Reloads files that changed on the disk. A dirty buffer only gets a warning.
+fn check_disk(e) {
+  let i = 0
+  while i < e.docs.length {
+    let d = e.docs[i]
+    if d.path != null && d.disk != null {
+      let now = fs.load(d.path)
+      if now != null && now != d.disk {
+        if doc.dirty(d) {
+          warn(e, "@{ e.names[i] } changed on disk; save to overwrite it, or close it and open it again")
+        } else {
+          let got = doc.split_text(now)
+          let last = d.lines.length - 1
+          doc.begin(d, "reload")
+          let junk = doc.replace(d, 0, 0, last, d.lines[last].length, got.lines.join("\n"))
+          let junk = map_set(d, "eol", got.eol)
+          let junk = map_set(d, "crlf", got.crlf)
+          doc.set_sels(d, d.sels)
+          doc.commit(d)
+          doc.mark_saved(d)
+          say(e, "Reloaded @{ e.names[i] }")
+        }
+        let junk = map_set(d, "disk", now)
+      }
+    }
+    let i = i + 1
+  }
+}
+
+# Edits a one-line field { text, col, all } for one key. all means the whole text is selected,
+# so the next edit replaces it. False when the key is not an edit.
+fn field_key(f, key, ev) {
+  let t = f.text
+  let c = f.col
+  if c > t.length { let c = t.length }
+  let all = f.has("all") && f.all
+  if key == "ctrl-a" {
+    let junk = map_set(f, "all", t != "")
+    let junk = map_set(f, "col", t.length)
+    return true
+  }
+  let typing = key == "paste" || key == "text" || (key.length == 1 && ord(key) >= 32)
+  let erasing = key == "backspace" || key == "delete" || key == "ctrl-backspace" || key == "alt-backspace" || key == "ctrl-w"
+  if all && (typing || erasing) {
+    let t = ""
+    let c = 0
+    if erasing {
+      let junk = map_set(f, "text", "")
+      let junk = map_set(f, "col", 0)
+      let junk = map_set(f, "all", false)
+      return true
+    }
+  }
+  let nt = t
+  let nc = c
+  if key == "left" { if c > 0 && !all { let nc = c - 1 } }
+  else if key == "right" { if c < t.length && !all { let nc = c + 1 } }
+  else if key == "home" { let nc = 0 }
+  else if key == "end" || key == "ctrl-e" { let nc = t.length }
+  else if key == "ctrl-left" || key == "alt-b" { let nc = tx.word_left(t, c) }
+  else if key == "ctrl-right" || key == "alt-f" { let nc = tx.word_right(t, c) }
+  else if key == "backspace" {
+    if c > 0 {
+      let nt = "@{ t.slice(0, c - 1) }@{ t.slice(c, t.length) }"
+      let nc = c - 1
+    }
+  } else if key == "delete" {
+    if c < t.length { let nt = "@{ t.slice(0, c) }@{ t.slice(c + 1, t.length) }" }
+  } else if key == "ctrl-backspace" || key == "alt-backspace" || key == "ctrl-w" {
+    let a = tx.word_left(t, c)
+    let nt = "@{ t.slice(0, a) }@{ t.slice(c, t.length) }"
+    let nc = a
+  } else if key == "ctrl-u" {
+    let nt = t.slice(c, t.length)
+    let nc = 0
+  } else if key == "ctrl-k" {
+    let nt = t.slice(0, c)
+  } else if key == "paste" || key == "text" {
+    let add = ev.text.replace("\n", " ")
+    let nt = "@{ t.slice(0, c) }@{ add }@{ t.slice(c, t.length) }"
+    let nc = c + add.length
+  } else if key.length == 1 && ord(key) >= 32 {
+    let nt = "@{ t.slice(0, c) }@{ key }@{ t.slice(c, t.length) }"
+    let nc = c + 1
+  } else {
+    return false
+  }
+  let junk = map_set(f, "text", nt)
+  let junk = map_set(f, "col", nc)
+  let junk = map_set(f, "all", false)
+  return true
+}
+
+fn bar_count(e) {
+  let b = e.bar
+  let d = cur(e)
+  let junk = map_set(b, "ver", d.version)
+  let junk = map_set(b, "count", cmds.count_matches(d, b.query, b.fold, b.whole))
+  let s = doc.primary(d)
+  let at = 0
+  if b.query != "" && cmds.on_match(d, b.query, b.fold) {
+    let a = doc.lo(s)
+    let at = cmds.match_index(d, b.query, b.fold, b.whole, a.r, a.c)
+  }
+  let junk = map_set(b, "at", at)
+}
+
+fn bar_open(e, kind) {
+  let d = cur(e)
+  let s = doc.primary(d)
+  let q = e.find.query
+  if !doc.empty(s) && s.ar == s.hr { let q = doc.sel_text(d, s) }
+  let b = { kind: kind, query: q, qcol: q.length, repl: "", rcol: 0, field: 0, fold: e.find.fold, whole: e.find.whole, count: 0 - 1, at: 0, origin: doc.copy_sels(d.sels), top: d.top, focus: true, qall: q != "", rall: false, ver: 0 }
+  if e.bar != null && e.bar.kind != kind {
+    let junk = map_set(b, "repl", e.bar.repl)
+    let junk = map_set(b, "rcol", e.bar.repl.length)
+  }
+  if kind == "replace" && q != "" { let junk = map_set(b, "field", 1) }
+  let junk = map_set(e, "bar", b)
+  let junk = map_set(e, "comp", null)
+  bar_count(e)
+}
+
+fn remember_find(e) {
+  let b = e.bar
+  if b == null { return null }
+  let junk = map_set(e, "find", { query: b.query, fold: b.fold, whole: b.whole })
+}
+
+# Selects the next match after the selection (or before it, when back). False when there is none.
+fn find_step(e, back) {
+  let d = cur(e)
+  let f = e.find
+  if e.bar != null { let f = e.bar }
+  if f.query == "" { return false }
+  let s = doc.primary(d)
+  let at = null
+  if back {
+    let a = doc.lo(s)
+    let at = cmds.search_backward(d, f.query, a.r, a.c, f.fold, f.whole)
+  } else {
+    let b = doc.hi(s)
+    let at = cmds.search_forward(d, f.query, b.r, b.c, f.fold, f.whole)
+  }
+  if at == null {
+    warn(e, "Unable to find @{ f.query }")
+    return false
+  }
+  doc.single(d, cmds.span_for(d, at, f.query))
+  doc.seal(d)
+  view.reveal(e)
+  if e.bar != null { bar_count(e) }
+  return true
+}
+
+# Typing in the find field moves to the first match from where the search started.
+fn find_live(e) {
+  let b = e.bar
+  let d = cur(e)
+  doc.set_sels(d, doc.copy_sels(b.origin))
+  let junk = map_set(d, "top", b.top)
+  if b.query == "" {
+    bar_count(e)
+    return null
+  }
+  let a = doc.lo(doc.primary(d))
+  let at = cmds.search_forward(d, b.query, a.r, a.c, b.fold, b.whole)
+  if at != null {
+    doc.single(d, cmds.span_for(d, at, b.query))
+    view.reveal(e)
+  }
+  bar_count(e)
+}
+
+fn replace_next(e) {
+  let b = e.bar
+  let d = cur(e)
+  if b.query == "" { return null }
+  if cmds.on_match(d, b.query, b.fold) {
+    doc.insert(d, "replace", b.repl)
+    doc.seal(d)
+  }
+  find_step(e, false)
+}
+
+fn replace_every(e) {
+  let b = e.bar
+  let d = cur(e)
+  let n = cmds.replace_all(d, b.query, b.repl, b.fold, b.whole)
+  view.reveal(e)
+  bar_count(e)
+  if n == 0 { warn(e, "Unable to find @{ b.query }") }
+  else if n == 1 { say(e, "Replaced 1 occurrence") }
+  else { say(e, "Replaced @{ n } occurrences") }
+}
+
+fn bar_key(e, key, ev) {
+  let b = e.bar
+  if key == "escape" {
+    remember_find(e)
+    let junk = map_set(e, "bar", null)
+    return null
+  }
+  if key == "alt-c" {
+    let junk = map_set(b, "fold", !b.fold)
+    find_live(e)
+    return null
+  }
+  if key == "alt-w" {
+    let junk = map_set(b, "whole", !b.whole)
+    find_live(e)
+    return null
+  }
+  if key == "tab" || key == "shift-tab" || key == "up" || key == "down" {
+    if b.kind == "replace" {
+      let junk = map_set(b, "field", 1 - b.field)
+      let junk = map_set(b, "qall", b.field == 0 && b.query != "")
+      let junk = map_set(b, "rall", b.field == 1 && b.repl != "")
+    }
+    return null
+  }
+  if key == "enter" || key == "f3" {
+    remember_find(e)
+    if b.kind == "replace" && b.field == 1 { replace_next(e) }
+    else { find_step(e, false) }
+    let junk = map_set(b, "origin", doc.copy_sels(cur(e).sels))
+    return null
+  }
+  if key == "shift-enter" || key == "shift-f3" {
+    remember_find(e)
+    find_step(e, true)
+    let junk = map_set(b, "origin", doc.copy_sels(cur(e).sels))
+    return null
+  }
+  if key == "alt-enter" || key == "ctrl-alt-enter" {
+    remember_find(e)
+    if b.kind == "replace" {
+      replace_every(e)
+      return null
+    }
+    let n = cmds.select_matches(cur(e), b.query, b.fold, b.whole)
+    if n == 0 { warn(e, "Unable to find @{ b.query }") }
+    let junk = map_set(e, "bar", null)
+    view.reveal(e)
+    return null
+  }
+  let f = { text: b.query, col: b.qcol, all: b.qall }
+  if b.field == 1 { let f = { text: b.repl, col: b.rcol, all: b.rall } }
+  if !field_key(f, key, ev) { return "pass" }
+  if b.field == 1 {
+    let junk = map_set(b, "repl", f.text)
+    let junk = map_set(b, "rcol", f.col)
+    let junk = map_set(b, "rall", f.all)
+    return null
+  }
+  let junk = map_set(b, "qall", f.all)
+  let changed = f.text != b.query
+  let junk = map_set(b, "query", f.text)
+  let junk = map_set(b, "qcol", f.col)
+  if changed { find_live(e) }
+  return null
+}
+
+fn file_list(e) {
+  let t = now_ms()
+  if t - e.files_at > 10000 || e.files.length == 0 {
+    let junk = map_set(e, "files", edit_files.project_files(e.side.root, 20000))
+    let junk = map_set(e, "files_at", t)
+  }
+  return e.files
+}
+
+# Every command: { id, title }. The palette lists these and the menus pick from them.
+fn commands() {
+  return [
+    { id: "new_file", title: "File: New File" },
+    { id: "open_file", title: "File: Open" },
+    { id: "reopen_closed", title: "File: Reopen Closed Tab" },
+    { id: "save", title: "File: Save" },
+    { id: "save_as", title: "File: Save As" },
+    { id: "save_all", title: "File: Save All" },
+    { id: "close_tab", title: "File: Close Tab" },
+    { id: "close_all", title: "File: Close All" },
+    { id: "revert", title: "File: Revert" },
+    { id: "quit", title: "File: Quit" },
+    { id: "undo", title: "Edit: Undo" },
+    { id: "redo", title: "Edit: Redo" },
+    { id: "cut", title: "Edit: Cut" },
+    { id: "copy", title: "Edit: Copy" },
+    { id: "paste", title: "Edit: Paste" },
+    { id: "duplicate", title: "Edit: Duplicate Line" },
+    { id: "delete_line", title: "Edit: Delete Line" },
+    { id: "join_lines", title: "Edit: Join Lines" },
+    { id: "swap_up", title: "Edit: Swap Line Up" },
+    { id: "swap_down", title: "Edit: Swap Line Down" },
+    { id: "line_after", title: "Edit: Insert Line After" },
+    { id: "line_before", title: "Edit: Insert Line Before" },
+    { id: "toggle_comment", title: "Edit: Toggle Comment" },
+    { id: "indent", title: "Edit: Indent" },
+    { id: "unindent", title: "Edit: Unindent" },
+    { id: "upper_case", title: "Edit: Convert to Upper Case" },
+    { id: "lower_case", title: "Edit: Convert to Lower Case" },
+    { id: "title_case", title: "Edit: Convert to Title Case" },
+    { id: "transpose", title: "Edit: Transpose" },
+    { id: "sort_lines", title: "Edit: Sort Lines" },
+    { id: "delete_word_back", title: "Edit: Delete Word Backward" },
+    { id: "delete_word_forward", title: "Edit: Delete Word Forward" },
+    { id: "delete_to_bol", title: "Edit: Delete to Beginning of Line" },
+    { id: "delete_to_eol", title: "Edit: Delete to End of Line" },
+    { id: "trim_whitespace", title: "Edit: Trim Trailing White Space" },
+    { id: "select_all", title: "Selection: Select All" },
+    { id: "select_line", title: "Selection: Expand Selection to Line" },
+    { id: "find_under_expand", title: "Selection: Quick Add Next" },
+    { id: "skip_occurrence", title: "Selection: Quick Skip Next" },
+    { id: "select_all_occurrences", title: "Selection: Quick Find All" },
+    { id: "split_lines", title: "Selection: Split into Lines" },
+    { id: "add_caret_above", title: "Selection: Add Previous Line" },
+    { id: "add_caret_below", title: "Selection: Add Next Line" },
+    { id: "expand_brackets", title: "Selection: Expand Selection to Brackets" },
+    { id: "single_selection", title: "Selection: Single Selection" },
+    { id: "find", title: "Find: Find" },
+    { id: "find_next", title: "Find: Find Next" },
+    { id: "find_prev", title: "Find: Find Previous" },
+    { id: "find_under", title: "Find: Quick Find" },
+    { id: "use_selection_for_find", title: "Find: Use Selection for Find" },
+    { id: "replace", title: "Find: Replace" },
+    { id: "find_in_files", title: "Find: Find in Files" },
+    { id: "goto_anything", title: "Goto: Goto Anything" },
+    { id: "goto_line", title: "Goto: Goto Line" },
+    { id: "goto_symbol", title: "Goto: Goto Symbol" },
+    { id: "goto_definition", title: "Goto: Goto Definition" },
+    { id: "jump_back", title: "Goto: Jump Back" },
+    { id: "jump_bracket", title: "Goto: Jump to Matching Bracket" },
+    { id: "next_tab", title: "Goto: Next Tab" },
+    { id: "prev_tab", title: "Goto: Previous Tab" },
+    { id: "toggle_sidebar", title: "View: Toggle Side Bar" },
+    { id: "focus_sidebar", title: "View: Focus Side Bar" },
+    { id: "toggle_panel", title: "View: Toggle Panel" },
+    { id: "toggle_line_numbers", title: "View: Toggle Line Numbers" },
+    { id: "toggle_guides", title: "View: Toggle Indent Guides" },
+    { id: "toggle_menu_bar", title: "View: Toggle Menu Bar" },
+    { id: "toggle_word_wrap", title: "View: Toggle Word Wrap" },
+    { id: "toggle_minimap", title: "View: Toggle Minimap" },
+    { id: "fold", title: "Code Folding: Fold" },
+    { id: "unfold", title: "Code Folding: Unfold" },
+    { id: "unfold_all", title: "Code Folding: Unfold All" },
+    { id: "fold_1", title: "Code Folding: Fold Level 1" },
+    { id: "fold_2", title: "Code Folding: Fold Level 2" },
+    { id: "fold_3", title: "Code Folding: Fold Level 3" },
+    { id: "indent_spaces", title: "Indentation: Indent Using Spaces" },
+    { id: "indent_tabs", title: "Indentation: Indent Using Tabs" },
+    { id: "tab_2", title: "Indentation: Tab Width 2" },
+    { id: "tab_4", title: "Indentation: Tab Width 4" },
+    { id: "tab_8", title: "Indentation: Tab Width 8" },
+    { id: "to_spaces", title: "Indentation: Convert Indentation to Spaces" },
+    { id: "to_tabs", title: "Indentation: Convert Indentation to Tabs" },
+    { id: "eol_unix", title: "Line Endings: Unix" },
+    { id: "eol_windows", title: "Line Endings: Windows" },
+    { id: "syntax_plain", title: "Set Syntax: Plain Text" },
+    { id: "syntax_btr", title: "Set Syntax: BetterSh" },
+    { id: "syntax_sh", title: "Set Syntax: Shell" },
+    { id: "syntax_py", title: "Set Syntax: Python" },
+    { id: "syntax_js", title: "Set Syntax: JavaScript" },
+    { id: "syntax_ts", title: "Set Syntax: TypeScript" },
+    { id: "syntax_rust", title: "Set Syntax: Rust" },
+    { id: "syntax_c", title: "Set Syntax: C" },
+    { id: "syntax_go", title: "Set Syntax: Go" },
+    { id: "syntax_lua", title: "Set Syntax: Lua" },
+    { id: "syntax_json", title: "Set Syntax: JSON" },
+    { id: "theme_nord", title: "Theme: Nord" },
+    { id: "theme_dark", title: "Theme: Dark" },
+    { id: "theme_light", title: "Theme: Light" },
+    { id: "theme_gruvbox", title: "Theme: Gruvbox" },
+    { id: "theme_dracula", title: "Theme: Dracula" },
+    { id: "theme_catppuccin", title: "Theme: Catppuccin" },
+    { id: "theme_solarized", title: "Theme: Solarized" },
+    { id: "theme_monokai", title: "Theme: Monokai" },
+    { id: "theme_tokyonight", title: "Theme: Tokyo Night" },
+    { id: "theme_plain", title: "Theme: Plain" },
+    { id: "command_palette", title: "Tools: Command Palette" },
+    { id: "run_file", title: "Tools: Run File" },
+    { id: "open_repl", title: "Tools: Open REPL" },
+    { id: "open_shell", title: "Tools: Open Shell" },
+    { id: "complete", title: "Tools: Auto Complete" },
+    { id: "show_hover", title: "Tools: Show Signature or Hover" },
+    { id: "help_keys", title: "Help: Keyboard Shortcuts" }
+  ]
+}
+
+# The default key bindings. A two-key chord is written "ctrl-k ctrl-u".
+# Several commands have a second key that works in terminals without the kitty keyboard protocol.
+fn bindings() {
+  return [
+    ["ctrl-n", "new_file"], ["ctrl-o", "open_file"], ["ctrl-s", "save"], ["ctrl-shift-s", "save_as"],
+    ["ctrl-alt-s", "save_all"], ["ctrl-w", "close_tab"], ["ctrl-shift-t", "reopen_closed"], ["ctrl-q", "quit"],
+    ["ctrl-z", "undo"], ["ctrl-shift-z", "redo"], ["ctrl-y", "redo"],
+    ["ctrl-x", "cut"], ["ctrl-c", "copy"], ["ctrl-v", "paste"], ["shift-delete", "cut"], ["ctrl-insert", "copy"], ["shift-insert", "paste"],
+    ["ctrl-shift-d", "duplicate"], ["alt-shift-d", "duplicate"],
+    ["ctrl-shift-k", "delete_line"], ["alt-shift-k", "delete_line"],
+    ["ctrl-j", "join_lines"], ["alt-j", "join_lines"],
+    ["ctrl-shift-up", "swap_up"], ["alt-up", "swap_up"], ["ctrl-shift-down", "swap_down"], ["alt-down", "swap_down"],
+    ["ctrl-enter", "line_after"], ["alt-enter", "line_after"], ["ctrl-shift-enter", "line_before"], ["alt-shift-enter", "line_before"],
+    ["ctrl-/", "toggle_comment"], ["ctrl-]", "indent"], ["shift-tab", "unindent"],
+    ["ctrl-k ctrl-u", "upper_case"], ["ctrl-k ctrl-l", "lower_case"], ["ctrl-t", "transpose"], ["f9", "sort_lines"],
+    ["ctrl-backspace", "delete_word_back"], ["alt-backspace", "delete_word_back"], ["ctrl-h", "replace"],
+    ["ctrl-delete", "delete_word_forward"], ["alt-d", "delete_word_forward"], ["alt-delete", "delete_word_forward"],
+    ["ctrl-shift-backspace", "delete_to_bol"], ["ctrl-k ctrl-k", "delete_to_eol"],
+    ["ctrl-a", "select_all"], ["ctrl-l", "select_line"], ["ctrl-d", "find_under_expand"], ["ctrl-k ctrl-d", "skip_occurrence"],
+    ["alt-f3", "select_all_occurrences"], ["ctrl-shift-l", "split_lines"], ["alt-shift-l", "split_lines"],
+    ["ctrl-alt-up", "add_caret_above"], ["alt-shift-up", "add_caret_above"], ["ctrl-alt-down", "add_caret_below"], ["alt-shift-down", "add_caret_below"],
+    ["ctrl-shift-m", "expand_brackets"], ["alt-shift-m", "expand_brackets"], ["ctrl-m", "jump_bracket"],
+    ["ctrl-f", "find"], ["f3", "find_next"], ["shift-f3", "find_prev"], ["ctrl-f3", "find_under"], ["ctrl-e", "use_selection_for_find"],
+    ["ctrl-alt-f", "replace"], ["ctrl-shift-f", "find_in_files"], ["alt-shift-f", "find_in_files"],
+    ["ctrl-p", "goto_anything"], ["ctrl-g", "goto_line"], ["ctrl-r", "goto_symbol"], ["f12", "goto_definition"],
+    ["alt--", "jump_back"], ["ctrl-pagedown", "next_tab"], ["ctrl-pageup", "prev_tab"], ["ctrl-tab", "next_tab"], ["ctrl-shift-tab", "prev_tab"],
+    ["ctrl-k ctrl-b", "toggle_sidebar"], ["ctrl-0", "focus_sidebar"], ["ctrl-`", "toggle_panel"], ["ctrl-\\", "toggle_panel"],
+    ["ctrl-shift-p", "command_palette"], ["f1", "command_palette"], ["alt-shift-p", "command_palette"],
+    ["ctrl-b", "run_file"], ["f5", "run_file"], ["ctrl-space", "complete"], ["ctrl-k ctrl-i", "show_hover"],
+    ["alt-z", "toggle_word_wrap"], ["ctrl-shift-[", "fold"], ["alt-{", "fold"], ["ctrl-shift-]", "unfold"], ["alt-}", "unfold"],
+    ["ctrl-k ctrl-j", "unfold_all"], ["ctrl-k ctrl-0", "unfold_all"], ["ctrl-k ctrl-1", "fold_1"], ["ctrl-k ctrl-2", "fold_2"],
+    ["ctrl-k ctrl-3", "fold_3"], ["ctrl-k ctrl-4", "fold_4"], ["ctrl-k ctrl-5", "fold_5"]
+  ]
+}
+
+fn pretty_key(k) {
+  let parts = k.split(" ")
+  let out = []
+  let i = 0
+  while i < parts.length {
+    let words = parts[i].split("-")
+    let shown = []
+    let j = 0
+    while j < words.length {
+      let w = words[j]
+      if w == "" && j + 1 < words.length { let w = "-" }
+      if w != "" {
+        if w.length == 1 { let shown = shown.push(w.upper()) }
+        else { let shown = shown.push("@{ w.slice(0, 1).upper() }@{ w.slice(1, w.length) }") }
+      }
+      let j = j + 1
+    }
+    let out = out.push(shown.join("+"))
+    let i = i + 1
+  }
+  return out.join(" ")
+}
+
+# The first key bound to a command, as text such as "Ctrl+Shift+P".
+fn key_for(e, id) {
+  let list = bindings()
+  let i = 0
+  while i < list.length {
+    if list[i][1] == id { return pretty_key(list[i][0]) }
+    let i = i + 1
+  }
+  return ""
+}
+
+fn line_target(text) {
+  let at = text.index(":")
+  if at < 0 { return null }
+  let num = text.slice(at + 1, text.length)
+  let col = 0
+  let k = num.index(":")
+  if k >= 0 {
+    let col = tx.to_int(num.slice(k + 1, num.length))
+    let num = num.slice(0, k)
+  }
+  if !tx.is_digits(num) { return null }
+  return { file: text.slice(0, at), row: tx.to_int(num), col: col }
+}
+
+# Goto Line and Goto Symbol move the caret while you choose.
+fn pick_preview(e) {
+  let o = e.overlay
+  if o.items.length == 0 { return null }
+  let it = o.items[o.pick]
+  if it.has("row") && it.row >= 0 && o.d == cur(e) {
+    goto_pos(e, it.row, 0)
+  }
+}
+
+fn pick_refresh(e) {
+  let o = e.overlay
+  let text = o.text
+  let items = []
+  if o.mode == "commands" {
+    let all = commands()
+    let i = 0
+    while i < all.length {
+      let c = all[i]
+      let score = tx.fuzzy(text, c.title)
+      if score >= 0 { let items = items.push({ name: c.title, detail: key_for(e, c.id), id: c.id, score: score }) }
+      let i = i + 1
+    }
+    if text != "" { let items = tx.by_score(items) }
+  } else if strings.starts(text, ":") {
+    let num = text.slice(1, text.length)
+    if tx.is_digits(num) {
+      let items = [{ name: "Go to line @{ num }", detail: "", row: tx.to_int(num) - 1, score: 1 }]
+    } else {
+      let items = [{ name: "Type a line number", detail: "", row: 0 - 1, score: 1 }]
+    }
+  } else if strings.starts(text, "@") {
+    let q = text.slice(1, text.length)
+    let syms = cmds.symbols(o.d)
+    let i = 0
+    while i < syms.length {
+      let score = tx.fuzzy(q, syms[i].name)
+      if score >= 0 { let items = items.push({ name: syms[i].name, detail: ":@{ syms[i].row + 1 }", row: syms[i].row, score: score }) }
+      let i = i + 1
+    }
+    if q != "" { let items = tx.by_score(items) }
+  } else {
+    let target = line_target(text)
+    let q = text
+    if target != null { let q = target.file }
+    let seen = {}
+    let i = 0
+    while i < e.docs.length {
+      let dd = e.docs[i]
+      let label = e.names[i]
+      let where = "open"
+      if dd.path != null { let where = dd.path }
+      let score = tx.fuzzy(q, label)
+      if score >= 0 {
+        let items = items.push({ name: label, detail: where, tab: i, score: score + 1000 })
+        if dd.path != null { let junk = map_set(seen, dd.path, true) }
+      }
+      let i = i + 1
+    }
+    let list = file_list(e)
+    let low = q.lower()
+    let i = 0
+    while i < list.length && items.length < 300 {
+      let p = list[i]
+      if !seen.has(p) && (low == "" || tx.subseq(low, p.lower())) {
+        let score = tx.fuzzy(q, p)
+        let base = path.base(p)
+        let bs = tx.fuzzy(q, base)
+        if bs > 0 { let score = score + bs * 2 }
+        let full = p
+        if e.side.root != "." { let full = path.join(e.side.root, p) }
+        if score >= 0 { let items = items.push({ name: base, detail: p, file: full, score: score }) }
+      }
+      let i = i + 1
+    }
+    if q != "" { let items = tx.by_score(items) }
+    if items.length > 200 { let items = items.slice(0, 200) }
+  }
+  let junk = map_set(o, "items", items)
+  let junk = map_set(o, "pick", 0)
+  pick_preview(e)
+}
+
+fn pick_open(e, mode, text) {
+  let d = cur(e)
+  let title = "Goto Anything"
+  if mode == "commands" { let title = "Command Palette" }
+  let o = { kind: "pick", mode: mode, title: title, text: text, col: text.length, items: [], pick: 0, d: d, sels: doc.copy_sels(d.sels), top: d.top, left: d.left }
+  let junk = map_set(e, "overlay", o)
+  let junk = map_set(e, "comp", null)
+  pick_refresh(e)
+}
+
+# Restores the view a preview moved.
+fn pick_restore(e) {
+  let o = e.overlay
+  let d = o.d
+  doc.set_sels(d, doc.copy_sels(o.sels))
+  let junk = map_set(d, "top", o.top)
+  let junk = map_set(d, "left", o.left)
+}
+
+fn pick_restore_from(e, o) {
+  let d = o.d
+  doc.set_sels(d, doc.copy_sels(o.sels))
+  let junk = map_set(d, "top", o.top)
+  let junk = map_set(d, "left", o.left)
+}
+
+fn comp_close(e) {
+  let junk = map_set(e, "comp", null)
+}
+
+# Shows completions for the identifier before the primary caret. force also asks the server.
+fn comp_update(e, force) {
+  let d = cur(e)
+  let s = doc.primary(d)
+  if !doc.empty(s) {
+    comp_close(e)
+    return null
+  }
+  let text = d.lines[s.hr]
+  let got = edit_complete.offer(d.lines, s.hr, s.hc, doc.marks(d, s.hr), d.lang)
+  if got.hint != "" { say(e, got.hint) }
+  let items = got.items
+  if force && edit_lsp.live(d) {
+    let more = edit_lsp.complete(d)
+    let prefix = text.slice(tx.ident_range(text, s.hc).a, s.hc)
+    let i = 0
+    while i < more.length && items.length < 40 {
+      if prefix == "" || strings.starts(more[i].name, prefix) { let items = items.push(more[i]) }
+      let i = i + 1
+    }
+  }
+  let r = tx.ident_range(text, s.hc)
+  let typed = text.slice(r.a, s.hc)
+  let asked = typed
+  if d.lang == "btr" { let asked = edit_complete.prefix_at(text, s.hc) }
+  if items.length == 0 || (!force && asked.length == 0) {
+    comp_close(e)
+    if force && items.length == 0 { say(e, "No completions") }
+    return null
+  }
+  if items.length == 1 && items[0].name == text.slice(r.a, r.b) && !force {
+    comp_close(e)
+    return null
+  }
+  let junk = map_set(e, "comp", { items: items, pick: 0, prefix: ui.width(typed) })
+}
+
+# Rewrites leading indentation with spaces or with tabs.
+fn convert_indent(e, spaces) {
+  let d = cur(e)
+  doc.begin(d, "indent")
+  let r = 0
+  while r < d.lines.length {
+    let text = d.lines[r]
+    let lead = tx.lead(text)
+    if lead > 0 {
+      let width = tx.col_at(text, lead, d.tab)
+      let fresh = " ".repeat(width)
+      if !spaces { let fresh = "@{ "\t".repeat(width / d.tab) }@{ " ".repeat(width % d.tab) }" }
+      if fresh != text.slice(0, lead) { let junk = doc.replace(d, r, 0, r, lead, fresh) }
+    }
+    let r = r + 1
+  }
+  doc.set_sels(d, d.sels)
+  doc.commit(d)
+  let junk = map_set(d, "spaces", spaces)
+}
+
+# Find in Files opens a tab of results. Enter or a double click on a result opens it.
+fn find_in_files(e, query) {
+  if query == "" { return null }
+  let root = e.side.root
+  let hits = edit_files.grep(root, query, e.find.fold, e.find.whole, 2000)
+  let lines = ["Searching for \"@{ query }\" in @{ root }", ""]
+  let targets = {}
+  let last = ""
+  let files = 0
+  let i = 0
+  while i < hits.length {
+    let h = hits[i]
+    if h.path != last {
+      if last != "" { let lines = lines.push("") }
+      let lines = lines.push("@{ h.path }:")
+      let last = h.path
+      let files = files + 1
+    }
+    let full = h.path
+    if root != "." { let full = path.join(root, h.path) }
+    let junk = map_set(targets, tx.str(lines.length), { path: full, row: h.row, query: query })
+    let lines = lines.push("  @{ strings.pad_left(tx.str(h.row + 1), 5, " ") }: @{ h.text }")
+    let i = i + 1
+  }
+  let lines = lines.push("")
+  let noun = "matches"
+  if hits.length == 1 { let noun = "match" }
+  let lines = lines.push("@{ hits.length } @{ noun } in @{ files } files")
+  let d = load(e, "@{ lines.join("\n") }\n", null)
+  let junk = map_set(d, "title", "Find Results")
+  let junk = map_set(d, "results", targets)
+  doc.mark_saved(d)
+  rename_tabs(e)
+}
+
+fn goto_definition(e) {
+  let d = cur(e)
+  let s = doc.primary(d)
+  if edit_lsp.live(d) {
+    let at = edit_lsp.define(d)
+    if at != null {
+      if at.path != d.path && !fs.exists(at.path) {
+        warn(e, "The definition is in @{ at.path }:@{ at.row + 1 }, which cannot be opened")
+        return null
+      }
+      mark_jump(e)
+      if at.path != d.path && !open_path(e, at.path) { return null }
+      let nd = cur(e)
+      let row = doc.clamp_row(nd, at.row)
+      goto_pos(e, row, edit_lsp.units_to_col(nd.lines[row], at.units))
+      return null
+    }
+  }
+  let at = null
+  if d.lang == "btr" { let at = edit_complete.jump_at(d.lines, s.hr, s.hc) }
+  if at == null {
+    let word = cmds.word_sel(d, s)
+    let name = doc.sel_text(d, word)
+    let syms = cmds.symbols(d)
+    let i = 0
+    while i < syms.length && at == null {
+      if syms[i].name == name && syms[i].row != s.hr { let at = { row: syms[i].row, col: tx.lead(d.lines[syms[i].row]) } }
+      let i = i + 1
+    }
+  }
+  if at == null {
+    say(e, "No definition found")
+    return null
+  }
+  mark_jump(e)
+  goto_pos(e, at.row, at.col)
+}
+
+# A tab of every key binding.
+fn help_doc(e) {
+  let lines = ["Keyboard shortcuts", ""]
+  let all = commands()
+  let i = 0
+  while i < all.length {
+    let k = key_for(e, all[i].id)
+    if k != "" { let lines = lines.push("@{ strings.pad_right(k, 24, " ") }@{ all[i].title }") }
+    let i = i + 1
+  }
+  let lines = lines.push("")
+  let lines = lines.push("Shift with any motion extends the selection. Alt-click adds a caret.")
+  let d = load(e, "@{ lines.join("\n") }\n", null)
+  let junk = map_set(d, "title", "Keyboard Shortcuts")
+  doc.mark_saved(d)
+  rename_tabs(e)
+}
+
+fn revert(e) {
+  let d = cur(e)
+  if d.path == null { return null }
+  let got = edit_files.read(d.path)
+  if !got.ok || got.text == null {
+    warn(e, "cannot read file: @{ d.path }")
+    return null
+  }
+  let parts = doc.split_text(got.text)
+  let last = d.lines.length - 1
+  doc.begin(d, "reload")
+  let junk = doc.replace(d, 0, 0, last, d.lines[last].length, parts.lines.join("\n"))
+  doc.set_sels(d, d.sels)
+  doc.commit(d)
+  doc.mark_saved(d)
+  let junk = map_set(d, "disk", got.text)
+}
+
+fn run_panel_file(e) {
+  let d = cur(e)
+  let p = d.path
+  if p == null { let p = "untitled.btr" }
+  edit_run.run_file(p, doc.file_text(d))
+  let junk = map_set(e, "focus", "panel")
+}
+
+fn set_indent(e, spaces, tab) {
+  let d = cur(e)
+  if spaces != null { let junk = map_set(d, "spaces", spaces) }
+  if tab > 0 { let junk = map_set(d, "tab", tab) }
+}
+
+fn set_lang(e, lang) {
+  let d = cur(e)
+  let junk = map_set(d, "lang", lang)
+  doc.syn_reset(d)
+  say(e, "Syntax: @{ tx.lang_title(lang) }")
+}
+
+fn show_hover(e) {
+  let d = cur(e)
+  let s = doc.primary(d)
+  let text = ""
+  if edit_lsp.live(d) { let text = edit_lsp.hover(d) }
+  if text == "" && d.lang == "btr" { let text = edit_complete.hover_text(d.lines, s.hr, s.hc, doc.marks(d, s.hr)) }
+  if text == "" {
+    say(e, "Nothing to show here")
+    return null
+  }
+  let caret = view.caret_of(e)
+  let r = 2
+  let c = 0
+  if caret != null {
+    let r = caret.r
+    let c = caret.c
+  }
+  let junk = map_set(e, "overlay", { kind: "hover", text: text.visible(), r: r, c: c })
+}
+
+fn side_level(dir, depth) {
+  let names = fs.list(dir)
+  let dirs = []
+  let files = []
+  if names == null { return [] }
+  let names = names.sort()
+  let i = 0
+  while i < names.length {
+    let name = names[i]
+    let full = name
+    if dir != "." { let full = path.join(dir, name) }
+    let k = fs.kind(full)
+    if k == "dir" {
+      if !edit_files.skipped(name) { let dirs = dirs.push({ name: name, path: full, dir: true, depth: depth, open: false }) }
+    } else if k == "file" && !edit_files.junk_file(name) {
+      let files = files.push({ name: name, path: full, dir: false, depth: depth, open: false })
+    }
+    let i = i + 1
+  }
+  let k = 0
+  while k < files.length {
+    let dirs = dirs.push(files[k])
+    let k = k + 1
+  }
+  return dirs
+}
+
+# The side bar lists the folder as a tree. Open folders are kept by path.
+fn side_build(e) {
+  let side = e.side
+  let out = []
+  let list = side_level(side.root, 0)
+  let i = 0
+  let guard = 0
+  while i < list.length && guard < 20000 {
+    let item = list[i]
+    let out = out.push(item)
+    if item.dir && side.opened.has(item.path) {
+      let junk = map_set(item, "open", true)
+      let kids = side_level(item.path, item.depth + 1)
+      let rest = list.slice(i + 1, list.length)
+      let list = kids
+      let k = 0
+      while k < rest.length {
+        let list = list.push(rest[k])
+        let k = k + 1
+      }
+      let i = 0
+    } else {
+      let i = i + 1
+    }
+    let guard = guard + 1
+  }
+  let junk = map_set(side, "items", out)
+  if side.pick >= out.length { let junk = map_set(side, "pick", out.length - 1) }
+  if side.pick < 0 { let junk = map_set(side, "pick", 0) }
+}
+
+fn side_toggle(e) {
+  let side = e.side
+  let junk = map_set(side, "open", !side.open)
+  if side.open {
+    side_build(e)
+  } else if e.focus == "side" {
+    let junk = map_set(e, "focus", "text")
+  }
+  view.reveal(e)
+}
+
+fn toggle_setting(e, name) {
+  let junk = map_set(e.settings, name, !e.settings[name])
+  let junk = map_set(e, "screen", [])
+}
+
+# Runs a command by id. Unknown ids do nothing.
+fn run_cmd(e, id) {
+  let d = cur(e)
+  if id == "new_file" { new_file(e) }
+  else if id == "open_file" {
+    ask_path(e, "Open", "", fn(ee, text) {
+      let list = edit_files.split_paths(text)
+      let i = 0
+      while i < list.length {
+        if edit_files.is_dir(list[i]) {
+          let junk = map_set(ee.side, "root", list[i])
+          let junk = map_set(ee.side, "open", false)
+          side_toggle(ee)
+          let junk = map_set(ee, "files", [])
+        } else {
+          open_path(ee, list[i])
+        }
+        let i = i + 1
+      }
+    })
+  }
+  else if id == "reopen_closed" { reopen_closed(e) }
+  else if id == "save" { save_doc(e, d, null) }
+  else if id == "save_as" {
+    let start = ""
+    if d.path != null { let start = d.path }
+    ask_path(e, "Save As", start, fn(ee, text) {
+      let list = edit_files.split_paths(text)
+      if list.length > 0 { save_to(ee, d, list[0], null) }
+    })
+  }
+  else if id == "save_all" { save_all(e) }
+  else if id == "close_tab" { close_tab(e, e.at, null) }
+  else if id == "close_all" { quit(e) }
+  else if id == "revert" { revert(e) }
+  else if id == "quit" { quit(e) }
+  else if id == "undo" {
+    if !doc.undo(d) { say(e, "Nothing to undo") }
+  }
+  else if id == "redo" {
+    if !doc.redo(d) { say(e, "Nothing to redo") }
+  }
+  else if id == "cut" { set_clip(e, cmds.cut(d)) }
+  else if id == "copy" {
+    set_clip(e, cmds.copy_pieces(d))
+    doc.seal(d)
+  }
+  else if id == "paste" { cmds.paste(d, clip_now(e)) }
+  else if id == "duplicate" { cmds.duplicate(d) }
+  else if id == "delete_line" { cmds.delete_lines(d) }
+  else if id == "join_lines" { cmds.join_lines(d) }
+  else if id == "swap_up" { cmds.move_lines(d, 0 - 1) }
+  else if id == "swap_down" { cmds.move_lines(d, 1) }
+  else if id == "line_after" { cmds.open_line(d, true) }
+  else if id == "line_before" { cmds.open_line(d, false) }
+  else if id == "toggle_comment" { cmds.toggle_comment(d) }
+  else if id == "indent" { cmds.indent_lines(d) }
+  else if id == "unindent" { cmds.unindent_lines(d) }
+  else if id == "upper_case" { cmds.change_case(d, "upper") }
+  else if id == "lower_case" { cmds.change_case(d, "lower") }
+  else if id == "title_case" { cmds.change_case(d, "title") }
+  else if id == "transpose" { cmds.transpose(d) }
+  else if id == "sort_lines" { cmds.sort_lines(d) }
+  else if id == "delete_word_back" { cmds.delete_motion(d, "word_left") }
+  else if id == "delete_word_forward" { cmds.delete_motion(d, "word_right") }
+  else if id == "delete_to_bol" { cmds.delete_motion(d, "bol") }
+  else if id == "delete_to_eol" { cmds.delete_motion(d, "eol") }
+  else if id == "trim_whitespace" {
+    cmds.trim_trailing(d)
+    doc.seal(d)
+  }
+  else if id == "select_all" { cmds.select_all(d) }
+  else if id == "select_line" { cmds.select_line(d) }
+  else if id == "find_under_expand" {
+    let m = cmds.find_under_expand(d)
+    if m != "" { say(e, m) }
+  }
+  else if id == "skip_occurrence" {
+    let m = cmds.skip_occurrence(d)
+    if m != "" { say(e, m) }
+  }
+  else if id == "select_all_occurrences" {
+    let n = cmds.select_all_occurrences(d)
+    if n > 1 { say(e, "@{ n } matches") }
+  }
+  else if id == "split_lines" { cmds.split_lines(d) }
+  else if id == "add_caret_above" { cmds.add_caret(d, 0 - 1) }
+  else if id == "add_caret_below" { cmds.add_caret(d, 1) }
+  else if id == "expand_brackets" { cmds.expand_brackets(d) }
+  else if id == "jump_bracket" { cmds.jump_bracket(d) }
+  else if id == "single_selection" { cmds.single_selection(d) }
+  else if id == "find" { bar_open(e, "find") }
+  else if id == "replace" { bar_open(e, "replace") }
+  else if id == "find_next" { find_step(e, false) }
+  else if id == "find_prev" { find_step(e, true) }
+  else if id == "find_under" || id == "use_selection_for_find" {
+    let s = doc.primary(d)
+    if doc.empty(s) {
+      doc.single(d, cmds.word_sel(d, s))
+      let s = doc.primary(d)
+    }
+    let junk = map_set(e, "find", { query: doc.sel_text(d, s), fold: false, whole: false })
+    if id == "find_under" { find_step(e, false) }
+    else { say(e, "Find: @{ e.find.query }") }
+  }
+  else if id == "find_in_files" {
+    let start = e.find.query
+    let s = doc.primary(d)
+    if !doc.empty(s) && s.ar == s.hr { let start = doc.sel_text(d, s) }
+    ask_text(e, "Find in Files", start, "text", fn(ee, text) {
+      let junk = map_set(ee.find, "query", text)
+      find_in_files(ee, text)
+    })
+  }
+  else if id == "goto_anything" { pick_open(e, "files", "") }
+  else if id == "goto_line" { pick_open(e, "files", ":") }
+  else if id == "goto_symbol" { pick_open(e, "files", "@") }
+  else if id == "command_palette" { pick_open(e, "commands", "") }
+  else if id == "goto_definition" { goto_definition(e) }
+  else if id == "jump_back" { jump_back(e) }
+  else if id == "next_tab" { show(e, (e.at + 1) % e.docs.length) }
+  else if id == "prev_tab" { show(e, (e.at - 1 + e.docs.length) % e.docs.length) }
+  else if id == "toggle_sidebar" { side_toggle(e) }
+  else if id == "focus_sidebar" {
+    if !e.side.open { side_toggle(e) }
+    let junk = map_set(e, "focus", "side")
+  }
+  else if id == "toggle_panel" {
+    if edit_run.is_open() {
+      edit_run.close_panel()
+      let junk = map_set(e, "focus", "text")
+    } else {
+      edit_run.open_mode(edit_run.mode())
+      let junk = map_set(e, "focus", "panel")
+    }
+  }
+  else if id == "run_file" { run_panel_file(e) }
+  else if id == "open_repl" {
+    edit_run.open_mode("repl")
+    let junk = map_set(e, "focus", "panel")
+  }
+  else if id == "open_shell" {
+    edit_run.open_mode("shell")
+    let junk = map_set(e, "focus", "panel")
+  }
+  else if id == "toggle_line_numbers" { toggle_setting(e, "line_numbers") }
+  else if id == "toggle_guides" { toggle_setting(e, "draw_indent_guides") }
+  else if id == "toggle_menu_bar" { toggle_setting(e, "menu_bar") }
+  else if id == "toggle_minimap" { toggle_setting(e, "minimap") }
+  else if id == "toggle_word_wrap" {
+    let junk = map_set(d, "wrap_on", !d.wrap_on)
+    if d.wrap_on { say(e, "Word wrap on") } else { say(e, "Word wrap off") }
+  }
+  else if id == "fold" {
+    if cmds.fold(d) == 0 { say(e, "Nothing to fold here") }
+  }
+  else if id == "unfold" {
+    if !cmds.unfold(d) { say(e, "Nothing folded here") }
+  }
+  else if id == "unfold_all" { cmds.unfold_all(d) }
+  else if strings.starts(id, "fold_") { cmds.fold_level(d, tx.to_int(id.slice(5, id.length))) }
+  else if id == "indent_spaces" { set_indent(e, true, 0) }
+  else if id == "indent_tabs" { set_indent(e, false, 0) }
+  else if id == "tab_2" { set_indent(e, null, 2) }
+  else if id == "tab_4" { set_indent(e, null, 4) }
+  else if id == "tab_8" { set_indent(e, null, 8) }
+  else if id == "to_spaces" { convert_indent(e, true) }
+  else if id == "to_tabs" { convert_indent(e, false) }
+  else if id == "eol_unix" { let junk = map_set(d, "crlf", false) }
+  else if id == "eol_windows" { let junk = map_set(d, "crlf", true) }
+  else if id == "syntax_plain" { set_lang(e, "") }
+  else if strings.starts(id, "syntax_") { set_lang(e, id.slice(7, id.length)) }
+  else if strings.starts(id, "theme_") {
+    let name = id.slice(6, id.length)
+    set_theme(e, theme.preset(name))
+    say(e, "Theme @{ name }. Add \"theme name @{ name }\" to editor.conf to keep it.")
+  }
+  else if id == "complete" { comp_update(e, true) }
+  else if id == "show_hover" { show_hover(e) }
+  else if id == "help_keys" { help_doc(e) }
+  else { say(e, "Unknown command: @{ id }") }
+}
+
+fn pick_accept(e) {
+  let o = e.overlay
+  let junk = map_set(e, "overlay", null)
+  if o.items.length == 0 {
+    pick_restore_from(e, o)
+    return null
+  }
+  let it = o.items[o.pick]
+  if o.mode == "commands" {
+    run_cmd(e, it.id)
+    return null
+  }
+  if it.has("row") {
+    if it.row < 0 {
+      pick_restore_from(e, o)
+      return null
+    }
+    let d = cur(e)
+    doc.set_sels(d, doc.copy_sels(o.sels))
+    mark_jump(e)
+    let c = 0
+    if strings.starts(o.text, "@") { let c = tx.lead(d.lines[doc.clamp_row(d, it.row)]) }
+    goto_pos(e, it.row, c)
+    return null
+  }
+  pick_restore_from(e, o)
+  mark_jump(e)
+  if it.has("tab") { show(e, it.tab) }
+  else if !open_path(e, it.file) { return null }
+  let target = line_target(o.text)
+  if target != null && target.row > 0 { goto_pos(e, target.row - 1, target.col) }
+}
+
+fn title_of(id) {
+  let all = commands()
+  let i = 0
+  while i < all.length {
+    if all[i].id == id { return all[i].title }
+    let i = i + 1
+  }
+  return id
+}
+
+fn keymap() {
+  let out = {}
+  let list = bindings()
+  let i = 0
+  while i < list.length {
+    let junk = map_set(out, list[i][0], list[i][1])
+    let i = i + 1
+  }
+  return out
+}
+
+fn keys() {
+  if keys_hold.map == null { let junk = map_set(keys_hold, "map", keymap()) }
+  return keys_hold.map
+}
+
+fn open_menu(e, i) {
+  let lay = view.layout(e)
+  let m = e.menus[i]
+  let items = []
+  let width = 14
+  let k = 0
+  while k < m.items.length {
+    let id = m.items[k]
+    let name = title_of(id)
+    let at = name.index(": ")
+    if at >= 0 { let name = name.slice(at + 2, name.length) }
+    let key = key_for(e, id)
+    let items = items.push({ name: name, key: key, id: id })
+    let w = ui.width(name) + ui.width(key) + 6
+    if w > width { let width = w }
+    let k = k + 1
+  }
+  let x = 0
+  let k = 0
+  while k < i {
+    let x = x + ui.width(e.menus[k].title) + 2
+    let k = k + 1
+  }
+  let r = lay.menu + 1
+  if lay.menu < 0 { let r = 0 }
+  let junk = map_set(e, "overlay", { kind: "menu", id: i, items: items, pick: 0, r: r, c: x, width: width, at_r: r, at_c: x })
+  let junk = map_set(e, "comp", null)
+}
+
+fn context_menu(e, r, c) {
+  let ids = ["cut", "copy", "paste", "select_all", "find_under_expand", "goto_definition", "toggle_comment"]
+  let items = []
+  let width = 14
+  let k = 0
+  while k < ids.length {
+    let name = title_of(ids[k])
+    let at = name.index(": ")
+    if at >= 0 { let name = name.slice(at + 2, name.length) }
+    let key = key_for(e, ids[k])
+    let items = items.push({ name: name, key: key, id: ids[k] })
+    let w = ui.width(name) + ui.width(key) + 6
+    if w > width { let width = w }
+    let k = k + 1
+  }
+  let junk = map_set(e, "overlay", { kind: "menu", id: 0 - 1, items: items, pick: 0, r: r, c: c, width: width, at_r: r, at_c: c })
+}
+
+# Opens a folder in the side bar, or a file in a tab.
+fn side_activate(e, k) {
+  let side = e.side
+  if k < 0 || k >= side.items.length { return null }
+  let item = side.items[k]
+  let junk = map_set(side, "pick", k)
+  if item.dir {
+    if side.opened.has(item.path) { let junk = side.opened.remove(item.path) }
+    else { let junk = map_set(side.opened, item.path, true) }
+    side_build(e)
+    return null
+  }
+  if open_path(e, item.path) { let junk = map_set(e, "focus", "text") }
+}
+
+fn side_key(e, key) {
+  let side = e.side
+  let n = side.items.length
+  let lay = view.layout(e)
+  if key == "escape" || key == "ctrl-0" {
+    let junk = map_set(e, "focus", "text")
+    return null
+  }
+  let pick = side.pick
+  if key == "up" { let pick = pick - 1 }
+  if key == "down" { let pick = pick + 1 }
+  if key == "pageup" { let pick = pick - lay.view }
+  if key == "pagedown" { let pick = pick + lay.view }
+  if key == "home" { let pick = 0 }
+  if key == "end" { let pick = n - 1 }
+  if pick >= n { let pick = n - 1 }
+  if pick < 0 { let pick = 0 }
+  let junk = map_set(side, "pick", pick)
+  if n > 0 {
+    let item = side.items[pick]
+    if key == "enter" || key == " " { side_activate(e, pick) }
+    if key == "right" && item.dir && !item.open { side_activate(e, pick) }
+    if key == "left" {
+      if item.dir && item.open { side_activate(e, pick) }
+      else if item.depth > 0 {
+        let k = pick - 1
+        while k >= 0 && side.items[k].depth >= item.depth { let k = k - 1 }
+        if k >= 0 { let junk = map_set(side, "pick", k) }
+      }
+    }
+  }
+  if side.pick < side.top { let junk = map_set(side, "top", side.pick) }
+  if side.pick >= side.top + lay.view { let junk = map_set(side, "top", side.pick - lay.view + 1) }
+}
+
+# Replaces the identifier before every caret with the chosen completion.
+fn comp_accept(e) {
+  let c = e.comp
+  let name = c.items[c.pick].name
+  comp_close(e)
+  let d = cur(e)
+  doc.edit_sels(d, "complete", fn(dd, s) {
+    let text = dd.lines[s.hr]
+    let r = tx.ident_range(text, s.hc)
+    let tail = name
+    let dot = name.index(".")
+    let before = edit_complete.prefix_at(text, s.hc)
+    if before.index(".") >= 0 && dot >= 0 {
+      let parts = name.split(".")
+      let tail = parts[parts.length - 1]
+    }
+    return { r1: s.hr, c1: r.a, r2: s.hr, c2: r.b, text: tail, place: "end" }
+  })
+  doc.seal(d)
+}
+
+fn comp_key(e, key) {
+  let c = e.comp
+  let n = c.items.length
+  if key == "escape" {
+    comp_close(e)
+    return true
+  }
+  if key == "up" || key == "ctrl-p" {
+    let junk = map_set(c, "pick", (c.pick - 1 + n) % n)
+    return true
+  }
+  if key == "down" || key == "ctrl-n" {
+    let junk = map_set(c, "pick", (c.pick + 1) % n)
+    return true
+  }
+  if key == "pageup" {
+    let p = c.pick - 8
+    if p < 0 { let p = 0 }
+    let junk = map_set(c, "pick", p)
+    return true
+  }
+  if key == "pagedown" {
+    let p = c.pick + 8
+    if p >= n { let p = n - 1 }
+    let junk = map_set(c, "pick", p)
+    return true
+  }
+  if key == "enter" || key == "tab" {
+    comp_accept(e)
+    return true
+  }
+  return false
+}
+
+# Opens the result under the caret of a Find Results tab. False when this is not one.
+fn open_result(e) {
+  let d = cur(e)
+  if !d.has("results") { return false }
+  let s = doc.primary(d)
+  let key = tx.str(s.hr)
+  if !d.results.has(key) { return false }
+  let t = d.results[key]
+  mark_jump(e)
+  if !open_path(e, t.path) { return true }
+  let nd = cur(e)
+  let row = doc.clamp_row(nd, t.row)
+  let at = nd.lines[row].lower().index(t.query.lower())
+  if at < 0 { let at = 0 }
+  doc.single(nd, doc.span(row, at, row, at + t.query.length))
+  center(e)
+  return true
+}
+
+fn page_rows(e) {
+  let lay = view.layout(e)
+  let n = lay.view - 1
+  if n < 1 { let n = 1 }
+  return n
+}
+
+# Commands that leave the caret where it is do not scroll the view.
+fn keeps_view(id) {
+  return id == "copy" || id == "save" || id == "save_all" || id == "toggle_panel" || id == "toggle_sidebar" || id == "focus_sidebar" || strings.starts(id, "theme_") || strings.starts(id, "toggle_")
+}
+
+fn command(e, id) {
+  run_cmd(e, id)
+  if !keeps_view(id) && e.overlay == null { view.reveal(e) }
+}
+
+fn confirm_key(e, key) {
+  let o = e.overlay
+  let n = o.buttons.length
+  let choice = 0 - 1
+  if key == "left" || key == "shift-tab" { let junk = map_set(o, "pick", (o.pick - 1 + n) % n) }
+  else if key == "right" || key == "tab" { let junk = map_set(o, "pick", (o.pick + 1) % n) }
+  else if key == "enter" || key == " " { let choice = o.pick }
+  else if key == "escape" || key == "c" { let choice = n - 1 }
+  else if key == "s" || key == "y" { let choice = 0 }
+  else if key == "n" || key == "d" { let choice = 1 }
+  if choice >= 0 {
+    let junk = map_set(e, "overlay", null)
+    o.act(e, choice)
   }
   return true
 }
 
-# Returns the integer value of a digit string.
-fn to_int(text) {
-  let n = 0
+fn menu_key(e, key) {
+  let o = e.overlay
+  let n = o.items.length
+  if key == "escape" || key == "f10" {
+    let junk = map_set(e, "overlay", null)
+    return true
+  }
+  if key == "up" { let junk = map_set(o, "pick", (o.pick - 1 + n) % n) }
+  else if key == "down" { let junk = map_set(o, "pick", (o.pick + 1) % n) }
+  else if (key == "left" || key == "right") && o.id >= 0 {
+    let m = e.menus.length
+    let next = (o.id + 1) % m
+    if key == "left" { let next = (o.id - 1 + m) % m }
+    open_menu(e, next)
+  } else if key == "enter" || key == " " {
+    let id = o.items[o.pick].id
+    let junk = map_set(e, "overlay", null)
+    command(e, id)
+  }
+  return true
+}
+
+fn pick_key(e, key, ev) {
+  let o = e.overlay
+  let n = o.items.length
+  if key == "escape" {
+    pick_restore(e)
+    let junk = map_set(e, "overlay", null)
+    return true
+  }
+  if key == "enter" {
+    pick_accept(e)
+    return true
+  }
+  let moved = true
+  let p = o.pick
+  if key == "up" || key == "ctrl-p" || key == "shift-tab" { let p = p - 1 }
+  else if key == "down" || key == "ctrl-n" || key == "tab" { let p = p + 1 }
+  else if key == "pageup" { let p = p - 10 }
+  else if key == "pagedown" { let p = p + 10 }
+  else { let moved = false }
+  if moved {
+    if n > 0 {
+      if p < 0 { let p = 0 }
+      if p >= n { let p = n - 1 }
+      let junk = map_set(o, "pick", p)
+      pick_preview(e)
+    }
+    return true
+  }
+  if field_key(o, key, ev) {
+    pick_refresh(e)
+    return true
+  }
+  return true
+}
+
+fn prompt_key(e, key, ev) {
+  let p = e.prompt
+  if key == "escape" {
+    let junk = map_set(e, "prompt", null)
+    return true
+  }
+  if key == "enter" {
+    let junk = map_set(e, "prompt", null)
+    p.act(e, p.text)
+    view.reveal(e)
+    return true
+  }
+  if p.kind == "path" {
+    let n = p.shown.length
+    if key == "tab" && n > 0 {
+      let junk = map_set(p, "text", edit_files.complete_at(p.text, p.pick))
+      let junk = map_set(p, "col", p.text.length)
+      prompt_refresh(e)
+      return true
+    }
+    if (key == "up" || key == "shift-tab") && n > 0 {
+      let junk = map_set(p, "pick", (p.pick - 1 + n) % n)
+      return true
+    }
+    if key == "down" && n > 0 {
+      let junk = map_set(p, "pick", (p.pick + 1) % n)
+      return true
+    }
+  }
+  if field_key(p, key, ev) { prompt_refresh(e) }
+  return true
+}
+
+fn panel_key(e, key, ev) {
+  let d = cur(e)
+  let clip = e.clip.text
+  if key == "paste" || key == "text" { let clip = ev.text }
+  let p = d.path
+  let back = edit_run.key(key, clip, p, doc.file_text(d))
+  if back == "blur" { let junk = map_set(e, "focus", "text") }
+}
+
+# Motion keys: the key name without shift- picks the motion. Shift extends the selection.
+fn motion_of(key) {
+  let k = key
+  let extend = false
+  if strings.starts(k, "shift-") {
+    let k = k.slice(6, k.length)
+    let extend = true
+  }
+  if strings.starts(k, "ctrl-shift-") {
+    let k = "ctrl-@{ k.slice(11, k.length) }"
+    let extend = true
+  }
+  if strings.starts(k, "alt-shift-") && (strings.ends(k, "-left") || strings.ends(k, "-right")) {
+    let k = "alt-@{ k.slice(10, k.length) }"
+    let extend = true
+  }
+  let how = ""
+  if k == "left" || k == "right" || k == "up" || k == "down" || k == "home" || k == "end" { let how = k }
+  if k == "pageup" { let how = "page_up" }
+  if k == "pagedown" { let how = "page_down" }
+  if k == "ctrl-left" || k == "alt-b" { let how = "word_left" }
+  if k == "ctrl-right" || k == "alt-f" { let how = "word_right" }
+  if k == "alt-left" { let how = "sub_left" }
+  if k == "alt-right" { let how = "sub_right" }
+  if k == "ctrl-home" { let how = "doc_start" }
+  if k == "ctrl-end" { let how = "doc_end" }
+  return { how: how, extend: extend }
+}
+
+# Scrolls n rows, skipping folded ones.
+fn scroll_by(e, n) {
+  let d = cur(e)
+  if d.folds.length == 0 {
+    let junk = map_set(d, "top", view.clamp_top(e, d.top + n))
+    return null
+  }
+  let dir = 1
+  if n < 0 { let dir = 0 - 1 }
+  let k = n * dir
+  let top = d.top
+  while k > 0 && doc.shown_row(d, top, dir) >= 0 {
+    let top = doc.shown_row(d, top, dir)
+    let k = k - 1
+  }
+  let junk = map_set(d, "top", top)
+}
+
+# Keys for the text when nothing else has them.
+fn text_key(e, key, ev) {
+  let d = cur(e)
+  if e.chord != "" {
+    let combo = "@{ e.chord } @{ key }"
+    let junk = map_set(e, "chord", "")
+    let id = ""
+    if keys().has(combo) { let id = keys()[combo] }
+    if id == "" {
+      say(e, "@{ pretty_key(combo) } is not bound")
+      return null
+    }
+    command(e, id)
+    return null
+  }
+  if e.comp != null && comp_key(e, key) {
+    view.reveal(e)
+    return null
+  }
+  if e.comp != null && !(key.length == 1 || key == "backspace") { comp_close(e) }
+  if key == "ctrl-k" {
+    let junk = map_set(e, "chord", "ctrl-k")
+    return null
+  }
+  if key == "ctrl-up" {
+    scroll_by(e, 0 - 1)
+    return null
+  }
+  if key == "ctrl-down" {
+    scroll_by(e, 1)
+    return null
+  }
+  let m = motion_of(key)
+  if m.how != "" {
+    if m.how == "page_up" || m.how == "page_down" {
+      let n = page_rows(e)
+      if m.how == "page_up" { let n = 0 - n }
+      scroll_by(e, n)
+    }
+    if m.how == "doc_start" || m.how == "doc_end" { mark_jump(e) }
+    cmds.move(d, m.how, m.extend, page_rows(e))
+    view.reveal(e)
+    return null
+  }
+  let id = ""
+  if keys().has(key) { let id = keys()[key] }
+  if id == "" && strings.starts(key, "super-") {
+    let alt = "ctrl-@{ key.slice(6, key.length) }"
+    if keys().has(alt) { let id = keys()[alt] }
+  }
+  if id != "" {
+    command(e, id)
+    return null
+  }
+  if key == "escape" {
+    if e.bar != null {
+      remember_find(e)
+      let junk = map_set(e, "bar", null)
+      return null
+    }
+    if edit_run.is_open() && !edit_run.focused() && e.focus == "text" && !cmds.single_selection(d) {
+      edit_run.close_panel()
+      return null
+    }
+    cmds.single_selection(d)
+    return null
+  }
+  if key == "f10" {
+    open_menu(e, 0)
+    return null
+  }
+  if key == "enter" {
+    if open_result(e) { return null }
+    cmds.newline(d, e.settings.auto_indent)
+    view.reveal(e)
+    return null
+  }
+  if key == "tab" {
+    cmds.tab_key(d)
+    view.reveal(e)
+    return null
+  }
+  if key == "backspace" {
+    cmds.backspace(d, e.settings.auto_match)
+    view.reveal(e)
+    if e.comp != null { comp_update(e, false) }
+    return null
+  }
+  if key == "delete" {
+    cmds.delete_forward(d)
+    view.reveal(e)
+    return null
+  }
+  if key == "paste" || key == "text" {
+    cmds.insert_text(d, ev.text, "paste")
+    view.reveal(e)
+    return null
+  }
+  if key.length == 1 && ord(key) >= 32 {
+    cmds.type_char(d, key, e.settings.auto_match)
+    view.reveal(e)
+    if e.settings.auto_complete && (tx.is_word(key) || (key == "." && d.lang == "btr")) { comp_update(e, false) }
+    else if e.comp != null { comp_close(e) }
+    else if key == "(" && d.lang == "btr" {
+      let s = doc.primary(d)
+      let hint = edit_complete.call_hint(d.lines, s.hr, s.hc, doc.marks(d, s.hr))
+      if hint != "" { say(e, hint) }
+    }
+    return null
+  }
+  if strings.starts(key, "alt-") && key.length == 5 && tx.is_digit(key[4]) {
+    let n = tx.to_int(key.slice(4, 5)) - 1
+    if n < 0 { let n = 9 }
+    if n < e.docs.length { show(e, n) }
+    return null
+  }
+}
+
+# A middle-button drag selects a box: the same display columns on every line it crosses.
+# Lines that end before the box get a caret at their end.
+fn box_to(e, p, want) {
+  let d = cur(e)
+  let g = e.drag
+  let r1 = g.r
+  let r2 = p.r
+  let step = 1
+  if r2 < r1 { let step = 0 - 1 }
+  let out = []
+  let r = r1
+  let going = true
+  while going {
+    let line = d.lines[r]
+    let a = tx.index_at(line, g.col, d.tab)
+    let b = tx.index_at(line, want, d.tab)
+    let out = out.push(doc.span(r, a, r, b))
+    if r == r2 { let going = false }
+    let r = r + step
+  }
+  let junk = map_set(out[out.length - 1], "p", true)
+  doc.set_sels(d, out)
+}
+
+# Extends the drag selection to position p, by characters, words, or lines.
+fn drag_to(e, p) {
+  let d = cur(e)
+  let g = e.drag
+  let a = g.a
+  let b = g.b
+  let head = { r: p.r, c: p.c }
+  let anchor = a
+  if g.unit == "word" {
+    let w = tx.word_range(d.lines[p.r], p.c)
+    if doc.before(p.r, p.c, a.r, a.c) {
+      let head = { r: p.r, c: w.a }
+      let anchor = b
+    } else {
+      let head = { r: p.r, c: w.b }
+    }
+  }
+  if g.unit == "line" {
+    if p.r < a.r {
+      let head = { r: p.r, c: 0 }
+      let anchor = b
+    } else if p.r + 1 < d.lines.length {
+      let head = { r: p.r + 1, c: 0 }
+    } else {
+      let head = { r: p.r, c: d.lines[p.r].length }
+    }
+  }
+  let s = doc.span(anchor.r, anchor.c, head.r, head.c)
+  let junk = map_set(s, "p", true)
+  let rest = []
   let i = 0
-  while i < text.length {
-    let n = n * 10 + "0123456789".index(text[i])
+  while i < g.keep.length {
+    let rest = rest.push(doc.copy_sel(g.keep[i]))
     let i = i + 1
   }
+  let rest = rest.push(s)
+  doc.set_sels(d, rest)
+}
+
+fn menu_hit(e, x) {
+  let at = 0
+  let i = 0
+  while i < e.menus.length {
+    let w = ui.width(e.menus[i].title) + 2
+    if x >= at && x < at + w { return i }
+    let at = at + w
+    let i = i + 1
+  }
+  return 0 - 1
+}
+
+fn click_count(e, ev) {
+  let t = now_ms()
+  if ev.has("t") { let t = ev.t }
+  let c = e.click
+  let n = 1
+  if t - c.t < 400 && c.x == ev.x && c.y == ev.y { let n = c.n % 3 + 1 }
+  let junk = map_set(e, "click", { t: t, x: ev.x, y: ev.y, n: n })
   return n
 }
 
-# Returns buf asking for a second q before quitting a dirty buffer.
-fn arm_quit(buf) {
-  return re(buf, buf.lines, buf.row, buf.col, "normal", "", buf.yank, buf.undo, buf.dirty, "", "quit without saving? press q again", true, buf.request, false)
-}
-
-# Quits a clean buffer. A dirty buffer asks for confirmation.
-fn quit_soft(buf) {
-  if buf.dirty { return arm_quit(buf) }
-  return set_request(buf, "quit")
-}
-
-# Runs the command line: w, wq, q, q!, or a 1-based line number.
-fn run_command(buf) {
-  let cmd = buf.cmd
-  let buf = set_find(buf, buf.find)
-  if cmd == "w" { return set_request(buf, "save") }
-  if cmd == "wq" { return set_request(buf, "save-quit") }
-  if cmd == "q!" { return set_request(buf, "quit") }
-  if cmd == "q" { return quit_soft(buf) }
-  if is_digits(cmd) { return move(buf, to_int(cmd) - 1, 0) }
-  return set_hint(buf, "unknown command")
-}
-
-# Ends an insert group so the next edit is its own undo step.
-fn retake(buf) {
-  if buf.mode == "insert" && buf.anchor {
-    return re(buf, buf.lines, buf.row, buf.col, buf.mode, buf.pending, buf.yank, buf.undo, buf.dirty, buf.cmd, buf.hint, buf.confirm, buf.request, false)
+# The document position under screen cell x, y (0-based), clamped into the text.
+fn text_pos(e, lay, x, y) {
+  let d = cur(e)
+  let k = y - lay.top
+  if k < 0 { let k = 0 }
+  let vrows = view.visual_rows(d, d.top, k + 1)
+  if k >= vrows.length {
+    let last = d.lines.length - 1
+    return { r: last, c: d.lines[last].length }
   }
-  return buf
-}
-
-# Replaces the current line. An unchanged line leaves buf as it is.
-fn with_line(buf, line) {
-  if line == buf.lines[buf.row] { return buf }
-  let col = buf.col
-  if buf.mode != "insert" && line.length > 0 && col >= line.length { let col = line.length - 1 }
-  if buf.mode == "insert" && col > line.length { let col = line.length }
+  let vr = vrows[k]
+  let text = d.lines[vr.r]
+  let base = d.left
+  if d.wrap > 0 { let base = tx.col_at(text, vr.a, d.tab) }
+  let col = x - lay.gx - lay.gw
   if col < 0 { let col = 0 }
-  return change(buf, replace_at(buf.lines, buf.row, line), buf.row, col)
+  let c = tx.index_at(text, base + col, d.tab)
+  if !vr.last && c >= vr.b { let c = vr.b - 1 }
+  if c < vr.a { let c = vr.a }
+  return { r: vr.r, c: c }
 }
 
-# Moves to the next subword, or the start of the next line.
-fn word_forward(buf) {
-  let line = buf.lines[buf.row]
-  let col = edit_ops.next_col(line, buf.col)
-  if col < line.length { return move(buf, buf.row, col) }
-  if buf.row + 1 < buf.lines.length { return move(buf, buf.row + 1, 0) }
-  return move(buf, buf.row, line.length)
-}
-
-# Moves to the previous subword, or the last subword of the previous line.
-fn word_back(buf) {
-  let col = edit_ops.prev_col(buf.lines[buf.row], buf.col)
-  if col >= 0 { return move(buf, buf.row, col) }
-  if buf.row == 0 { return move(buf, 0, 0) }
-  return move(buf, buf.row - 1, edit_ops.last_col(buf.lines[buf.row - 1]))
-}
-
-# Moves to the end of this subword, or the end of the first subword on the next line.
-fn word_end(buf) {
-  let line = buf.lines[buf.row]
-  let col = edit_ops.end_col(line, buf.col)
-  if col < line.length { return move(buf, buf.row, col) }
-  if buf.row + 1 >= buf.lines.length { return move(buf, buf.row, line.length) }
-  let next = buf.lines[buf.row + 1]
-  let at = edit_ops.end_col(next, 0)
-  if at >= next.length { let at = 0 }
-  return move(buf, buf.row + 1, at)
-}
-
-# Deletes from the cursor through the end of the line.
-fn delete_end(buf) {
-  let line = buf.lines[buf.row]
-  if line.length == 0 || buf.col >= line.length { return buf }
-  return with_line(buf, line.slice(0, buf.col))
-}
-
-# Deletes through the end of the line and enters insert mode.
-fn change_end(buf) {
-  let buf = delete_end(buf)
-  return enter_insert(buf, buf.row, buf.lines[buf.row].length)
-}
-
-# Clears the current line and enters insert mode.
-fn clear_line(buf) {
-  let buf = with_line(buf, "")
-  return enter_insert(buf, buf.row, 0)
-}
-
-# Joins the current line with the next one.
-fn join_cmd(buf) {
-  if buf.row + 1 >= buf.lines.length { return buf }
-  let merged = edit_ops.join_lines(buf.lines[buf.row], buf.lines[buf.row + 1])
-  return change(buf, join_at(buf.lines, buf.row + 1, merged), buf.row, buf.col)
-}
-
-# Copies the current line below the cursor.
-fn duplicate_line(buf) {
-  let buf = retake(buf)
-  let lines = insert_after(buf.lines, buf.row, buf.lines[buf.row])
-  let buf = change(buf, lines, buf.row + 1, buf.col)
-  if buf.mode == "insert" { return imove(buf, buf.row, buf.col) }
-  return move(buf, buf.row, buf.col)
-}
-
-# Swaps the current line with the line dir steps away. The cursor moves with it.
-fn shift_line(buf, dir) {
-  let dest = buf.row + dir
-  if dest < 0 || dest >= buf.lines.length { return buf }
-  let buf = retake(buf)
-  let lines = edit_ops.exchange(buf.lines, buf.row, dest)
-  let buf = change(buf, lines, dest, buf.col)
-  if buf.mode == "insert" { return imove(buf, buf.row, buf.col) }
-  return move(buf, buf.row, buf.col)
-}
-
-# Swaps the ASCII case of the scalar under the cursor and steps right.
-fn tilde(buf) {
-  let line = buf.lines[buf.row]
-  if line.length == 0 { return buf }
-  let col = buf.col
-  if col >= line.length { let col = line.length - 1 }
-  let ch = edit_ops.swap_case(line[col])
-  let dest = col + 1
-  if dest >= line.length { let dest = line.length - 1 }
-  if ch == line[col] { return move(buf, buf.row, dest) }
-  let next = "@{ line.slice(0, col) }@{ ch }@{ line.slice(col + 1, line.length) }"
-  return change(buf, replace_at(buf.lines, buf.row, next), buf.row, dest)
-}
-
-# Swaps the scalar under the cursor with the next one.
-fn transpose(buf) {
-  let line = buf.lines[buf.row]
-  if line.length < 2 { return buf }
-  let col = buf.col
-  if col >= line.length { let col = line.length - 1 }
-  if col >= line.length - 1 { let col = line.length - 2 }
-  let next = "@{ line.slice(0, col) }@{ line[col + 1] }@{ line[col] }@{ line.slice(col + 2, line.length) }"
-  return change(buf, replace_at(buf.lines, buf.row, next), buf.row, col + 1)
-}
-
-# Jumps to the matching bracket. A miss sets the hint and leaves the cursor.
-fn match_jump(buf) {
-  let at = edit_ops.match_at(buf.lines, buf.row, buf.col)
-  if at == null { return set_hint(buf, "no match") }
-  return move(buf, at.row, at.col)
-}
-
-# Sets the find pattern to the word under the cursor and jumps to its next copy.
-fn find_word(buf) {
-  let pat = edit_ops.word_at(buf.lines[buf.row], buf.col)
-  if pat.length == 0 { return buf }
-  let buf = set_find(buf, pat)
-  return search_next(buf, buf.col + 1)
-}
-
-# Deletes the subword before the cursor.
-fn delete_word(buf) {
-  let line = buf.lines[buf.row]
-  let to = edit_ops.back_span(line, buf.col)
-  if to >= buf.col { return buf }
-  let next = "@{ line.slice(0, to) }@{ line.slice(buf.col, line.length) }"
-  return change(retake(buf), replace_at(buf.lines, buf.row, next), buf.row, to)
-}
-
-# Handles one editing chord in normal or insert mode. Other keys return null.
-fn chord(buf, key) {
-  if key == "ctrl-z" { return undo(buf) }
-  if key == "ctrl-y" || key == "ctrl-r" { return redo(buf) }
-  if key == "ctrl-d" { return duplicate_line(buf) }
-  if key == "ctrl-n" { return shift_line(buf, 1) }
-  if key == "ctrl-p" { return shift_line(buf, 0 - 1) }
-  if key == "ctrl-/" { return with_line(retake(buf), edit_ops.comment(buf.lines[buf.row])) }
-  if key == "ctrl-t" { return transpose(retake(buf)) }
-  return null
-}
-
-# Handles one key while the command or search line is open.
-fn press_line(buf, key) {
-  if key == "escape" { return set_find(buf, buf.find) }
-  if key == "enter" {
-    if buf.mode == "command" { return run_command(buf) }
-    let pat = buf.cmd
-    let buf = set_find(buf, pat)
-    return search_next(buf, buf.col)
-  }
-  if key == "backspace" {
-    let cmd = buf.cmd
-    if cmd.length > 0 { let cmd = strings.slice(cmd, 0, cmd.length - 1) }
-    return set_cmd(buf, cmd)
-  }
-  if key.length == 1 { return set_cmd(buf, "@{ buf.cmd }@{ key }") }
-  return buf
-}
-
-# Handles one key in insert mode.
-fn press_insert(buf, key) {
-  let got = chord(buf, key)
-  if got != null { return got }
-  if key == "ctrl-x" { return edit_lsp.cycle(buf) }
-  if key == "ctrl-u" {
-    let got = edit_lsp.accept(buf)
-    if !got.hit { return buf }
-    return change(buf, replace_at(buf.lines, buf.row, got.line), buf.row, got.col)
-  }
-  if key == "escape" { return leave_insert(buf) }
-  if key == "enter" { return split_line(buf) }
-  if key == "backspace" { return backspace(buf) }
-  if key == "tab" { return insert_char(buf, "\t") }
-  if key == "ctrl-w" { return delete_word(buf) }
-  if key == "delete" { return delete_char(buf) }
-  if key == "left" { return imove(buf, buf.row, buf.col - 1) }
-  if key == "right" { return imove(buf, buf.row, buf.col + 1) }
-  if key == "up" { return imove(buf, buf.row - 1, buf.col) }
-  if key == "down" { return imove(buf, buf.row + 1, buf.col) }
-  if key.length == 1 { return insert_char(buf, key) }
-  return buf
-}
-
-# Handles one key in normal mode, including the second key of d, y, and g.
-fn press_normal(buf, key) {
-  if buf.confirm {
-    if key == "q" { return set_request(buf, "quit") }
-    return re(buf, buf.lines, buf.row, buf.col, "normal", "", buf.yank, buf.undo, buf.dirty, "", hint_text(), false, buf.request, false)
-  }
-  if buf.pending == "d" || buf.pending == "y" || buf.pending == "g" || buf.pending == "c" || buf.pending == ">" || buf.pending == "<" {
-    let which = buf.pending
-    let buf = set_pending(buf, "")
-    if which == "d" && key == "d" { return delete_line(buf) }
-    if which == "y" && key == "y" { return set_yank(buf, buf.lines[buf.row]) }
-    if which == "g" && key == "g" { return move(buf, 0, 0) }
-    if which == "g" && key == "c" { return with_line(buf, edit_ops.comment(buf.lines[buf.row])) }
-    if which == "g" && key == "d" { return edit_lsp.define(buf) }
-    if which == "c" && key == "c" { return clear_line(buf) }
-    if which == ">" && key == ">" { return with_line(buf, edit_ops.indent(buf.lines[buf.row])) }
-    if which == "<" && key == "<" { return with_line(buf, edit_ops.outdent(buf.lines[buf.row])) }
-    return press_normal(buf, key)
-  }
-  let got = chord(buf, key)
-  if got != null { return got }
-  if key == "K" { return edit_lsp.hover(buf) }
-  if key == "h" || key == "left" || key == "backspace" { return move(buf, buf.row, buf.col - 1) }
-  if key == "l" || key == "right" { return move(buf, buf.row, buf.col + 1) }
-  if key == "j" || key == "down" || key == "enter" { return move(buf, buf.row + 1, buf.col) }
-  if key == "k" || key == "up" { return move(buf, buf.row - 1, buf.col) }
-  if key == "pageup" { return move(buf, buf.row - 10, buf.col) }
-  if key == "pagedown" { return move(buf, buf.row + 10, buf.col) }
-  if key == "0" || key == "home" { return move(buf, buf.row, 0) }
-  if key == "$" || key == "end" { return move(buf, buf.row, buf.lines[buf.row].length) }
-  if key == "w" { return word_forward(buf) }
-  if key == "b" { return word_back(buf) }
-  if key == "e" { return word_end(buf) }
-  if key == "J" { return join_cmd(buf) }
-  if key == "D" { return delete_end(buf) }
-  if key == "C" { return change_end(buf) }
-  if key == "O" { return open_above(buf) }
-  if key == "~" { return tilde(buf) }
-  if key == "%" { return match_jump(buf) }
-  if key == "*" { return find_word(buf) }
-  if key == "G" { return move(buf, buf.lines.length - 1, 0) }
-  if key == "g" || key == "d" || key == "y" || key == "c" || key == ">" || key == "<" { return set_pending(buf, key) }
-  if key == "x" || key == "delete" { return delete_char(buf) }
-  if key == "p" { return paste(buf) }
-  if key == "u" { return undo(buf) }
-  if key == "i" { return enter_insert(buf, buf.row, buf.col) }
-  if key == "a" {
-    let col = buf.col
-    if col < buf.lines[buf.row].length { let col = col + 1 }
-    return enter_insert(buf, buf.row, col)
-  }
-  if key == "o" { return open_below(buf) }
-  if key == "/" { return set_cmd(re(buf, buf.lines, buf.row, buf.col, "search", "", buf.yank, buf.undo, buf.dirty, "", buf.hint, false, buf.request, false), "") }
-  if key == ":" { return set_cmd(re(buf, buf.lines, buf.row, buf.col, "command", "", buf.yank, buf.undo, buf.dirty, "", buf.hint, false, buf.request, false), "") }
-  if key == "n" { return search_next(buf, buf.col + 1) }
-  if key == "N" { return search_back(buf) }
-  if key == "q" { return quit_soft(buf) }
-  return buf
-}
-
-# Handles one named key. Ctrl-C quits and Ctrl-S saves.
-fn press(buf, key) {
-  if key == "ctrl-c" { return set_request(buf, "quit") }
-  if key == "ctrl-s" { return set_request(buf, "save") }
-  if buf.mode == "insert" { return press_insert(buf, key) }
-  if buf.mode == "command" || buf.mode == "search" { return press_line(buf, key) }
-  return press_normal(buf, key)
-}
-
-# Returns how many columns the line number uses, at least four, plus the following space.
-fn gutter_cols(buf) {
-  return edit_view.gutter_cols(buf)
-}
-
-# Scrolls just enough to keep the cursor on screen. The view stays put while the cursor moves inside it.
-fn fit(buf, cols, rows) {
-  return edit_view.fit(buf, cols, rows)
-}
-
-# Returns the screen text for cols by rows, including the status and the bottom line.
-fn frame(buf, cols, rows) {
-  return edit_view.frame(buf, cols, rows)
-}
-
-# Draws the buffer on the terminal and places the cursor on its character.
-fn draw(buf, cols, rows) {
-  edit_view.draw(buf, cols, rows)
-}
-
-# Returns a buffer for path. A missing file starts empty. A directory is null.
-fn open(path) {
-  if fs.exists(path) {
-    if fs.kind(path) != "file" { return null }
-    let text = fs.load(path)
-    if text == null { return null }
-    return buffer(text, path)
-  }
-  return buffer("\n", path)
-}
-
-# Writes the buffer when the request is save or save-quit. A failed write stays in the editor.
-fn commit(buf) {
-  if buf.request != "save" && buf.request != "save-quit" { return buf }
-  let quit = buf.request == "save-quit"
-  if !fs.save(buf.path, save_text(buf)) {
-    return re(buf, buf.lines, buf.row, buf.col, buf.mode, "", buf.yank, buf.undo, buf.dirty, "", "cannot write file", false, "", buf.anchor)
-  }
-  let buf = mark_clean(buf)
-  let buf = edit_lsp.saved(buf)
-  if quit { return set_request(buf, "quit") }
-  return buf
-}
-
-# Reads one input byte. An empty string is a window-size change. Null is end of file.
-fn read_input(pending) {
-  if pending.length > 0 { return term_poll() }
-  return term_read()
-}
-
-# Applies one decoded key, or keeps a partial sequence in the returned fields.
-fn apply_input(buf, pending, carry, byte) {
-  if byte == null {
-    let flushed = ui.flush(pending)
-    let pending = ""
-    if flushed.extra != null { let carry = flushed.extra }
-    if flushed.key != null {
-      let buf = press(buf, flushed.key)
-      let buf = commit(buf)
+fn press_text(e, ev, lay) {
+  let d = cur(e)
+  let x = ev.x - 1
+  let y = ev.y - 1
+  let p = text_pos(e, lay, x, y)
+  let n = click_count(e, ev)
+  let keep = []
+  if ev.alt || ev.ctrl {
+    let i = 0
+    while i < d.sels.length {
+      let c = doc.copy_sel(d.sels[i])
+      let junk = map_set(c, "p", false)
+      let keep = keep.push(c)
+      let i = i + 1
     }
-    return { buf: buf, pending: pending, carry: carry, resized: true }
   }
-  if byte == "" { return { buf: buf, pending: pending, carry: carry, resized: true } }
-  let ev = ui.feed(pending, byte)
-  if ev.extra != null {
-    if carry.length > 0 { let carry = "@{ ev.extra }@{ carry }" }
-    else { let carry = ev.extra }
+  let a = p
+  let b = p
+  let unit = "char"
+  if ev.shift && keep.length == 0 {
+    let s = doc.primary(d)
+    let a = { r: s.ar, c: s.ac }
+    let b = a
   }
-  if ev.key != null {
-    let buf = press(buf, ev.key)
-    let buf = commit(buf)
+  if n == 2 {
+    let w = tx.word_range(d.lines[p.r], p.c)
+    let a = { r: p.r, c: w.a }
+    let b = { r: p.r, c: w.b }
+    let unit = "word"
   }
-  return { buf: buf, pending: ev.pending, carry: carry, resized: false }
-}
-
-# Runs the editor on the terminal and returns null. Without a terminal it prints "not a terminal".
-fn run(path) {
-  if !term_tty() {
-    eprintln("not a terminal")
+  if x < lay.gx + lay.gw && d.folds.length > 0 && doc.folded_at(d, p.r) {
+    doc.open_folds(d, p.r)
     return null
   }
-  let buf = open(path)
-  if buf == null {
-    eprintln("cannot read file")
-    return false
+  if n == 3 || x < lay.gx + lay.gw {
+    let a = { r: p.r, c: 0 }
+    let b = { r: p.r + 1, c: 0 }
+    if p.r + 1 >= d.lines.length { let b = { r: p.r, c: d.lines[p.r].length } }
+    let unit = "line"
   }
-  let buf = edit_lsp.attach(buf, edit_lsp.read_config())
-  term_raw(true)
+  let junk = map_set(e, "drag", { a: a, b: b, unit: unit, keep: keep })
+  if unit == "char" && ev.shift {
+    drag_to(e, p)
+  } else {
+    let s = doc.span(a.r, a.c, b.r, b.c)
+    let junk = map_set(s, "p", true)
+    let list = doc.copy_sels(keep)
+    let junk = list.push(s)
+    doc.set_sels(d, list)
+  }
+  doc.seal(d)
+  if n == 2 && d.has("results") { open_result(e) }
+}
+
+# A click in the minimap puts that part of the file in the middle of the view.
+fn minimap_to(e, lay, y) {
+  let d = cur(e)
+  let k = y - lay.top
+  if k < 0 { let k = 0 }
+  let row = view.minimap_top(d, lay) + k * 2
+  let junk = map_set(d, "top", view.clamp_top(e, row - lay.view / 2))
+}
+
+fn scroll_to_bar(e, lay, y) {
+  let d = cur(e)
+  let k = y - lay.top
+  if k < 0 { let k = 0 }
+  if k >= lay.view { let k = lay.view - 1 }
+  let top = 0
+  if lay.view > 1 { let top = k * (d.lines.length - 1) / (lay.view - 1) }
+  let junk = map_set(d, "top", view.clamp_top(e, top - lay.view / 2))
+}
+
+fn mouse(e, ev) {
+  if !e.settings.mouse { return null }
+  let lay = view.layout(e)
+  let x = ev.x - 1
+  let y = ev.y - 1
+  let act = ev.act
+  let d = cur(e)
+  if act == "move" { return null }
+  if e.overlay != null {
+    let o = e.overlay
+    if o.kind == "menu" && (act == "down" || act == "up") {
+      let k = y - o.at_r - 1
+      if x >= o.at_c && x < o.at_c + o.width && k >= 0 && k < o.items.length {
+        if act == "up" || o.id < 0 {
+          let id = o.items[k].id
+          let junk = map_set(e, "overlay", null)
+          command(e, id)
+        } else {
+          let junk = map_set(o, "pick", k)
+        }
+        return null
+      }
+      if act == "up" { return null }
+      if y == lay.menu && o.id >= 0 {
+        let junk = map_set(e, "overlay", null)
+        let hit = menu_hit(e, x)
+        if hit >= 0 && hit != o.id { open_menu(e, hit) }
+        return null
+      }
+      let junk = map_set(e, "overlay", null)
+      return null
+    }
+    if o.kind == "confirm" {
+      if act == "down" && y == o.at_r + 4 {
+        let col = o.at_c + 3
+        let i = 0
+        while i < o.buttons.length {
+          let w = ui.width(o.buttons[i]) + 4
+          if x >= col && x < col + w {
+            let junk = map_set(e, "overlay", null)
+            o.act(e, i)
+            return null
+          }
+          let col = col + w + 2
+          let i = i + 1
+        }
+      }
+      return null
+    }
+    if o.kind == "pick" {
+      if act == "wheel" {
+        let p = o.pick + 3
+        if ev.dir == "up" { let p = o.pick - 3 }
+        if p < 0 { let p = 0 }
+        if p >= o.items.length { let p = o.items.length - 1 }
+        if p >= 0 { let junk = map_set(o, "pick", p) }
+        return null
+      }
+      if act == "down" {
+        let k = y - lay.top - 3
+        if k >= 0 && k < o.items.length && k < 12 {
+          let first = view.window_start(o.items.length, o.pick, 12)
+          let junk = map_set(o, "pick", first + k)
+          pick_accept(e)
+          return null
+        }
+        pick_restore(e)
+        let junk = map_set(e, "overlay", null)
+      }
+      return null
+    }
+    let junk = map_set(e, "overlay", null)
+  }
+  if act == "up" {
+    let junk = map_set(e, "drag", null)
+    return null
+  }
+  if act == "wheel" {
+    if lay.side_w > 0 && x < lay.side_w {
+      let t = e.side.top + 3
+      if ev.dir == "up" { let t = e.side.top - 3 }
+      if t > e.side.items.length - 1 { let t = e.side.items.length - 1 }
+      if t < 0 { let t = 0 }
+      let junk = map_set(e.side, "top", t)
+      return null
+    }
+    if lay.deck_h > 0 && y >= lay.deck_top && y < lay.deck_top + lay.deck_h {
+      if ev.dir == "up" { edit_run.scroll_by(3) }
+      else { edit_run.scroll_by(0 - 3) }
+      return null
+    }
+    if ev.dir == "left" || (ev.dir == "up" && ev.shift) {
+      let l = d.left - 6
+      if l < 0 { let l = 0 }
+      let junk = map_set(d, "left", l)
+      return null
+    }
+    if ev.dir == "right" || (ev.dir == "down" && ev.shift) {
+      let junk = map_set(d, "left", d.left + 6)
+      return null
+    }
+    if ev.dir == "up" { scroll_by(e, 0 - 3) }
+    else { scroll_by(e, 3) }
+    return null
+  }
+  if act == "drag" {
+    if e.drag == null { return null }
+    if e.drag.unit == "scroll" {
+      scroll_to_bar(e, lay, y)
+      return null
+    }
+    if e.drag.unit == "mini" {
+      minimap_to(e, lay, y)
+      return null
+    }
+    if e.drag.unit == "box" {
+      box_to(e, text_pos(e, lay, x, y), x - lay.gx - lay.gw + d.left)
+      return null
+    }
+    let yy = y
+    if y < lay.top {
+      scroll_by(e, 0 - 1)
+      let yy = lay.top
+    }
+    if y >= lay.top + lay.view {
+      scroll_by(e, 1)
+      let yy = lay.top + lay.view - 1
+    }
+    drag_to(e, text_pos(e, lay, x, yy))
+    let s = doc.primary(d)
+    let left = d.left
+    let room = lay.tw
+    let caret_x = tx.col_at(d.lines[s.hr], s.hc, d.tab)
+    if caret_x < left { let junk = map_set(d, "left", caret_x) }
+    if caret_x > left + room - 1 { let junk = map_set(d, "left", caret_x - room + 1) }
+    return null
+  }
+  if act != "down" { return null }
+  comp_close(e)
+  if y == lay.menu {
+    let hit = menu_hit(e, x)
+    if hit >= 0 { open_menu(e, hit) }
+    return null
+  }
+  if y == lay.tabs {
+    let spans = view.tab_spans(e, lay)
+    let i = 0
+    while i < spans.length {
+      let sp = spans[i]
+      if x >= sp.a && x < sp.b && x >= lay.side_w {
+        if ev.button == 1 || x >= sp.b - 3 { close_tab(e, sp.k, null) }
+        else { show(e, sp.k) }
+        return null
+      }
+      let i = i + 1
+    }
+    return null
+  }
+  if y == lay.status { return null }
+  if lay.bar_h > 0 && y >= lay.bar_top && y < lay.bar_top + lay.bar_h {
+    if e.bar != null {
+      let junk = map_set(e.bar, "focus", true)
+      if e.bar.kind == "replace" { let junk = map_set(e.bar, "field", y - lay.bar_top) }
+    }
+    return null
+  }
+  if lay.deck_h > 0 && y >= lay.deck_top && y < lay.deck_top + lay.deck_h {
+    if y == lay.deck_top {
+      let mode = edit_run.title_hit(x)
+      if mode != "" { edit_run.open_mode(mode) }
+    }
+    edit_run.focus_panel()
+    let junk = map_set(e, "focus", "panel")
+    return null
+  }
+  if lay.side_w > 0 && x < lay.side_w && y >= lay.top && y < lay.top + lay.view {
+    let k = e.side.top + y - lay.top
+    let junk = map_set(e, "focus", "side")
+    side_activate(e, k)
+    return null
+  }
+  if lay.mm_w > 0 && x >= lay.mm_x && y >= lay.top && y < lay.top + lay.view {
+    let junk = map_set(e, "drag", { unit: "mini" })
+    minimap_to(e, lay, y)
+    return null
+  }
+  if lay.sb >= 0 && x == lay.sb && y >= lay.top && y < lay.top + lay.view {
+    let junk = map_set(e, "drag", { unit: "scroll" })
+    scroll_to_bar(e, lay, y)
+    return null
+  }
+  if y >= lay.top && y < lay.top + lay.view {
+    let junk = map_set(e, "focus", "text")
+    if edit_run.focused() { edit_run.blur() }
+    if e.bar != null { let junk = map_set(e.bar, "focus", false) }
+    if ev.button == 2 {
+      let p = text_pos(e, lay, x, y)
+      let s = doc.primary(d)
+      let a = doc.lo(s)
+      let b = doc.hi(s)
+      let inside = !doc.empty(s) && !doc.before(p.r, p.c, a.r, a.c) && !doc.before(b.r, b.c, p.r, p.c)
+      if !inside { cmds.caret_at(d, p.r, p.c) }
+      context_menu(e, y + 1, x)
+      return null
+    }
+    if ev.button == 0 { press_text(e, ev, lay) }
+    if ev.button == 1 {
+      let p = text_pos(e, lay, x, y)
+      let col = tx.col_at(d.lines[p.r], p.c, d.tab)
+      let junk = map_set(e, "drag", { unit: "box", r: p.r, col: col })
+      cmds.caret_at(d, p.r, p.c)
+    }
+  }
+}
+
+# Handles one input event from ui.decode, or a key name.
+fn handle(e, ev) {
+  let key = ev.key
+  if key == "mouse" {
+    mouse(e, ev)
+    return null
+  }
+  if key == "focus-in" {
+    check_disk(e)
+    return null
+  }
+  if key == "focus-out" { return null }
+  say(e, "")
+  if e.overlay != null {
+    let kind = e.overlay.kind
+    if kind == "hover" { let junk = map_set(e, "overlay", null) }
+    else if kind == "confirm" { return confirm_key(e, key) }
+    else if kind == "menu" { return menu_key(e, key) }
+    else if kind == "pick" { return pick_key(e, key, ev) }
+  }
+  if e.prompt != null { return prompt_key(e, key, ev) }
+  if key == "ctrl-q" || key == "ctrl-`" || key == "ctrl-\\" || key == "ctrl-shift-p" || key == "f1" {
+    command(e, keys()[key])
+    return null
+  }
+  if e.focus == "panel" && edit_run.focused() {
+    panel_key(e, key, ev)
+    return null
+  }
+  if e.focus == "side" && e.side.open {
+    side_key(e, key)
+    return null
+  }
+  if e.bar != null && e.bar.focus {
+    if bar_key(e, key, ev) != "pass" { return null }
+  }
+  text_key(e, key, ev)
+  # Edits made with the find row open change its count.
+  if e.bar != null && e.bar.ver != cur(e).version { bar_count(e) }
+}
+
+fn modes(on) {
+  let esc = chr(27)
+  if on {
+    print("@{ esc }[?1002h@{ esc }[?1006h@{ esc }[?2004h@{ esc }[?1004h@{ esc }[>1u@{ esc }[>4;1m@{ esc }[5 q")
+  } else {
+    print("@{ esc }[<u@{ esc }[>4m@{ esc }[?1004l@{ esc }[?2004l@{ esc }[?1002l@{ esc }[?1006l@{ esc }[0 q")
+  }
+}
+
+fn resize(e) {
   let cols = term_cols()
   let rows = term_rows()
-  let buf = fit(buf, cols, rows)
-  let buf = edit_lsp.refresh(buf, hint_text())
-  draw(buf, cols, rows)
-  let pending = ""
-  let carry = ""
-  while buf.request != "quit" {
-    let byte = null
-    let saw = false
-    if carry.length > 0 {
-      let byte = carry[0]
-      let carry = strings.slice(carry, 1, carry.length)
-      let saw = true
+  if cols < 1 { let cols = 80 }
+  if rows < 1 { let rows = 24 }
+  let junk = map_set(e, "cols", cols)
+  let junk = map_set(e, "rows", rows)
+  let junk = map_set(e, "screen", [])
+  view.reveal(e)
+}
+
+fn any_lsp(e) {
+  let i = 0
+  while i < e.docs.length {
+    if edit_lsp.live(e.docs[i]) { return true }
+    let i = i + 1
+  }
+  return false
+}
+
+# Reads what the terminal has. Null is end of input, "" a resize, false an idle tick.
+fn read_chunk(e) {
+  let first = null
+  if edit_run.busy() || any_lsp(e) { let first = term_idle() }
+  else { let first = term_read() }
+  if first == null || first == false || first == "" { return first }
+  let more = term_take()
+  if more != null && more != "" { return "@{ first }@{ more }" }
+  return first
+}
+
+fn pump(e) {
+  let changed = edit_run.pump()
+  if edit_lsp.pump(cur(e)) { let changed = true }
+  return changed
+}
+
+fn loop(e) {
+  let rest = ""
+  let dirty = true
+  while !e.quit {
+    if dirty {
+      view.present(e, false)
+      let dirty = false
     }
-    if !saw {
-      let byte = read_input(pending)
-      if byte == null && pending.length == 0 {
-        let buf = set_request(buf, "quit")
-      } else {
-        let step = apply_input(buf, pending, carry, byte)
-        let buf = step.buf
-        let pending = step.pending
-        let carry = step.carry
-        let saw = step.resized
-      }
+    let chunk = read_chunk(e)
+    if chunk == null {
+      let junk = map_set(e, "quit", true)
+    } else if chunk == false {
+      if pump(e) { let dirty = true }
+    } else if chunk == "" {
+      resize(e)
+      let dirty = true
     } else {
-      let step = apply_input(buf, pending, carry, byte)
-      let buf = step.buf
-      let pending = step.pending
-      let carry = step.carry
-    }
-    if buf.request != "quit" && carry.length == 0 {
-      let cols = term_cols()
-      let rows = term_rows()
-      let buf = edit_lsp.refresh(buf, hint_text())
-      let buf = fit(buf, cols, rows)
-      draw(buf, cols, rows)
+      let got = ui.decode("@{ rest }@{ chunk }")
+      let rest = got.rest
+      let events = got.events
+      if rest != "" && rest.length < 16 {
+        let more = term_poll()
+        if more == null {
+          let tail = ui.decode_flush(rest)
+          let i = 0
+          while i < tail.length {
+            let junk = events.push(tail[i])
+            let i = i + 1
+          }
+          let rest = ""
+        } else {
+          let again = ui.decode("@{ rest }@{ more }")
+          let rest = again.rest
+          let i = 0
+          while i < again.events.length {
+            let junk = events.push(again.events[i])
+            let i = i + 1
+          }
+        }
+      }
+      let i = 0
+      while i < events.length && !e.quit {
+        handle(e, events[i])
+        let i = i + 1
+      }
+      let dirty = true
     }
   }
+}
+
+# Opens the files of the last session that still exist, where they were left.
+fn restore_session(e, file) {
+  if file == "" || !fs.exists(file) { return false }
+  let text = fs.load(file)
+  if text == null { return false }
+  let tab = chr(9)
+  let rows = text.split("\n")
+  let active = 0
+  let opened = 0
+  let i = 0
+  while i < rows.length {
+    let parts = rows[i].split(tab)
+    if parts.length == 3 && parts[0] == "root" && edit_files.is_dir(parts[1]) {
+      let junk = map_set(e.side, "root", parts[1])
+      if parts[2] == "true" && !e.side.open { side_toggle(e) }
+    }
+    if parts.length == 5 && parts[0] == "file" && fs.kind(parts[1]) == "file" {
+      if open_path(e, parts[1]) {
+        let d = cur(e)
+        cmds.caret_at(d, tx.to_int(parts[2]), tx.to_int(parts[3]))
+        let junk = map_set(d, "top", doc.clamp_row(d, tx.to_int(parts[4])))
+        let opened = opened + 1
+      }
+    }
+    if parts.length == 2 && parts[0] == "active" { let active = tx.to_int(parts[1]) }
+    let i = i + 1
+  }
+  if opened == 0 { return false }
+  if active >= e.docs.length { let active = 0 }
+  let junk = map_set(e, "at", active)
+  say(e, "")
+  return true
+}
+
+# Opens each argument: a folder goes in the side bar, a file in a tab.
+# Returns false, after printing why, when an argument cannot be opened.
+fn open_args(e, args) {
+  let i = 0
+  while i < args.length {
+    let p = args[i]
+    if edit_files.is_dir(p) {
+      if !e.side.open {
+        let junk = map_set(e.side, "root", p)
+        side_toggle(e)
+      }
+    } else {
+      let got = edit_files.read(p)
+      if !got.ok {
+        eprintln("@{ got.err }: @{ p }")
+        return false
+      }
+      open_path(e, p)
+    }
+    let i = i + 1
+  }
+  if e.docs.length > 1 || !pristine(e.docs[0]) { show(e, 0) }
+  say(e, "")
+  return true
+}
+
+# Runs the editor on the terminal with these paths. Returns false when it could not start.
+fn run_files(args) {
+  if !term_tty() {
+    eprintln("not a terminal")
+    return false
+  }
+  let e = make_app(term_cols(), term_rows(), edit_lsp.read_config())
+  let junk = map_set(e, "live", true)
+  if !open_args(e, args) { return false }
+  if args.length == 0 && e.settings.restore_session { restore_session(e, session_path()) }
+  if edit_lsp.config_note() != "" { warn(e, edit_lsp.config_note()) }
+  term_raw(true)
+  modes(true)
+  resize(e)
+  loop(e)
+  modes(false)
+  edit_run.shutdown()
+  let i = 0
+  while i < e.docs.length {
+    edit_lsp.stop(e.docs[i])
+    let i = i + 1
+  }
   term_raw(false)
-  edit_lsp.stop(buf)
-  return null
+  return true
+}
+
+fn run(p) {
+  return run_files([p])
+}
+
+fn app(cols, rows) {
+  return make_app(cols, rows, null)
+}
+
+fn app_with(cols, rows, cfg) {
+  return make_app(cols, rows, cfg)
+}
+
+# Handles a key name such as "ctrl-shift-up", or an event map.
+fn key(e, k) {
+  if kind(k) == "map" { handle(e, k) }
+  else { handle(e, { key: k }) }
+  return e
+}
+
+fn keys_in(e, list) {
+  let i = 0
+  while i < list.length {
+    key(e, list[i])
+    let i = i + 1
+  }
+  return e
+}
+
+# Types text one character at a time, the way a keyboard would.
+fn type_text(e, text) {
+  let i = 0
+  while i < text.length {
+    let ch = text[i]
+    if ch == "\n" { key(e, "enter") }
+    else if ch == "\t" { key(e, "tab") }
+    else { key(e, ch) }
+    let i = i + 1
+  }
+  return e
+}
+
+fn click(e, x, y, mods) {
+  let ev = { key: "mouse", act: "down", button: 0, x: x, y: y, shift: mods.contains("shift"), alt: mods.contains("alt"), ctrl: mods.contains("ctrl"), dir: "", t: 0 }
+  handle(e, ev)
+  let up = { key: "mouse", act: "up", button: 0, x: x, y: y, shift: false, alt: false, ctrl: false, dir: "" }
+  handle(e, up)
+  return e
+}
+
+fn text(e) {
+  return doc.text(cur(e))
+}
+
+fn frame(e) {
+  return view.frame(e)
+}
+
+# Where the terminal cursor goes, as "row:col" on the screen, 1-based, or "hidden".
+fn cursor(e) {
+  let at = view.caret_of(e)
+  if at == null { return "hidden" }
+  return "@{ at.r + 1 }:@{ at.c + 1 }"
+}
+
+# The screen rows with their colors, one line per row, without cursor moves.
+fn paint(e) {
+  return view.paint(e)
+}
+
+fn current(e) {
+  return cur(e)
+}
+
+# The selections as "row:col" for carets and "row:col-row:col" for ranges, 1-based.
+fn sels(e) {
+  let d = cur(e)
+  let out = []
+  let i = 0
+  while i < d.sels.length {
+    let s = d.sels[i]
+    let mark = ""
+    if s.p && d.sels.length > 1 { let mark = "*" }
+    if doc.empty(s) { let out = out.push("@{ mark }@{ s.hr + 1 }:@{ s.hc + 1 }") }
+    else { let out = out.push("@{ mark }@{ s.ar + 1 }:@{ s.ac + 1 }-@{ s.hr + 1 }:@{ s.hc + 1 }") }
+    let i = i + 1
+  }
+  return out.join(" ")
 }
 
 # Returns true when name is this editor file.
@@ -877,15 +2843,13 @@ fn is_editor(name) {
   return strings.ends(name, "/edit.btr")
 }
 
-# When this file is the program, edit the path in arg(1).
+# When this file is the program, edit the paths after it.
 if is_editor(arg(0)) {
-  if arg(1) == null {
-    eprintln("usage: bettersh std/edit.btr file")
-    exit 1
+  let args = []
+  let i = 1
+  while arg(i) != null {
+    let args = args.push(arg(i))
+    let i = i + 1
   }
-  if !term_tty() {
-    eprintln("not a terminal")
-    exit 1
-  }
-  if run(arg(1)) == false { exit 1 }
+  if !run_files(args) { exit 1 }
 }

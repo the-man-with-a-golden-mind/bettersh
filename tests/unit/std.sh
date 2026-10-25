@@ -6,6 +6,9 @@ case $bin in
 esac
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
+# A live editor saves its session on quit. Keep that out of the home directory.
+BETTERSH_SESSION=$d/session
+export BETTERSH_SESSION
 repo=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 peer=$repo/tests/lsp_peer
 fail=0
@@ -341,12 +344,22 @@ if [ "$st" != "$is" ] || [ "$st" -ne 2 ] || [ -s "$d/vo" ] || ! cmp -s "$d/ve" "
     bad term_poll
 fi
 
+printf '%s\n' '#!/usr/bin/env bettersh' 'term_take()' >"$d/take.btr"
+"$bin" "$d/take.btr" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+"$bin" --interp "$d/take.btr" </dev/null >"$d/io" 2>"$d/ie"
+is=$?
+if [ "$st" != "$is" ] || [ "$st" -ne 2 ] || [ -s "$d/vo" ] || ! cmp -s "$d/ve" "$d/ie" ||
+    ! grep -q 'bad terminal' "$d/ve"; then
+    bad term_take
+fi
+
 "$bin" std/edit.btr </dev/null >"$d/vo" 2>"$d/ve"
 st=$?
 "$bin" --interp std/edit.btr </dev/null >"$d/io" 2>"$d/ie"
 is=$?
 if [ "$st" -ne 1 ] || [ "$is" != "$st" ] || [ -s "$d/vo" ] || ! cmp -s "$d/vo" "$d/io" ||
-    ! cmp -s "$d/ve" "$d/ie" || ! grep -qx 'usage: bettersh std/edit.btr file' "$d/ve"; then
+    ! cmp -s "$d/ve" "$d/ie" || ! grep -qx 'not a terminal' "$d/ve"; then
     bad 'edit usage'
     printf 'status %s interp %s\n' "$st" "$is" >&2
     cat "$d/ve" >&2
@@ -377,17 +390,150 @@ if ! "$repo/tests/pty_edit" save "$bin" std/edit.btr "$d/saved.txt"; then
     bad 'edit pty'
 fi
 
+"$bin" -e "$d/missing.txt" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+"$bin" --interp -e "$d/missing.txt" </dev/null >"$d/io" 2>"$d/ie"
+is=$?
+if [ "$st" -ne 1 ] || [ "$is" != "$st" ] || [ -s "$d/vo" ] || [ -s "$d/io" ] ||
+    ! cmp -s "$d/ve" "$d/ie" || ! grep -qx 'not a terminal' "$d/ve" || [ -e "$d/missing.txt" ]; then
+    bad 'edit -e'
+    printf 'status %s interp %s\n' "$st" "$is" >&2
+    cat "$d/ve" >&2
+fi
+
+ln -sf "$bin" "$d/btrname"
+"$d/btrname" -e "$d/missing.txt" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'not a terminal' "$d/ve"; then
+    bad 'edit btr -e'
+    cat "$d/ve" >&2
+fi
+
+"$bin" edit "$d/missing.txt" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+"$bin" --interp edit "$d/missing.txt" </dev/null >"$d/io" 2>"$d/ie"
+is=$?
+if [ "$st" -ne 1 ] || [ "$is" != "$st" ] || [ -s "$d/vo" ] || [ -s "$d/io" ] ||
+    ! cmp -s "$d/ve" "$d/ie" || ! grep -qx 'not a terminal' "$d/ve" || [ -e "$d/missing.txt" ]; then
+    bad 'edit word'
+    printf 'status %s interp %s\n' "$st" "$is" >&2
+    cat "$d/ve" >&2
+fi
+
+"$d/btrname" edit "$d/missing.txt" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'not a terminal' "$d/ve"; then
+    bad 'edit btr word'
+    cat "$d/ve" >&2
+fi
+
+"$bin" edit </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'not a terminal' "$d/ve"; then
+    bad 'edit word usage'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/ve" >&2
+fi
+
+"$bin" edit "$d/missing.txt" "$d/extra.txt" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'not a terminal' "$d/ve" ||
+    [ -e "$d/missing.txt" ] || [ -e "$d/extra.txt" ]; then
+    bad 'edit word args'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/ve" >&2
+fi
+
+"$bin" -- edit </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'bettersh: edit: No such file or directory' "$d/ve"; then
+    bad 'edit dash file'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/ve" >&2
+fi
+
+printf 'echo fromfile\n' >"$d/edit"
+(
+    cd "$d" || exit 1
+    "$bin" -- edit >"$d/vo" 2>"$d/ve"
+    printf '%s\n' "$?" >"$d/rc"
+)
+st=$(cat "$d/rc")
+if [ "$st" != 0 ] || ! grep -qx 'fromfile' "$d/vo" || [ -s "$d/ve" ]; then
+    bad 'edit dash runs'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/vo" "$d/ve" >&2
+fi
+rm -f "$d/edit"
+
+"$bin" -e "$d/missing.txt" extra </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 1 ] || [ -s "$d/vo" ] || ! grep -qx 'bettersh: -e: too many arguments' "$d/ve"; then
+    bad 'edit -e args'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/ve" >&2
+fi
+
+"$bin" -c "edit ''; echo AFTER" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 0 ] || ! grep -qx 'AFTER' "$d/vo" || ! grep -q 'edit: usage: edit \[path...\]' "$d/ve"; then
+    bad 'edit usage builtin'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/vo" "$d/ve" >&2
+fi
+
+"$bin" -c "edit $d/missing.txt; echo AFTER" </dev/null >"$d/vo" 2>"$d/ve"
+st=$?
+if [ "$st" -ne 0 ] || ! grep -qx 'AFTER' "$d/vo" || ! grep -qx 'not a terminal' "$d/ve" ||
+    [ -e "$d/missing.txt" ]; then
+    bad 'edit builtin notty'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/vo" "$d/ve" >&2
+fi
+
+got=$("$bin" -c 'command -V edit')
+if [ "$got" != "edit is a shell builtin" ]; then
+    bad 'edit command -V'
+    printf 'got=%s\n' "$got" >&2
+fi
+
+if ! "$repo/tests/pty_edit" save "$bin" -e "$d/flag.txt"; then
+    bad 'edit -e pty'
+fi
+if ! "$repo/tests/pty_edit" save "$bin" edit "$d/word.txt"; then
+    bad 'edit word pty'
+fi
+if ! "$repo/tests/pty_edit" builtin "$bin" "$d/builtin.txt"; then
+    bad 'edit builtin pty'
+fi
+
+mkdir -p "$d/alone"
+cp "$bin" "$d/alone/bettersh"
+chmod 755 "$d/alone/bettersh"
+(
+    cd "$d/alone" || exit 1
+    unset BETTERSH_PATH
+    ./bettersh -e "$d/missing.txt" >"$d/vo" 2>"$d/ve"
+    printf '%s\n' "$?" >"$d/rc"
+)
+st=$(cat "$d/rc")
+if [ "$st" != 1 ] || [ -s "$d/vo" ] || ! grep -qx 'bettersh: editor not found' "$d/ve"; then
+    bad 'edit missing'
+    printf 'status %s\n' "$st" >&2
+    cat "$d/ve" >&2
+fi
+
 cat >"$d/save.btr" << EOF
 #!/usr/bin/env bettersh
 import std/fs
-import std/edit
+import std/edit_files
 println(fs.save("$d/dir", "x"))
 println(fs.save("$d/no-such/out.txt", "ab"))
 println(fs.save("$d/kept.txt", "ab"))
 println(fs.read("$d/kept.txt"))
 println(fs.load("$d/kept.txt"))
 println(fs.load("$d/no-kept.txt") == null)
-println(edit.open("$d/dir") == null)
+println(edit_files.read("$d/dir").ok == false)
 EOF
 both 'fs save' "$d/save.btr" || true
 printf '%s\n' false false true ab ab true true >"$d/want"
@@ -397,12 +543,66 @@ if [ "$st" -ne 0 ] || [ -s "$d/ve" ] || ! cmp -s "$d/want" "$d/vo"; then
     cat "$d/ve" >&2
 fi
 
-if ! "$repo/tests/pty_edit" dir "$d/dir" "$bin" std/edit.btr; then
+mkdir -p "$d/ro"
+printf 'keep\n' >"$d/ro/file.txt"
+chmod 555 "$d/ro"
+printf 'old\n' >"$d/atom.txt"
+printf 'target\n' >"$d/sym-target.txt"
+ln -s sym-target.txt "$d/via.txt"
+cat >"$d/atom.btr" << EOF
+#!/usr/bin/env bettersh
+import std/fs
+println(fs.save("$d/atom.txt", "new\n"))
+println(fs.save("$d/ro/file.txt", "clobber\n"))
+println(fs.save("$d/via.txt", "fresh\n"))
+println(fs.save("$d/missing/nope.txt", "x"))
+println(fs.load("$d/atom.txt"))
+println(fs.load("$d/ro/file.txt"))
+println(fs.load("$d/via.txt"))
+println(fs.load("$d/sym-target.txt"))
+EOF
+both 'fs atomic' "$d/atom.btr" || true
+cat >"$d/want" << 'EOF'
+true
+false
+true
+false
+new
+
+keep
+
+fresh
+
+target
+
+EOF
+chmod 755 "$d/ro"
+if [ "$st" -ne 0 ] || [ -s "$d/ve" ] || ! cmp -s "$d/want" "$d/vo" || [ -L "$d/via.txt" ]; then
+    bad 'fs atomic'
+    cat "$d/vo" >&2
+    cat "$d/ve" >&2
+fi
+if find "$d" -name '.bshsave-*' -print | grep -q .; then
+    bad 'fs atomic temp'
+fi
+
+if ! "$repo/tests/pty_edit" folder "$d/dir" "$bin" std/edit.btr; then
     bad 'edit dir'
 fi
-if ! "$repo/tests/pty_edit" dir "$d/dir" "$bin" --interp std/edit.btr; then
+if ! "$repo/tests/pty_edit" folder "$d/dir" "$bin" --interp edit; then
     bad 'edit dir interp'
 fi
+printf 'secret\n' >"$d/locked.txt"
+chmod 000 "$d/locked.txt"
+if [ ! -r "$d/locked.txt" ]; then
+    if ! "$repo/tests/pty_edit" bad "$d/locked.txt" "$bin" std/edit.btr; then
+        bad 'edit unreadable'
+    fi
+    if ! "$repo/tests/pty_edit" bad "$d/locked.txt" "$bin" --interp edit; then
+        bad 'edit unreadable interp'
+    fi
+fi
+chmod 644 "$d/locked.txt"
 if ! "$repo/tests/pty_edit" fail "$d/no-such/out.txt" "$bin" std/edit.btr; then
     bad 'edit save fail'
 fi
@@ -413,10 +613,11 @@ fi
 cat >"$d/esc.btr" << 'EOF'
 #!/usr/bin/env bettersh
 import std/edit
-let buf = edit.buffer("@{ chr(27) }[2J", "name")
-let text = edit.frame(buf, 16, 5)
+let e = edit.app(16, 5)
+edit.load(e, "@{ chr(27) }[2J", "name")
+let text = edit.frame(e)
 println(text.contains(chr(27)))
-println(text.contains("?"))
+println(text.contains(chr(9243)))
 EOF
 both 'edit esc' "$d/esc.btr" || true
 printf '%s\n' false true >"$d/want"
@@ -548,11 +749,12 @@ import std/fs
 import std/env
 import std/edit
 import std/edit_lsp
-import std/lsp
+import std/edit_doc as doc
 import std/theme
 
 env.set("BETTERSH_EDITOR", "$d/bad.conf")
 println(edit_lsp.read_config() == null)
+println(edit_lsp.config_note() == "$d/bad.conf has a line that cannot be read; using the defaults")
 env.set("BETTERSH_EDITOR", "")
 println(edit_lsp.read_config() == null)
 env.set("BETTERSH_EDITOR", "$d/editor.conf")
@@ -566,42 +768,44 @@ println(cfg.servers[1].cmd == "$peer $d/log 2>$d/lsp_err")
 println(cfg.root == "$d")
 println(theme.themed(cfg))
 
-let gone = theme.load("server py true\n")
-let b = edit.buffer("z\n", "$d/none.py")
-let b = edit_lsp.attach(b, gone)
-println(b.hint)
-println(edit_lsp.stop(b) == null)
+fs.write("$d/none.py", "z\n")
+let gone = edit.app_with(40, 10, theme.load("server py true\n"))
+edit.open_path(gone, "$d/none.py")
+println(gone.msg)
+edit.key(gone, "ctrl-w")
+println(edit.current(gone).lsp == null)
 
 let path = "$d/sample.py"
-let b = edit.buffer("al beta\nsecond\n", path)
-let b = edit_lsp.attach(b, cfg)
-println(b.lsp != null)
-println(b.lsp.ready)
-println(b.lsp.lang)
-println(lsp.line_message(b.lsp, 0))
-let b = edit.press(b, "K")
-println(b.hint)
-let b = edit.press(b, "i")
-let b = edit.press(b, "ctrl-x")
-println(b.hint)
-let b = edit.press(b, "ctrl-u")
-println(edit.text(b))
-let b = edit.press(b, "escape")
-let b = edit.press(b, "g")
-let b = edit.press(b, "d")
-println("@{ b.row }:@{ b.col }")
-println(b.mode)
-let b = edit_lsp.define(b)
-println(b.hint)
-let b = edit.press(b, "ctrl-s")
-let b = edit.commit(b)
-println(b.dirty)
+fs.write(path, "al beta\nsecond\n")
+let e = edit.app_with(60, 12, cfg)
+edit.open_path(e, path)
+let d = edit.current(e)
+println(d.lsp != null)
+println(d.lsp.ready)
+println(d.lsp.lang)
+println(edit_lsp.message_at(d, 0))
+edit.keys_in(e, ["ctrl-k", "ctrl-i"])
+println(e.overlay.text)
+edit.key(e, "escape")
+edit.keys_in(e, ["right", "right", "ctrl-space"])
+println(e.comp.items[e.comp.items.length - 1].name)
+edit.key(e, "up")
+edit.key(e, "enter")
+println(edit.text(e))
+edit.key(e, "f12")
+println(edit.sels(e))
+edit.key(e, "f12")
+println(e.msg)
+edit.key(e, "ctrl-s")
+println(doc.dirty(d))
 println(fs.load(path))
-println(edit_lsp.stop(b) == null)
+edit.key(e, "ctrl-w")
+println(d.lsp == null)
 println(fs.load("$d/log"))
 EOF
 both lsp "$d/lsp.btr" || true
 cat >"$d/want" << 'EOF'
+true
 true
 true
 dim
@@ -612,19 +816,18 @@ first-cmd
 true
 true
 true
-lsp: stopped
+language server stopped
 true
 true
 true
 python
 unused
-lsp: a name
-lsp: alpha
+a name
+alpha
 alpha beta
 second
-1:2
-normal
-/tmp/other.py:5:6
+2:3
+The definition is in /tmp/other.py:5, which cannot be opened
 false
 alpha beta
 second
@@ -656,20 +859,23 @@ cat >"$d/theme.btr" << 'EOF'
 #!/usr/bin/env bettersh
 import std/edit
 import std/theme
-let plain = edit.buffer("let x\n", "a.btr")
-let themed = edit.buffer("let x\n", "a.btr")
-let themed = map_set(themed, "theme", theme.dark())
-println(edit.frame(themed, 24, 6).contains(chr(27)))
+let plain = edit.app_with(24, 6, theme.plain())
+edit.load(plain, "let x\n", "a.btr")
+let themed = edit.app_with(24, 6, theme.dark())
+edit.load(themed, "let x\n", "a.btr")
+println(edit.frame(themed).contains(chr(27)))
 println("PLAIN")
-edit.draw(plain, 24, 6)
+println(edit.paint(plain))
 println("THEME")
-edit.draw(themed, 24, 6)
+println(edit.paint(themed))
 println("PY")
-let py = map_set(edit.buffer("def \"s\" # c\n", "a.py"), "theme", theme.dark())
-edit.draw(py, 40, 6)
+let py = edit.app_with(40, 6, theme.dark())
+edit.load(py, "def \"s\" # c\n", "a.py")
+println(edit.paint(py))
 println("TXT")
-let txt = map_set(edit.buffer("let x\n", "a.txt"), "theme", theme.dark())
-edit.draw(txt, 40, 6)
+let txt = edit.app_with(40, 6, theme.dark())
+edit.load(txt, "let x\n", "a.txt")
+println(edit.paint(txt))
 EOF
 both 'edit theme' "$d/theme.btr" || true
 "$bin" "$repo/tests/harness/theme.btr" "$d/vo" || bad 'edit theme bytes'

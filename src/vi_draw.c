@@ -274,17 +274,63 @@ int vi_term_cols(void) {
     return (int)ws.ws_col;
 }
 
-void vi_menu_draw(char **names, int n, int sel, size_t cur_col, int *rows, int *cols, int one_col) {
+static int described(char **help, int n) {
+    int i;
+    for (i = 0; i < n; i++) {
+        if (help && help[i] && help[i][0]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void paint_help(const char *name, const char *help, int selected, int width) {
+    int limit = width > 1 ? width - 1 : 1;
+    int nl = (int)strlen(name ? name : "");
+    int room;
+    int hl;
+    if (nl > limit) {
+        nl = limit;
+    }
+    if (selected) {
+        fputs("\033[7m", stderr);
+    }
+    if (name && nl > 0) {
+        fwrite(name, 1, (size_t)nl, stderr);
+    }
+    if (selected) {
+        fputs("\033[0m", stderr);
+    }
+    if (!help || !help[0] || nl + 2 >= limit) {
+        return;
+    }
+    fputs("  ", stderr);
+    room = limit - nl - 2;
+    hl = (int)strlen(help);
+    if (hl > room) {
+        hl = room;
+    }
+    fputs("\033[2m", stderr);
+    fwrite(help, 1, (size_t)hl, stderr);
+    fputs("\033[0m", stderr);
+}
+
+void vi_menu_draw(char **names, int n, int sel, size_t cur_col, int *rows, int *cols, int one_col, char **help) {
     int old = rows ? *rows : 0;
     int colw = 2;
     int ncol = 1;
     int use_rows = 0;
     int paint;
+    int with_help;
     int r;
     int c;
     int i;
     if (n < 0) {
         n = 0;
+    }
+    with_help = described(help, n);
+    if (with_help) {
+        one_col = 1;
     }
     if (n > 0) {
         int width = vi_term_cols();
@@ -313,6 +359,10 @@ void vi_menu_draw(char **names, int n, int sel, size_t cur_col, int *rows, int *
                     break;
                 }
                 name = names && names[idx] ? names[idx] : "";
+                if (with_help) {
+                    paint_help(name, help && help[idx] ? help[idx] : "", idx == sel, vi_term_cols());
+                    continue;
+                }
                 ln = (int)strlen(name);
                 pad = colw - ln;
                 if (pad < 0) {

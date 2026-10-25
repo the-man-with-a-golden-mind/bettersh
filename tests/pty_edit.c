@@ -29,6 +29,22 @@ static int lflag_ok(int slave) {
     return (t.c_lflag & ICANON) && (t.c_lflag & ECHO);
 }
 
+/* Quit turns off every mode the editor set, then the terminal restore runs:
+   it drops a scroll region and leaves the alternate screen last. A region
+   left set keeps the editor frame on the primary screen. */
+static const char restore_tail[] =
+    "\x1b[<u\x1b[>4m\x1b[?1004l\x1b[?2004l\x1b[?1002l\x1b[?1006l\x1b[0 q"
+    "\x1b[?2026l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[<u\x1b[>4m\x1b[0 q"
+    "\x1b[?7h\x1b[?25h\x1b[r\x1b[?1049l";
+
+static int buf_ends(const Buf *b, const char *s) {
+    size_t n = strlen(s);
+    if (!b || b->len < n) {
+        return 0;
+    }
+    return memcmp(b->data + (b->len - n), s, n) == 0;
+}
+
 static int file_is(const char *path, const char *want, size_t n) {
     FILE *fp = fopen(path, "rb");
     char buf[64];
@@ -53,12 +69,12 @@ static void fail(const char *msg) {
     fprintf(stderr, "%s\n", msg);
 }
 
-static int edit_save(int argc, char **argv) {
-    char *cmd[8];
+static int edit_keys(char **cmd, const char *dest, const char *also) {
     Pty pty;
     Buf buf;
-    const unsigned char *keys = (const unsigned char *)"ihello\x1b:w\r:q\r";
-    size_t nkeys = 13;
+    /* Type, Ctrl-S to save, Ctrl-Q to quit. */
+    const unsigned char *keys = (const unsigned char *)"hello\x13\x11";
+    size_t nkeys = 7;
     size_t sent = 0;
     int saw = 0;
     double deadline;
@@ -66,17 +82,9 @@ static int edit_save(int argc, char **argv) {
     int status = 0;
     int have = 0;
     int n;
-    if (argc != 3) {
-        fail("usage: pty_edit save bin edit dest");
-        return 2;
-    }
     memset(&pty, 0, sizeof pty);
     memset(&buf, 0, sizeof buf);
-    cmd[0] = argv[0];
-    cmd[1] = argv[1];
-    cmd[2] = argv[2];
-    cmd[3] = NULL;
-    if (pty_open(&pty, 24, 80, PTY_KEEP_SLAVE | PTY_CLOSE_EXTRA, NULL, argv[0], cmd, NULL) != 0) {
+    if (pty_open(&pty, 24, 80, PTY_KEEP_SLAVE | PTY_CLOSE_EXTRA, NULL, cmd[0], cmd, NULL) != 0) {
         fail("editor pty");
         return 1;
     }
@@ -152,18 +160,77 @@ static int edit_save(int argc, char **argv) {
         fail("tty was not restored");
         return 1;
     }
+    pty_drain(pty.master, &buf);
     pty_close(&pty);
-    buf_free(&buf);
     if (n != 0) {
+        buf_free(&buf);
         fprintf(stderr, "editor status %d\n", n);
         return 1;
     }
-    if (!file_is(argv[2], "hello\n", 6)) {
+    if (also && !buf_has(&buf, also)) {
+        buf_free(&buf);
+        fail("shell did not continue");
+        return 1;
+    }
+    if (!buf_has(&buf, restore_tail) || (!also && !buf_ends(&buf, restore_tail))) {
+        buf_free(&buf);
+        fail("editor restore");
+        return 1;
+    }
+    if (!buf_has(&buf, "\x1b[?7l") || !buf_has(&buf, "\x1b[?7h")) {
+        buf_free(&buf);
+        fail("editor wrap");
+        return 1;
+    }
+    buf_free(&buf);
+    if (!file_is(dest, "hello\n", 6)) {
         fail("saved file");
         return 1;
     }
-    (void)argc;
     return 0;
+}
+
+static int edit_save(int argc, char **argv) {
+    char *cmd[4];
+    if (argc != 3) {
+        fail("usage: pty_edit save bin edit dest");
+        return 2;
+    }
+    cmd[0] = argv[0];
+    cmd[1] = argv[1];
+    cmd[2] = argv[2];
+    cmd[3] = NULL;
+    return edit_keys(cmd, argv[2], NULL);
+}
+
+static int edit_builtin(int argc, char **argv) {
+    char *cmd[4];
+    char *script;
+    size_t dl;
+    size_t n;
+    int rc;
+    const char tail[] = " && echo DONE";
+    if (argc != 2) {
+        fail("usage: pty_edit builtin bin dest");
+        return 2;
+    }
+    dl = strlen(argv[1]);
+    n = 5 + dl + sizeof tail;
+    script = malloc(n);
+    if (!script) {
+        fail("edit builtin");
+        return 1;
+    }
+    memcpy(script, "edit ", 5);
+    memcpy(script + 5, argv[1], dl);
+    memcpy(script + 5 + dl, tail, sizeof tail);
+    cmd[0] = argv[0];
+    cmd[1] = "-c";
+    cmd[2] = script;
+    cmd[3] = NULL;
+    rc = edit_keys(cmd, argv[1], "DONE");
+    free(script);
+    return rc;
 }
 
 static int edit_more(const char *mode, int ncmd, char **cmd, const char *dest) {
@@ -171,8 +238,10 @@ static int edit_more(const char *mode, int ncmd, char **cmd, const char *dest) {
     Buf buf;
     char *args[16];
     int i;
-    const unsigned char *keys = (const unsigned char *)"ihello\x1b:w\r:q!\r";
-    size_t nkeys = 14;
+    /* fail: type, Ctrl-S fails, Ctrl-Q asks about the change, n drops it.
+       folder: Ctrl-Q once the side bar shows. bad: no keys, the editor stops. */
+    const unsigned char *keys = (const unsigned char *)"hello\x13\x11n";
+    size_t nkeys = 8;
     size_t sent = 0;
     double deadline;
     int status = 0;
@@ -180,6 +249,10 @@ static int edit_more(const char *mode, int ncmd, char **cmd, const char *dest) {
     int code;
     memset(&pty, 0, sizeof pty);
     memset(&buf, 0, sizeof buf);
+    if (strcmp(mode, "folder") == 0) {
+        keys = (const unsigned char *)"\x11";
+        nkeys = 1;
+    }
     if (ncmd < 1 || ncmd > 13) {
         fail("editor argv");
         return 2;
@@ -202,11 +275,16 @@ static int edit_more(const char *mode, int ncmd, char **cmd, const char *dest) {
         if (pty_reap(pty.pid, &st) == 1) {
             have = 1;
             status = st;
-            if (strcmp(mode, "dir") == 0 || sent >= nkeys) {
+            if (strcmp(mode, "bad") == 0 || sent >= nkeys) {
                 break;
             }
         }
-        if (strcmp(mode, "fail") == 0 && sent < nkeys && buf_has(&buf, "\x1b[?1049h")) {
+        /* The quit keys wait until the failed save has been reported. */
+        if (strcmp(mode, "fail") == 0 && sent < nkeys && buf_has(&buf, "\x1b[?1049h") &&
+            (sent < 6 || buf_has(&buf, "cannot write file"))) {
+            armed = 1;
+        }
+        if (strcmp(mode, "folder") == 0 && sent < nkeys && buf_has(&buf, "FOLDERS")) {
             armed = 1;
         }
         if (pty_select(pty.master, armed, 0.1, &rd, &wr) != 0) {
@@ -222,6 +300,9 @@ static int edit_more(const char *mode, int ncmd, char **cmd, const char *dest) {
             size_t wrote = 0;
             if (chunk > 8) {
                 chunk = 8;
+            }
+            if (strcmp(mode, "fail") == 0 && sent < 6 && sent + chunk > 6) {
+                chunk = 6 - sent;
             }
             if (pty_write(pty.master, keys + sent, chunk, &wrote) < 0) {
                 break;
@@ -244,13 +325,22 @@ static int edit_more(const char *mode, int ncmd, char **cmd, const char *dest) {
     }
     pty_close(&pty);
     code = wait_code(status);
-    if (strcmp(mode, "dir") == 0) {
+    if (strcmp(mode, "bad") == 0) {
         struct stat st;
         int bad = code != 1 || !buf_has(&buf, "cannot read file") || buf_has(&buf, "\x1b[?1049h") ||
-                  stat(dest, &st) != 0 || !S_ISDIR(st.st_mode);
+                  stat(dest, &st) != 0 || !S_ISREG(st.st_mode);
         buf_free(&buf);
         if (bad) {
-            fail("dir open");
+            fail("unreadable open");
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(mode, "folder") == 0) {
+        int bad = code != 0 || !buf_has(&buf, "FOLDERS");
+        buf_free(&buf);
+        if (bad) {
+            fail("folder open");
             return 1;
         }
         return 0;
@@ -376,16 +466,24 @@ static void editor_env(void) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fail("usage: pty_edit save|dir|fail|tui ...");
+        fail("usage: pty_edit save|builtin|bad|folder|fail|tui ...");
         return 2;
     }
     if (strcmp(argv[1], "save") == 0) {
         editor_env();
         return edit_save(argc - 2, argv + 2);
     }
-    if (strcmp(argv[1], "dir") == 0 || strcmp(argv[1], "fail") == 0) {
+    if (strcmp(argv[1], "builtin") == 0) {
+        if (argc < 4) {
+            fail("usage: pty_edit builtin bin dest");
+            return 2;
+        }
+        editor_env();
+        return edit_builtin(argc - 2, argv + 2);
+    }
+    if (strcmp(argv[1], "bad") == 0 || strcmp(argv[1], "folder") == 0 || strcmp(argv[1], "fail") == 0) {
         if (argc < 5) {
-            fail("usage: pty_edit dir|fail dest bin edit");
+            fail("usage: pty_edit bad|folder|fail dest bin edit");
             return 2;
         }
         editor_env();

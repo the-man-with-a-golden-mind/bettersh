@@ -9,6 +9,7 @@
 typedef int BuiltinFn(EvalCtx *ctx, int argc, char **argv);
 
 BuiltinFn cmd_cd;
+BuiltinFn cmd_edit;
 BuiltinFn cmd_pwd;
 BuiltinFn cmd_printf;
 BuiltinFn cmd_test;

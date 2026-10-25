@@ -1,0 +1,33 @@
+print,println pick=0
+print,println pick=1
+print,println pick=0
+(closed)
+1:5
+1:5
+println
+(closed)
+println(value...)
+println()
+strings,json.stringify,strings.count,strings.ends,strings.pad_left,strings.pad_right,strings.repeat,strings.reverse,strings.shout,strings.slice,strings.starts,strings.words pick=0
+println(strings)
+counter,strings.count pick=0
+let counter = 1
+let cost = 2
+counter
+count,ends,pad_left,pad_right,repeat,reverse,shout,slice,starts,words pick=0
+alpine,alphabet pick=0
+alpine,alphabet pick=1
+alphabet soup
+alpine
+alphabet
+(closed)
+No completions
+(closed)
+1:4
+4:2
+hover
+helper(a, b)
+true
+hxelper(1, 2)
+1:1
+No definition found

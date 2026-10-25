@@ -1,0 +1,40 @@
+#!/usr/bin/env bettersh
+import std/env
+import std/edit
+import std/edit_lsp
+import std/theme
+
+let src = "let name = \"hi\" # c\n"
+env.set("BETTERSH_EDITOR", "/no/such/bettersh-editor.conf")
+println(edit_lsp.read_config() == null)
+println(edit_lsp.config_note() == "")
+let e = edit.app_with(48, 6, edit_lsp.read_config())
+edit.load(e, src, "sample.btr")
+println(theme.themed(e.colors))
+println(e.colors.keyword == theme.nord().keyword)
+println(e.pal.rich)
+println(edit.current(e).lsp == null)
+println("FRAME")
+println(edit.frame(e))
+println("PLAIN")
+let e = edit.app_with(48, 6, theme.load("theme name plain"))
+edit.load(e, src, "sample.btr")
+println(theme.themed(e.colors))
+println(e.pal.rich)
+println(edit.paint(e).contains("38;2"))
+println("SETTINGS")
+let cfg = theme.load("set tab_size 2\nset translate_tabs_to_spaces false\nset line_numbers off\nset menu_bar no\n")
+println(cfg.settings.tab_size)
+let e = edit.app_with(30, 6, cfg)
+edit.load(e, "a\n", "plain.txt")
+println(e.settings.line_numbers)
+println(edit.current(e).tab)
+println(edit.current(e).spaces)
+println(edit.frame(e))
+println(theme.load("set tab_size 0") == null)
+println(theme.load("set nope true") == null)
+println(theme.load("set auto_match maybe") == null)
+println("SERVER")
+let e = edit.app_with(48, 6, theme.load("server btr true\n"))
+println(theme.themed(e.colors))
+println(e.cfg.servers.length)

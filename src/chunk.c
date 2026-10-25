@@ -251,7 +251,9 @@ int chunk_width(const uint8_t *code, uint32_t code_len, uint32_t ip) {
 static const char *METHODS[] = {
     "upper", "lower", "trim", "split", "contains", "replace", "length", "push", "pop",
     "map", "filter", "reduce", "sort", "join", "index", "keys", "values", "has", "remove",
-    "slice", "repeat", "reverse", "visible"};
+    "slice", "repeat", "reverse", "visible", "set", "insert", "delete", "clone"};
+
+_Static_assert(sizeof METHODS / sizeof METHODS[0] == METH_COUNT, "method table");
 
 int method_id(const char *name) {
     if (!name) {
@@ -277,7 +279,8 @@ static const char *BUILTINS[] = {
     "fs_remove", "getenv", "setenv", "readln", "mathf", "proc_spawn", "proc_await", "chr", "ord",
     "arg", "term_raw", "term_read", "term_poll", "term_cols", "term_rows", "term_tty", "bytes",
     "unbytes", "fs_append", "fs_mkdir", "fs_rmdir", "fs_list", "fs_kind", "fs_size", "readall",
-    "fs_load", "fs_save", "pipe_open", "pipe_write", "pipe_read", "pipe_close", "kind", "map_set"};
+    "fs_load", "fs_save", "pipe_open", "pipe_write", "pipe_read", "pipe_close", "kind", "map_set",
+    "term_take", "term_idle", "btr_eval", "clock_ms"};
 
 _Static_assert(sizeof BUILTINS / sizeof BUILTINS[0] == BI_COUNT, "builtin table");
 

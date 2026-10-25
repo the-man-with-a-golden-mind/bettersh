@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 /* POSIX hides this name. macOS and Linux both number it 28. */
@@ -33,9 +34,23 @@ static int signals_on;
 static int exit_on;
 static int screen_fd = -1;
 static volatile sig_atomic_t winch;
+/* Set when a raw read sees end of file, so the next read does not block. */
+static int saw_eof;
 
-static const char enter_screen[] = "\x1b[?1049h\x1b[?25l";
-static const char leave_screen[] = "\x1b[?25h\x1b[?1049l";
+/* ?7 is autowrap. A full last column scrolls the screen, so the editor
+   turns it off with the alternate screen and leave_raw turns it back on. */
+static const char enter_screen[] = "\x1b[?1049h\x1b[?7l\x1b[?25l";
+/* 1002 and 1006 are the editor's mouse tracking, 2004 is bracketed paste,
+   1004 is focus reports, CSI < u and CSI > 4 m undo its keyboard modes, and
+   CSI 0 q restores the cursor shape. Turning them off here covers a signal
+   exit, which does not return to the editor script.
+   CSI r drops a text scroll region first. On some terminals that region
+   outlives the alternate screen, so the shell prompt redraws in a band
+   and the editor frame stays put. The region reset stays before ?1049l,
+   while this process is still on the alternate screen. */
+static const char leave_screen[] =
+    "\x1b[?2026l\x1b[?1002l\x1b[?1006l\x1b[?2004l\x1b[?1004l\x1b[<u\x1b[>4m\x1b[0 q"
+    "\x1b[?7h\x1b[?25h\x1b[r\x1b[?1049l";
 
 static void write_all(int fd, const char *text, size_t n) {
     while (n > 0) {
@@ -153,6 +168,7 @@ static int enter_raw(void) {
     raw.c_cc[VTIME] = 0;
     have_attr = 1;
     raw_on = 1;
+    saw_eof = 0;
     screen_fd = isatty(STDOUT_FILENO) ? STDOUT_FILENO : STDIN_FILENO;
     if (set_attr(&raw) != 0) {
         set_attr(&saved_attr);
@@ -300,44 +316,44 @@ static int push_winch(VM *vm) {
     return 1;
 }
 
-static int read_byte(VM *vm, int wait_ms) {
-    unsigned char buf[1];
-    if (!raw_on) {
-        vm_fail(vm, "bad terminal");
-        return -1;
-    }
-    if (push_winch(vm)) {
-        return 0;
-    }
-    if (wait_ms >= 0) {
-        for (;;) {
-            struct timeval tv;
-            fd_set fds;
-            int rc;
-            tv.tv_sec = wait_ms / 1000;
-            tv.tv_usec = (wait_ms % 1000) * 1000;
-            FD_ZERO(&fds);
-            FD_SET(STDIN_FILENO, &fds);
-            rc = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
-            if (rc < 0 && errno == EINTR) {
-                if (push_winch(vm)) {
-                    return 0;
-                }
-                continue;
-            }
-            if (rc < 0) {
-                vm_fail(vm, "bad terminal");
-                return -1;
-            }
-            if (rc == 0) {
-                vm_push(vm, value_null());
-                return 0;
-            }
-            break;
-        }
+/* 1 when stdin is ready. 0 when a value was already pushed. 2 on timeout. -1 on error.
+   A timeout pushes nothing. */
+static int wait_fd(VM *vm, int wait_ms) {
+    if (wait_ms < 0) {
+        return 1;
     }
     for (;;) {
-        ssize_t n = read(STDIN_FILENO, buf, 1);
+        struct timeval tv;
+        fd_set fds;
+        int rc;
+        tv.tv_sec = wait_ms / 1000;
+        tv.tv_usec = (wait_ms % 1000) * 1000;
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        rc = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+        if (rc < 0 && errno == EINTR) {
+            if (push_winch(vm)) {
+                return 0;
+            }
+            continue;
+        }
+        if (rc < 0) {
+            vm_fail(vm, "bad terminal");
+            return -1;
+        }
+        if (rc == 0) {
+            return 2;
+        }
+        return 1;
+    }
+}
+
+/* bulk reads every byte already waiting, up to 2048. */
+static int read_some(VM *vm, int bulk) {
+    unsigned char buf[2048];
+    size_t cap = bulk ? sizeof buf : 1;
+    for (;;) {
+        ssize_t n = read(STDIN_FILENO, buf, cap);
         if (n < 0 && errno == EINTR) {
             if (push_winch(vm)) {
                 return 0;
@@ -349,12 +365,80 @@ static int read_byte(VM *vm, int wait_ms) {
             return -1;
         }
         if (n == 0) {
+            saw_eof = 1;
             vm_push(vm, value_null());
             return 0;
         }
-        vm_push(vm, value_str(str_new((const char *)buf, 1)));
+        vm_push(vm, value_str(str_new((const char *)buf, (size_t)n)));
         return 0;
     }
+}
+
+/* wait_ms below 0 blocks. A timeout pushes null, same as end of file for term_poll. */
+static int read_ready(VM *vm, int wait_ms, int bulk) {
+    int ready;
+    if (!raw_on) {
+        vm_fail(vm, "bad terminal");
+        return -1;
+    }
+    if (saw_eof) {
+        vm_push(vm, value_null());
+        return 0;
+    }
+    if (push_winch(vm)) {
+        return 0;
+    }
+    ready = wait_fd(vm, wait_ms);
+    if (ready == 2) {
+        vm_push(vm, value_null());
+        return 0;
+    }
+    if (ready <= 0) {
+        return ready;
+    }
+    return read_some(vm, bulk);
+}
+
+/* One byte, an empty string on a window change, false after 30ms, null at end of file. */
+static int read_idle(VM *vm) {
+    int ready;
+    if (!raw_on) {
+        vm_fail(vm, "bad terminal");
+        return -1;
+    }
+    if (saw_eof) {
+        vm_push(vm, value_null());
+        return 0;
+    }
+    if (push_winch(vm)) {
+        return 0;
+    }
+    ready = wait_fd(vm, 30);
+    if (ready == 2) {
+        vm_push(vm, value_bool(0));
+        return 0;
+    }
+    if (ready <= 0) {
+        return ready;
+    }
+    return read_some(vm, 0);
+}
+
+static int read_byte(VM *vm, int wait_ms) {
+    return read_ready(vm, wait_ms, 0);
+}
+
+static int take_bytes(VM *vm) {
+    return read_ready(vm, 0, 1);
+}
+
+/* Milliseconds on the monotonic clock. Only differences mean anything. */
+static int64_t clock_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return (int64_t)ts.tv_sec * 1000 + (int64_t)(ts.tv_nsec / 1000000);
 }
 
 static int wrong_argc(VM *vm) {
@@ -394,6 +478,16 @@ int host_term_builtin(VM *vm, int id, int argc) {
             return wrong_argc(vm);
         }
         return read_byte(vm, 30);
+    case BI_TERM_TAKE:
+        if (argc != 0) {
+            return wrong_argc(vm);
+        }
+        return take_bytes(vm);
+    case BI_TERM_IDLE:
+        if (argc != 0) {
+            return wrong_argc(vm);
+        }
+        return read_idle(vm);
     case BI_TERM_COLS:
         if (argc != 0) {
             return wrong_argc(vm);
@@ -411,6 +505,12 @@ int host_term_builtin(VM *vm, int id, int argc) {
             return wrong_argc(vm);
         }
         vm_push(vm, value_bool(isatty(STDIN_FILENO) == 1));
+        return 0;
+    case BI_CLOCK_MS:
+        if (argc != 0) {
+            return wrong_argc(vm);
+        }
+        vm_push(vm, value_int(clock_ms()));
         return 0;
     default:
         vm_fail(vm, "bad builtin");

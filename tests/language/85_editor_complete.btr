@@ -1,0 +1,92 @@
+#!/usr/bin/env bettersh
+# Completion while typing, signatures, hover, and Goto Definition without a server.
+import std/edit
+
+fn names(e) {
+  if e.comp == null { return "(closed)" }
+  let out = []
+  let i = 0
+  while i < e.comp.items.length {
+    let out = out.push(e.comp.items[i].name)
+    let i = i + 1
+  }
+  return "@{ out.join(",") } pick=@{ e.comp.pick }"
+}
+
+let e = edit.app(60, 14)
+edit.load(e, "\n", "t.btr")
+edit.type_text(e, "prin")
+println(names(e))
+edit.key(e, "down")
+println(names(e))
+edit.key(e, "up")
+println(names(e))
+edit.key(e, "escape")
+println(names(e))
+println(edit.sels(e))
+edit.key(e, "escape")
+println(edit.sels(e))
+edit.type_text(e, "t")
+edit.key(e, "down")
+edit.key(e, "enter")
+println(edit.text(e))
+println(names(e))
+edit.type_text(e, "(")
+println(e.msg)
+println(edit.text(e))
+edit.type_text(e, "str")
+println(names(e))
+edit.key(e, "tab")
+println(edit.text(e))
+
+let e = edit.app(60, 14)
+edit.load(e, "let counter = 1\nlet cost = 2\nco\n", "w.btr")
+edit.keys_in(e, ["ctrl-end"])
+edit.type_text(e, "u")
+println(names(e))
+edit.key(e, "enter")
+println(edit.text(e))
+edit.keys_in(e, ["ctrl-end"])
+edit.type_text(e, "\nstrings.")
+println(names(e))
+
+let e = edit.app(60, 14)
+edit.load(e, "alphabet soup\nalpine\nal\n", "w.txt")
+edit.keys_in(e, ["ctrl-end"])
+edit.key(e, "ctrl-space")
+println(names(e))
+edit.key(e, "pagedown")
+println(names(e))
+edit.key(e, "enter")
+println(edit.text(e))
+edit.type_text(e, " zz")
+println(names(e))
+edit.key(e, "ctrl-space")
+println(e.msg)
+
+let e = edit.app(60, 14)
+edit.load(e, "x = \"pri\"\n", "q.btr")
+edit.keys_in(e, ["end", "left"])
+edit.type_text(e, "n")
+println(names(e))
+
+let e = edit.app(60, 14)
+edit.load(e, "fn helper(a, b) {\n  return a\n}\nhelper(1, 2)\n", "d.btr")
+edit.keys_in(e, ["ctrl-end", "home", "right"])
+edit.key(e, "f12")
+println(edit.sels(e))
+edit.key(e, "alt--")
+println(edit.sels(e))
+edit.keys_in(e, ["ctrl-k", "ctrl-i"])
+println(e.overlay.kind)
+println(e.overlay.text)
+edit.key(e, "x")
+println(e.overlay == null)
+println(edit.text(e).split("\n")[3])
+
+let e = edit.app(60, 14)
+edit.load(e, "def go():\n  pass\n\ngo()\n", "d.py")
+edit.keys_in(e, ["ctrl-end", "home", "f12"])
+println(edit.sels(e))
+edit.keys_in(e, ["ctrl-home", "down", "f12"])
+println(e.msg)

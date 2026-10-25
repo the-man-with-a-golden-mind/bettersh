@@ -164,12 +164,47 @@ fn apply_theme(styles, rest) {
   return map_set(styles, got.head, got.rest)
 }
 
-# Reads editor.conf text. A theme line sets colors, server lines name commands, and root sets the workspace.
+# Editor settings and their kinds. A set line must name one of these.
+fn setting_kind(name) {
+  if name == "tab_size" { return "int" }
+  if name == "translate_tabs_to_spaces" || name == "detect_indentation" || name == "auto_indent" { return "bool" }
+  if name == "auto_match" || name == "auto_complete" || name == "highlight_line" || name == "line_numbers" { return "bool" }
+  if name == "draw_indent_guides" || name == "menu_bar" || name == "mouse" || name == "scroll_past_end" { return "bool" }
+  if name == "trim_trailing_white_space_on_save" || name == "ensure_newline_at_eof_on_save" { return "bool" }
+  if name == "restore_session" || name == "word_wrap" || name == "minimap" { return "bool" }
+  return ""
+}
+
+fn setting_value(kind, text) {
+  if kind == "bool" {
+    if text == "true" || text == "on" || text == "yes" { return true }
+    if text == "false" || text == "off" || text == "no" { return false }
+    return null
+  }
+  if kind == "int" {
+    if text.length == 0 || text.length > 3 { return null }
+    let n = 0
+    let i = 0
+    while i < text.length {
+      let c = text[i]
+      if c < "0" || c > "9" { return null }
+      let n = n * 10 + "0123456789".index(c)
+      let i = i + 1
+    }
+    if n < 1 || n > 16 { return null }
+    return n
+  }
+  return null
+}
+
+# Reads editor.conf text. A theme line sets colors, server lines name commands, root sets the
+# workspace, and set lines change editor settings such as "set tab_size 2".
 fn load(text) {
   if text == null || kind(text) != "string" { return null }
   let styles = plain()
   let servers = []
   let root = ""
+  let settings = {}
   let lines = text.replace("\t", " ").split("\n")
   let i = 0
   while i < lines.length {
@@ -188,11 +223,20 @@ fn load(text) {
       } else if got.head == "root" {
         if got.rest.length == 0 { return null }
         let root = got.rest
+      } else if got.head == "set" {
+        let pair = field(got.rest)
+        if pair == null { return null }
+        let k = setting_kind(pair.head)
+        if k == "" { return null }
+        let v = setting_value(k, pair.rest)
+        if v == null { return null }
+        let settings = map_set(settings, pair.head, v)
       } else {
         return null
       }
     }
   }
   let styles = map_set(styles, "servers", servers)
+  let styles = map_set(styles, "settings", settings)
   return map_set(styles, "root", root)
 }

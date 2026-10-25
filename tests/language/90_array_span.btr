@@ -1,0 +1,56 @@
+#!/usr/bin/env bettersh
+import std/edit
+
+let a = ["one", "two"]
+let b = a.set(1, "TWO")
+let junk = b.push("three")
+println(a.join(","))
+println(b.join(","))
+
+let c = ["one"]
+let d = c.insert(c.length, "end")
+let junk = d.push("tail")
+println(c.join(","))
+
+let e = ["a", "b", "c"]
+let f = e.insert(0, "z")
+println(e.join(","))
+let g = e.delete(1)
+let junk = g.push("d")
+println(e.join(","))
+
+let h = e.clone()
+let junk = h.push("only")
+println(e.join(","))
+println(h.join(","))
+
+let got = btr_eval("println(6 * 7)")
+println(got.status)
+let got = btr_eval("let n = 4")
+println(got.status)
+let got = btr_eval("println(n)")
+println(got.status)
+println(got.err)
+
+let e = edit.app(40, 8)
+edit.load(e, "hello\n", "t.txt")
+edit.key(e, "end")
+edit.type_text(e, "x\n")
+edit.key(e, "backspace")
+let d = edit.current(e)
+println(d.lines.join("|"))
+println(d.undo.length)
+let top = d.undo[d.undo.length - 1]
+println(top.kind)
+println(top.ops.length)
+println(top.ops[0].old == "")
+edit.key(e, "ctrl-z")
+println(d.lines.join("|"))
+println(d.redo.length)
+edit.key(e, "ctrl-z")
+println(d.lines.join("|"))
+println(d.undo.length)
+println(d.redo.length)
+edit.key(e, "ctrl-y")
+edit.key(e, "ctrl-shift-z")
+println(d.lines.join("|"))

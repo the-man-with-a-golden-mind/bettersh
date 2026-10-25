@@ -326,13 +326,79 @@ static int host_load(VM *vm) {
     return 0;
 }
 
+static int write_all(int fd, const char *data, size_t n) {
+    size_t off = 0;
+    while (off < n) {
+        ssize_t w = write(fd, data + off, n - off);
+        if (w < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        if (w == 0) {
+            return -1;
+        }
+        off += (size_t)w;
+    }
+    return 0;
+}
+
+static int fsync_fd(int fd) {
+    while (fsync(fd) != 0) {
+        if (errno != EINTR) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Temp file beside path. mkstemp needs the six trailing X characters. */
+static char *save_template(const char *path) {
+    const char *slash = strrchr(path, '/');
+    const char tail[] = "/.bshsave-XXXXXX";
+    size_t dlen;
+    char *tmpl;
+    if (slash == NULL) {
+        tmpl = xmalloc(1 + sizeof tail);
+        tmpl[0] = '.';
+        memcpy(tmpl + 1, tail, sizeof tail);
+        return tmpl;
+    }
+    if (slash == path) {
+        tmpl = xmalloc(sizeof tail);
+        memcpy(tmpl, tail, sizeof tail);
+        return tmpl;
+    }
+    dlen = (size_t)(slash - path);
+    tmpl = xmalloc(dlen + sizeof tail);
+    memcpy(tmpl, path, dlen);
+    memcpy(tmpl + dlen, tail, sizeof tail);
+    return tmpl;
+}
+
+static void save_drop(int fd, char *tmpl) {
+    if (fd >= 0) {
+        close(fd);
+    }
+    if (tmpl != NULL) {
+        unlink(tmpl);
+        free(tmpl);
+    }
+}
+
+/* Replace path only after the new bytes are durable. A short write leaves the old file. */
 static int host_save(VM *vm) {
     Value *text = pop_str(vm);
     Value *path;
-    FILE *fp;
+    struct stat st;
+    char *tmpl = NULL;
+    const char *dest;
     size_t n;
-    size_t put;
-    int ok;
+    int fd = -1;
+    int have = 0;
+    int ok = 0;
+    mode_t mode = 0;
     if (!text) {
         return -1;
     }
@@ -347,18 +413,50 @@ static int host_save(VM *vm) {
         vm_fail(vm, "bad operand");
         return -1;
     }
+    dest = path->u.str->data;
     n = text->u.str->len;
-    fp = fopen(path->u.str->data, "wb");
-    put = 0;
-    ok = 0;
-    if (fp) {
-        put = fwrite(text->u.str->data, 1, n, fp);
-        if (fclose(fp) != 0) {
-            put = n + 1;
-        }
-        if (put == n) {
+    if (dest[0] != '\0' && stat(dest, &st) == 0) {
+        if (!S_ISDIR(st.st_mode)) {
+            have = 1;
+            mode = st.st_mode & 07777;
             ok = 1;
         }
+    } else if (dest[0] != '\0' && errno == ENOENT) {
+        ok = 1;
+    }
+    if (ok) {
+        tmpl = save_template(dest);
+        fd = mkstemp(tmpl);
+        if (fd < 0) {
+            ok = 0;
+        }
+    }
+    if (ok && have && fchmod(fd, mode) != 0) {
+        ok = 0;
+    }
+    if (ok && !have) {
+        mode_t mask = umask(0);
+        umask(mask);
+        if (fchmod(fd, (mode_t)(0666 & ~mask)) != 0) {
+            ok = 0;
+        }
+    }
+    if (ok && (write_all(fd, text->u.str->data, n) != 0 || fsync_fd(fd) != 0)) {
+        ok = 0;
+    }
+    if (ok) {
+        if (close(fd) != 0 && errno != EINTR) {
+            ok = 0;
+        }
+        fd = -1;
+    }
+    if (ok && rename(tmpl, dest) != 0) {
+        ok = 0;
+    }
+    if (ok) {
+        free(tmpl);
+    } else {
+        save_drop(fd, tmpl);
     }
     value_unref(text);
     value_unref(path);

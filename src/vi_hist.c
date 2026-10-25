@@ -229,7 +229,7 @@ void vi_hist_draw(ViHist *hist, char **lines, uint32_t nlines, size_t cur_col) {
     }
     if (!hist->on || hist->n <= 0) {
         if (hist->rows > 0) {
-            vi_menu_draw(NULL, 0, 0, cur_col, &hist->rows, &hist->cols, 1);
+            vi_menu_draw(NULL, 0, 0, cur_col, &hist->rows, &hist->cols, 1, NULL);
         }
         return;
     }
@@ -265,7 +265,7 @@ void vi_hist_draw(ViHist *hist, char **lines, uint32_t nlines, size_t cur_col) {
         extra = 1;
     }
     sel = hist->sel - top;
-    vi_menu_draw(shown, count + extra, sel, cur_col, &hist->rows, &hist->cols, 1);
+    vi_menu_draw(shown, count + extra, sel, cur_col, &hist->rows, &hist->cols, 1, NULL);
     for (i = 0; i < count + extra; i++) {
         free(shown[i]);
     }

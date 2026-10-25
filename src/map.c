@@ -26,6 +26,9 @@ void map_unref(Map *map) {
         map->refs--;
         return;
     }
+    if (map->rooted) {
+        value_root_map(map, 0);
+    }
     for (uint32_t i = 0; i < map->len; i++) {
         free(map->keys[i]);
         value_unref(map->vals[i]);
@@ -99,10 +102,18 @@ void map_set(Map *map, const char *key, Value *value) {
     if (map->hcap > 0) {
         at = probe(map, key, &found);
     }
+    if (map->rooted) {
+        stored->roots++;
+    }
     if (found) {
         uint32_t i = map->slots[at] - 1;
-        value_unref(map->vals[i]);
+        Value *old = map->vals[i];
+        if (map->rooted && old && old->roots > 0) {
+            old->roots--;
+        }
+        value_unref(old);
         map->vals[i] = stored;
+        value_note_edge(stored);
         return;
     }
     if (map->len >= map->cap) {
@@ -114,6 +125,7 @@ void map_set(Map *map, const char *key, Value *value) {
     map->keys[map->len] = dup_key(key);
     map->vals[map->len] = stored;
     map->len++;
+    value_note_edge(stored);
     if (map->hcap == 0 || map->len * 4 >= map->hcap * 3) {
         rehash(map);
         return;
@@ -154,6 +166,9 @@ Value *map_remove(Map *map, const char *key) {
     }
     i = map->slots[at] - 1;
     value = map->vals[i];
+    if (map->rooted && value && value->roots > 0) {
+        value->roots--;
+    }
     free(map->keys[i]);
     tail = map->len - i - 1;
     if (tail) {

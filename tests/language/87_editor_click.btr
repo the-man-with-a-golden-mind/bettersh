@@ -1,0 +1,90 @@
+#!/usr/bin/env bettersh
+# Goto Anything, Goto Line, Goto Symbol, the command palette, and jumping back.
+import std/fs
+import std/edit
+import std/theme
+
+fn names(e) {
+  let out = []
+  let i = 0
+  while i < e.overlay.items.length && i < 6 {
+    let it = e.overlay.items[i]
+    let out = out.push("@{ it.name } (@{ it.detail })")
+    let i = i + 1
+  }
+  return out.join(", ")
+}
+
+let root = "/tmp/btr-goto"
+if fs.kind(root) != "dir" { fs.mkdir(root) }
+if fs.kind("@{ root }/src") != "dir" { fs.mkdir("@{ root }/src") }
+if fs.kind("@{ root }/.hidden") != "dir" { fs.mkdir("@{ root }/.hidden") }
+fs.write("@{ root }/README.md", "# Readme\n")
+fs.write("@{ root }/src/main.btr", "fn start() {\n  return 1\n}\n\nfn stop() {\n  return 2\n}\n")
+fs.write("@{ root }/src/util.btr", "fn helper() {}\n")
+fs.write("@{ root }/.hidden/secret.txt", "no\n")
+
+let e = edit.app(70, 18)
+let junk = map_set(e.side, "root", root)
+edit.load(e, "one\ntwo\nthree\nfour\nfive\n", "lines.txt")
+edit.key(e, "ctrl-p")
+println(e.overlay.title)
+println(names(e))
+edit.type_text(e, "mbt")
+println(names(e))
+edit.key(e, "enter")
+println(edit.current(e).path)
+println(e.overlay == null)
+edit.key(e, "ctrl-r")
+println(names(e))
+edit.type_text(e, "sto")
+println(names(e))
+println(edit.sels(e))
+edit.key(e, "escape")
+println(edit.sels(e))
+edit.key(e, "ctrl-r")
+edit.type_text(e, "sto")
+edit.key(e, "enter")
+println(edit.sels(e))
+edit.key(e, "alt--")
+println(edit.sels(e))
+edit.key(e, "ctrl-p")
+edit.type_text(e, "util.btr:1")
+edit.key(e, "enter")
+println(edit.current(e).name)
+edit.key(e, "ctrl-p")
+edit.type_text(e, "lines")
+println(names(e))
+edit.key(e, "enter")
+println(edit.current(e).name)
+edit.key(e, "ctrl-g")
+edit.type_text(e, "4")
+println(names(e))
+println(edit.sels(e))
+edit.key(e, "enter")
+println(edit.sels(e))
+edit.key(e, "ctrl-g")
+edit.type_text(e, "x")
+println(names(e))
+edit.key(e, "escape")
+println(edit.sels(e))
+edit.key(e, "ctrl-shift-p")
+println(e.overlay.title)
+edit.type_text(e, "sort lin")
+println(names(e))
+edit.key(e, "enter")
+println(edit.text(e).replace("\n", "|"))
+edit.key(e, "f1")
+edit.type_text(e, "theme drac")
+edit.key(e, "enter")
+println(e.colors.keyword == theme.dracula().keyword)
+println(e.msg)
+edit.key(e, "f1")
+edit.type_text(e, "set syntax python")
+edit.key(e, "enter")
+println(edit.current(e).lang)
+edit.key(e, "f1")
+edit.type_text(e, "keyboard")
+edit.key(e, "enter")
+println(edit.current(e).title)
+println(edit.text(e).contains("Ctrl+Shift+P"))

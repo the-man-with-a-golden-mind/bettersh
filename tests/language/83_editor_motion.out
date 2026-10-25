@@ -1,0 +1,28 @@
+typed: 1:1-1:4 bar=1/5 [Cat cat|concat CAT|cat] 
+next: 1:5-1:8 bar=2/5 [Cat cat|concat CAT|cat] 
+next 2: 2:4-2:7 bar=3/5 [Cat cat|concat CAT|cat] 
+prev: 1:5-1:8 bar=2/5 [Cat cat|concat CAT|cat] 
+case on: 1:5-1:8 bar=1/3 [Cat cat|concat CAT|cat] 
+whole word: 1:5-1:8 bar=1/2 [Cat cat|concat CAT|cat] 
+wraps: 3:1-3:4 bar=2/2 [Cat cat|concat CAT|cat] 
+find all: *1:5-1:8 3:1-3:4 [Cat cat|concat CAT|cat] 
+true
+f3 after close: 1:5-1:8 [Cat cat|concat CAT|cat] 
+shift-f3: 3:1-3:4 [Cat cat|concat CAT|cat] 
+replace bar: 1:1-1:4 bar=1/3 [one two one|two one] 
+replace first: 1:7-1:10 bar=1/2 [1 two one|two one] 
+replace second: 2:5-2:8 bar=1/1 [1 two 1|two one] 
+replace rest: 2:6 bar=0/0 [1 two 1|two 1] Replaced 1 occurrence
+undo replace all: 2:5-2:8 bar=1/1 [1 two 1|two one] 
+true
+one
+selection seeds find: 1:6-1:1 bar=1/2 [alpha beta|alpha] 
+typing replaces seed: 1:7-1:11 bar=1/1 [alpha beta|alpha] 
+backspace: 1:7-1:10 bar=1/1 [alpha beta|alpha] 
+field cleared: 1:6-1:1 bar=0/0 [alpha beta|alpha] 
+no match: 1:6-1:1 bar=0/0 [alpha beta|alpha] 
+quick find: 2:1-2:6 [alpha beta|alpha] 
+quick find again: 1:1-1:6 [alpha beta|alpha] 
+multi-line ctrl-d: 1:1-2:3 *3:1-4:3 [ab|cd|ab|cd] 
+multi-line find: 1:1-2:1 bar=0/0 [ab|cd|ab|cd] 
+true
